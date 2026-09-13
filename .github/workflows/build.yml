@@ -33,7 +33,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: hx-chat-translator
-          path: build/libs/*.jar
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
           if-no-files-found: error
 
       # 打 v* 标签时自动发布 Release 并附上 jar；已存在则覆盖上传
@@ -42,7 +44,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          JAR=$(ls build/libs/*.jar | grep -v -- '-sources' | head -1)
+          echo "发布产物: $JAR"
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            && gh release upload "$GITHUB_REF_NAME" build/libs/*.jar --clobber \
-            || gh release create "$GITHUB_REF_NAME" build/libs/*.jar \
+            && gh release upload "$GITHUB_REF_NAME" "$JAR" --clobber \
+            || gh release create "$GITHUB_REF_NAME" "$JAR" \
                  --title "$GITHUB_REF_NAME" --generate-notes
