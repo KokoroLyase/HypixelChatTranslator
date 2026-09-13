@@ -12,6 +12,9 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -30,6 +33,7 @@ public class VerifyCore {
     public static void main(String[] args) throws Exception {
         langUtils();
         commandSplit();
+        hypixelCommands();
         hypixelSamples();
         httpSuccess();
         httpBaseUrls();
@@ -97,6 +101,94 @@ public class VerifyCore {
         check("空命令返回 null", CommandMessage.split("", config.translateCommandArgs) == null);
         check("null 返回 null", CommandMessage.split(null, config.translateCommandArgs) == null);
         check("只有命令名返回 null", CommandMessage.split("msg", config.translateCommandArgs) == null);
+    }
+
+    /** v1.0.2：按 Hypixel 官方命令表补全所有「玩家输入正文」的聊天命令。 */
+    private static void hypixelCommands() {
+        System.out.println("== Hypixel 聊天命令识别 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        // 玩家反馈的 bug：/shout 喊话以前不在名单里，整条中文被原样发出去
+        assertCommand(config, "shout 致我们伟大的末地石建筑", "shout ", "致我们伟大的末地石建筑");
+        assertCommand(config, "shout 大家快来中路", "shout ", "大家快来中路");
+
+        // 全局 / 队伍 / 公会 / 官员 频道
+        assertCommand(config, "ac 有人吗", "ac ", "有人吗");
+        assertCommand(config, "achat 有人吗", "achat ", "有人吗");
+        assertCommand(config, "pc 集合", "pc ", "集合");
+        assertCommand(config, "pchat 集合", "pchat ", "集合");
+        assertCommand(config, "gc 大家好", "gc ", "大家好");
+        assertCommand(config, "gchat 大家好", "gchat ", "大家好");
+        assertCommand(config, "oc 开会了", "oc ", "开会了");
+        assertCommand(config, "ochat 开会了", "ochat ", "开会了");
+
+        // 私聊 / 好友私信
+        assertCommand(config, "msg Steve 你好", "msg Steve ", "你好");
+        assertCommand(config, "message Steve 你好", "message Steve ", "你好");
+        assertCommand(config, "tell Steve 你好", "tell Steve ", "你好");
+        assertCommand(config, "w Steve 你好", "w Steve ", "你好");
+        assertCommand(config, "whisper Steve 你好", "whisper Steve ", "你好");
+        assertCommand(config, "r 你好", "r ", "你好");
+        assertCommand(config, "reply 你好", "reply ", "你好");
+
+        // /party chat、/guild chat 写法
+        assertCommand(config, "party chat 大家好", "party chat ", "大家好");
+        assertCommand(config, "guild chat 大家好", "guild chat ", "大家好");
+
+        // 管理命令不能被误当成聊天
+        assertNoCommand(config, "party invite 小明");
+        assertNoCommand(config, "p invite 小明");
+        assertNoCommand(config, "g kick 小明");
+        assertNoCommand(config, "guild warp");
+        assertNoCommand(config, "chat p");
+        assertNoCommand(config, "chat a");
+        assertNoCommand(config, "party chat");
+
+        // 未知命令兜底：正文明显是一句话才翻译，短参数（多半是玩家名）不碰
+        assertCommand(config, "newchatcmd 大家快来这里集合", "newchatcmd ", "大家快来这里集合");
+        assertNoCommand(config, "newcmd 小明");
+        assertNoCommand(config, "tp 小明");
+        assertNoCommand(config, "f add 小明明明");
+        assertNoCommand(config, "report Steve 他开挂骂人");
+        assertNoCommand(config, "visit 某某的家");
+        assertNoCommand(config, "ah 我的世界");
+
+        // 英文内容仍然要能解析出正文（后续 ChatTranslator 会因为没汉字而放行）
+        assertCommand(config, "shout rush mid", "shout ", "rush mid");
+        assertCommand(config, "msg Steve hello there", "msg Steve ", "hello there");
+
+        // ---- 老配置迁移：v1.0.1 用户的配置里没有 /shout，还误收录了 /chat ----
+        TranslatorConfig legacy = new TranslatorConfig();
+        legacy.configVersion = 2;
+        legacy.translateCommandArgs = new LinkedHashMap<>(Map.of("msg", 1, "r", 0, "chat", 0));
+        legacy.guardedCommands = new ArrayList<>();
+        legacy.protectedCommands = new ArrayList<>();
+        boolean migrated = legacy.applyMigrations();
+        check("迁移报告有改动", migrated);
+        check("迁移后补上了 /shout", legacy.translateCommandArgs.containsKey("shout"));
+        check("迁移后补上了 /pc、/gc、/oc", legacy.translateCommandArgs.containsKey("pc")
+                && legacy.translateCommandArgs.containsKey("gc") && legacy.translateCommandArgs.containsKey("oc"));
+        check("迁移后移除了误收录的 /chat", !legacy.translateCommandArgs.containsKey("chat"));
+        checkEq("迁移保留了原有条目", Integer.valueOf(1), legacy.translateCommandArgs.get("msg"));
+        check("迁移补齐了 guardedCommands", legacy.guardedCommands.contains("party"));
+        checkEq("迁移后版本号已更新", TranslatorConfig.CURRENT_CONFIG_VERSION, legacy.configVersion);
+        check("迁移后的旧配置能识别 /shout", CommandMessage.resolve("shout 你好啊", legacy) != null);
+    }
+
+    private static void assertCommand(TranslatorConfig config, String command, String head, String message) {
+        CommandMessage.Split split = CommandMessage.resolve(command, config);
+        if (split == null) {
+            fail("/" + command + " -> 应能解析出正文，实际返回 null");
+            return;
+        }
+        checkEq("/" + command + " head", head, split.head());
+        checkEq("/" + command + " message", message, split.message());
+    }
+
+    private static void assertNoCommand(TranslatorConfig config, String command) {
+        CommandMessage.Split split = CommandMessage.resolve(command, config);
+        check("不应翻译: /" + command + (split == null ? "" : " -> 实际解析出正文 <" + split.message() + ">"),
+                split == null);
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */

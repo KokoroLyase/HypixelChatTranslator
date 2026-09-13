@@ -321,9 +321,11 @@ public final class ChatTranslator {
             return true;
         }
 
-        // 拆出「命令头（命令名 + 玩家名等参数）」和「待翻译正文」
-        CommandMessage.Split split = CommandMessage.split(command, config.translateCommandArgs);
+        // 拆出「命令头（命令名 + 玩家名等参数）」和「待翻译正文」。
+        // 三层识别：显式名单 -> /party chat 这类二义性命令 -> 未知命令兜底，见 CommandMessage。
+        CommandMessage.Split split = CommandMessage.resolve(command, config);
         if (split == null) {
+            debug("命令未翻译（不在 translateCommandArgs 名单里，或属于管理命令）: /" + shorten(command));
             return true;
         }
         String head = split.head();

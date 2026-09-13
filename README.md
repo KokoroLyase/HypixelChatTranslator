@@ -74,18 +74,29 @@
 
 ### 快捷指令里的中文也会被翻译
 
-默认支持这些命令的**正文部分**翻译（命令名和玩家名保持原样）：
+命令名、玩家名、频道前缀都会原样保留，只翻译正文：
 
 ```
-/msg 玩家 你好        →  /msg Player hello
-/r 你好               →  /r hello
-/pc 你好              →  /pc hello
-/gc 你好              →  /gc hello
-/ac 你好              →  /ac hello
+/shout 大家快来中路      →  /shout everyone come mid      （局内喊话）
+/msg Steve 你好          →  /msg Steve hello              （私聊 / 好友私信）
+/message、/tell、/w、/whisper 同上
+/r 你好                  →  /r hello                     （回复上一条私聊）
+/ac 有人吗               →  /ac anyone there              （全局聊天）
+/pc 集合                 →  /pc regroup                   （队伍聊天）
+/gc 大家好               →  /gc hi everyone               （公会聊天）
+/oc 开会了               →  /oc meeting time              （公会官员聊天）
+/party chat 大家好       →  /party chat hi everyone       （带子命令的写法）
+/guild chat 大家好       →  /guild chat hi everyone
 ```
+
+识别分三层，已按 [Hypixel 官方命令表](https://hypixel.fandom.com/wiki/Commands) 全覆盖：
+
+1. **显式名单**（`translateCommandArgs`）：`shout`、`ac`/`achat`、`pc`/`pchat`、`gc`/`gchat`、`oc`/`ochat`、`msg`/`message`/`tell`/`w`/`whisper`、`r`/`reply`；
+2. **管理/聊天二义性命令**（`guardedCommands`，默认 `p`/`party`/`g`/`guild`）：第一个词是 `chat` 就当聊天，是 `invite`/`kick`/`warp` 这类管理子命令就不动；
+3. **未知命令兜底**：Hypixel 以后新加的聊天命令，只要正文明显是一句中文（较长或带中文标点）就翻译；`tp`、`f add`、`report`、`visit` 这些参数是玩家名的命令由 `protectedCommands` 排除在外。
 
 想增删命令，改配置里的 `translateCommandArgs`：命令名（小写、不含斜杠）→ 正文前面还有几个参数。
-例如 `/msg <玩家> <正文>` 是 `1`，`/r <正文>` 是 `0`。
+例如 `/msg <玩家> <正文>` 是 `1`，`/shout <正文>` 是 `0`。
 
 ## 5. 主要配置项（`config/hxtranslate.json`）
 
@@ -99,6 +110,11 @@
 | `translateIncoming` | `true` | 翻译收到的英文 |
 | `translateOutgoing` | `true` | 翻译自己发的中文 |
 | `translateCommandMessages` | `true` | 是否翻译 `/msg` 之类命令的正文 |
+| `translateCommandArgs` | 16 条 | 命令名 → 正文前有几个参数；按 Hypixel 官方命令表预置了所有聊天命令，可自行增删 |
+| `guardedCommands` | `p`/`party`/`g`/`guild` | 既是管理又是聊天的命令，看第一个参数决定（`chat` → 聊天，`invite` 等 → 管理） |
+| `commandManagementKeywords` | 40 条 | 上面那些命令的管理子命令关键字 |
+| `translateUnknownCommands` | `true` | 名单外的命令，正文明显是一句中文时也翻译（应对 Hypixel 新增命令） |
+| `protectedCommands` | 50+ 条 | 兜底翻译时排除的命令（`tp`、`f`、`report`、`visit` 等，参数是玩家名） |
 | `incomingPrefix` | `§8[§b译§8] §f` | 译文前缀（支持 `§` 颜色代码） |
 | `outgoingPrefix` | `§8[§a→EN§8] §f` | 自己发出去后的英文回显前缀 |
 | `includeOriginalInIncoming` | `false` | 译文里是否再带上原文 |

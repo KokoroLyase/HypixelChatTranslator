@@ -26,7 +26,7 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 2;
+    public static final int CURRENT_CONFIG_VERSION = 3;
 
     /** 老版本提示词的识别标记，只在迁移时使用。 */
     private static final String LEGACY_INCOMING_MARKER = "Keep common gaming abbreviations meaningful";
@@ -194,20 +194,66 @@ public final class TranslatorConfig {
 
     /**
      * 需要翻译内容部分的命令：命令名（小写，不含斜杠）-> 消息之前还有几个参数。
-     * 例如 /msg <玩家> <内容> 是 1，/r <内容> 是 0。
+     * 例如 /msg &lt;玩家&gt; &lt;内容&gt; 是 1，/shout &lt;内容&gt; 是 0。
+     *
+     * <p>名单依据 Hypixel 官方命令表整理，覆盖所有「玩家自己输入正文」的聊天命令。
+     * v1.0.2 之前这里漏了 /shout（喊话）、/message、/pchat、/gchat、/ochat 等，导致喊话不翻译。
      */
     public Map<String, Integer> translateCommandArgs = new LinkedHashMap<>(Map.ofEntries(
+            // 私聊 / 好友私信
             Map.entry("msg", 1),
+            Map.entry("message", 1),
             Map.entry("tell", 1),
             Map.entry("w", 1),
             Map.entry("whisper", 1),
             Map.entry("r", 0),
             Map.entry("reply", 0),
-            Map.entry("pc", 0),
-            Map.entry("gc", 0),
-            Map.entry("ac", 0),
+            // 频道聊天
+            Map.entry("ac", 0),      // 全局聊天
             Map.entry("achat", 0),
-            Map.entry("chat", 0)
+            Map.entry("pc", 0),      // 队伍聊天
+            Map.entry("pchat", 0),
+            Map.entry("gc", 0),      // 公会聊天
+            Map.entry("gchat", 0),
+            Map.entry("oc", 0),      // 公会官员聊天
+            Map.entry("ochat", 0),
+            // 局内喊话（起床战争等）
+            Map.entry("shout", 0)
+    ));
+
+    /**
+     * 既是「管理命令」又可能是「聊天」的命令，需要额外判断。
+     *
+     * <p>例如 {@code /party invite Steve} 是邀请，而 {@code /party chat 大家好} 是发消息。
+     * 规则：第一个词是 {@code chat} → 后面是正文；第一个词是管理子命令
+     * （见 {@link #commandManagementKeywords}）→ 不动；其它情况按 {@code /party <正文>} 处理。
+     */
+    public List<String> guardedCommands = new ArrayList<>(List.of("p", "party", "g", "guild"));
+
+    /** 上面那些命令的管理子命令，出现这些词就说明不是聊天内容。 */
+    public List<String> commandManagementKeywords = new ArrayList<>(List.of(
+            "invite", "uninvite", "kick", "promote", "demote", "transfer", "warp", "list", "disband",
+            "leave", "accept", "deny", "mute", "unmute", "poll", "settings", "setting", "open", "close",
+            "stream", "rename", "join", "create", "remove", "add", "help", "info", "stats", "top",
+            "quest", "quests", "tag", "color", "setrank", "online", "history", "log", "slow", "fast"
+    ));
+
+    /** 不在任何名单里的命令：如果正文明显是一句中文，也翻译（应对 Hypixel 新增命令）。 */
+    public boolean translateUnknownCommands = true;
+
+    /**
+     * 兜底翻译时要排除的命令：它们的参数是玩家名 / 物品名 / 设置项，翻译了会出事。
+     * 只在「未知命令兜底」里生效，不影响上面的显式名单。
+     */
+    public List<String> protectedCommands = new ArrayList<>(List.of(
+            "tp", "tpa", "tpahere", "tpaccept", "tpdeny", "tpall",
+            "f", "friend", "friends", "fl", "ignore", "unignore", "block",
+            "report", "wdr", "watchdogreport", "chatreport", "cr", "helpop",
+            "duel", "trade", "ah", "auction", "bazaar", "visit", "housing",
+            "play", "lobby", "hub", "skyblock", "sb", "profile", "coop", "island",
+            "pet", "wardrobe", "skills", "collection", "collections", "minion", "minions",
+            "booster", "mystery", "rank", "ping", "stats", "api", "link", "settings",
+            "options", "toggle", "language", "lang", "nick", "p", "party", "g", "guild"
     ));
 
     // ------------------------------------------------------------------
@@ -279,32 +325,80 @@ public final class TranslatorConfig {
     /**
      * 把老版本配置文件里的内容升级到新版默认值。
      *
-     * <p>只覆盖「还是老版默认值」或空白的字段，用户自己改过的提示词不会被冲掉。
+     * <p>只覆盖「还是老版默认值」或空白的字段，用户自己改过的内容不会被冲掉。
      */
     private void migrate() {
-        if (configVersion >= CURRENT_CONFIG_VERSION) {
-            return;
+        int before = configVersion;
+        boolean changed = applyMigrations();
+        if (configVersion != before) {
+            HxTranslateClient.LOGGER.info("配置已从 v{} 升级到 v{}（{}）", before, configVersion,
+                    changed ? "新增默认值已补齐，自定义内容保留" : "无需改动");
+            save();
         }
+    }
+
+    /**
+     * 迁移的纯逻辑部分：不读写磁盘、不依赖 FabricLoader，方便离线测试。
+     *
+     * @return 是否真的改动了字段
+     */
+    public boolean applyMigrations() {
+        if (configVersion >= CURRENT_CONFIG_VERSION) {
+            return false;
+        }
+        int from = configVersion;
         TranslatorConfig defaults = new TranslatorConfig();
         boolean changed = false;
 
-        if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKER)) {
-            incomingSystemPrompt = defaults.incomingSystemPrompt;
-            changed = true;
+        // ---- v1 -> v2：提示词、术语表 ----
+        if (from < 2) {
+            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKER)) {
+                incomingSystemPrompt = defaults.incomingSystemPrompt;
+                changed = true;
+            }
+            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKER)) {
+                outgoingSystemPrompt = defaults.outgoingSystemPrompt;
+                changed = true;
+            }
+            if (glossary == null || glossary.isEmpty()) {
+                glossary = defaults.glossary;
+                changed = true;
+            }
         }
-        if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKER)) {
-            outgoingSystemPrompt = defaults.outgoingSystemPrompt;
-            changed = true;
-        }
-        if (glossary == null || glossary.isEmpty()) {
-            glossary = defaults.glossary;
-            changed = true;
+
+        // ---- v2 -> v3：补齐聊天命令名单（/shout 等漏掉的命令）----
+        if (from < 3) {
+            if (translateCommandArgs == null) {
+                translateCommandArgs = new LinkedHashMap<>();
+            }
+            // /chat 是切换聊天频道的命令（/chat a|p|g|o），不是发消息，v1.0.1 及之前误收录了
+            if (Integer.valueOf(0).equals(translateCommandArgs.get("chat"))) {
+                translateCommandArgs.remove("chat");
+                changed = true;
+            }
+            // 只补缺，不覆盖用户自己调过的参数个数
+            for (Map.Entry<String, Integer> entry : defaults.translateCommandArgs.entrySet()) {
+                if (!translateCommandArgs.containsKey(entry.getKey())) {
+                    translateCommandArgs.put(entry.getKey(), entry.getValue());
+                    changed = true;
+                }
+            }
+            if (guardedCommands == null || guardedCommands.isEmpty()) {
+                guardedCommands = defaults.guardedCommands;
+                changed = true;
+            }
+            if (commandManagementKeywords == null || commandManagementKeywords.isEmpty()) {
+                commandManagementKeywords = defaults.commandManagementKeywords;
+                changed = true;
+            }
+            if (protectedCommands == null || protectedCommands.isEmpty()) {
+                protectedCommands = defaults.protectedCommands;
+                changed = true;
+            }
         }
 
         configVersion = CURRENT_CONFIG_VERSION;
-        HxTranslateClient.LOGGER.info("配置已升级到 v{}（{}）", CURRENT_CONFIG_VERSION,
-                changed ? "提示词与术语表已更新" : "保留了你的自定义内容");
-        save();
+        return changed;
     }
 
     private static boolean needsPromptUpgrade(String prompt, String legacyMarker) {
@@ -359,6 +453,15 @@ public final class TranslatorConfig {
         if (translateCommandArgs == null) {
             translateCommandArgs = new LinkedHashMap<>();
         }
+        if (guardedCommands == null) {
+            guardedCommands = new ArrayList<>();
+        }
+        if (commandManagementKeywords == null) {
+            commandManagementKeywords = new ArrayList<>();
+        }
+        if (protectedCommands == null) {
+            protectedCommands = new ArrayList<>();
+        }
         if (incomingPrefix == null) {
             incomingPrefix = "";
         }
@@ -394,6 +497,10 @@ public final class TranslatorConfig {
         this.ignorePatterns = o.ignorePatterns;
         this.glossary = o.glossary;
         this.translateCommandArgs = o.translateCommandArgs;
+        this.guardedCommands = o.guardedCommands;
+        this.commandManagementKeywords = o.commandManagementKeywords;
+        this.translateUnknownCommands = o.translateUnknownCommands;
+        this.protectedCommands = o.protectedCommands;
         this.incomingSystemPrompt = o.incomingSystemPrompt;
         this.outgoingSystemPrompt = o.outgoingSystemPrompt;
     }
