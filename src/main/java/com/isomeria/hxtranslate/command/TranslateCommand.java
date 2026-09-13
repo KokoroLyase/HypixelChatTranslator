@@ -1,5 +1,6 @@
 package com.isomeria.hxtranslate.command;
 
+import com.isomeria.hxtranslate.chat.ChatTranslator;
 import com.isomeria.hxtranslate.chat.Feedback;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
@@ -21,19 +22,19 @@ public final class TranslateCommand {
     private TranslateCommand() {
     }
 
-    public static void register(TranslatorConfig config, TranslationService service) {
+    public static void register(TranslatorConfig config, TranslationService service, ChatTranslator translator) {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            dispatcher.register(build("hxtranslate", config, service));
-            dispatcher.register(build("hxt", config, service));
+            dispatcher.register(build("hxtranslate", config, service, translator));
+            dispatcher.register(build("hxt", config, service, translator));
         });
     }
 
     private static LiteralArgumentBuilder<FabricClientCommandSource> build(
-            String name, TranslatorConfig config, TranslationService service) {
+            String name, TranslatorConfig config, TranslationService service, ChatTranslator translator) {
 
         return ClientCommands.literal(name)
                 .executes(context -> {
-                    status(context.getSource(), config, service);
+                    status(context.getSource(), config, service, translator);
                     return 1;
                 })
                 .then(ClientCommands.literal("on").executes(context -> {
@@ -49,7 +50,7 @@ public final class TranslateCommand {
                     return 1;
                 }))
                 .then(ClientCommands.literal("status").executes(context -> {
-                    status(context.getSource(), config, service);
+                    status(context.getSource(), config, service, translator);
                     return 1;
                 }))
                 .then(ClientCommands.literal("reload").executes(context -> {
@@ -59,6 +60,21 @@ public final class TranslateCommand {
                     context.getSource().sendFeedback(Component.literal("§a配置已重新加载，缓存已清空"));
                     return 1;
                 }))
+                .then(ClientCommands.literal("debug")
+                        .then(ClientCommands.literal("on").executes(context -> {
+                            config.debugLog = true;
+                            config.save();
+                            translator.resetCounters();
+                            context.getSource().sendFeedback(Component.literal(
+                                    "§a调试模式已开启：会在聊天栏打印每条消息是「翻译」还是「跳过（原因）」"));
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(context -> {
+                            config.debugLog = false;
+                            config.save();
+                            context.getSource().sendFeedback(Component.literal("§c调试模式已关闭"));
+                            return 1;
+                        })))
                 .then(ClientCommands.literal("incoming").then(ClientCommands.literal("on").executes(context -> {
                     config.translateIncoming = true;
                     config.save();
@@ -115,16 +131,20 @@ public final class TranslateCommand {
         thread.start();
     }
 
-    private static void status(FabricClientCommandSource source, TranslatorConfig config, TranslationService service) {
+    private static void status(FabricClientCommandSource source, TranslatorConfig config,
+                               TranslationService service, ChatTranslator translator) {
         source.sendFeedback(Component.literal("§8===== §bHypixel 聊天翻译 §8====="));
         source.sendFeedback(Component.literal("§7总开关: " + onOff(config.enabled)
                 + " §8| §7收到翻译: " + onOff(config.translateIncoming)
-                + " §8| §7发送翻译: " + onOff(config.translateOutgoing)));
+                + " §8| §7发送翻译: " + onOff(config.translateOutgoing)
+                + " §8| §7调试: " + onOff(config.debugLog)));
         source.sendFeedback(Component.literal("§7模型: §f" + config.model
-                + " §8| §7API Key: " + (config.hasApiKey() ? "§a已配置" : "§c未配置")));
+                + " §8| §7API Key: " + (config.hasApiKey() ? "§a已配置" : "§c未配置")
+                + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条"));
         source.sendFeedback(Component.literal("§7本分钟请求: §f" + service.usedRequestsThisMinute()
                 + "§7/§f" + config.requestsPerMinute
-                + " §8| §7配置文件: §f" + TranslatorConfig.configPath().getFileName()));
+                + " §8| §7中文判定阈值: §f" + config.chineseRatioThreshold));
+        source.sendFeedback(Component.literal(translator.counters()));
     }
 
     private static String onOff(boolean value) {

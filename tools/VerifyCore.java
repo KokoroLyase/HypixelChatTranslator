@@ -5,12 +5,14 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.util.CommandMessage;
+import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
 
 /**
  * 离线验证：不启动 Minecraft，直接验证翻译核心逻辑（语言判断、命令解析、DeepSeek 请求/响应）。
@@ -28,6 +30,7 @@ public class VerifyCore {
     public static void main(String[] args) throws Exception {
         langUtils();
         commandSplit();
+        hypixelSamples();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -64,6 +67,18 @@ public class VerifyCore {
         check("截断后带省略号", truncated.endsWith("…"));
         checkEq("在词边界切断", "word word word…", truncated);
         check("连续无空格也能硬切", LangUtils.truncateForChat("a".repeat(50), 10).length() <= 10);
+
+        // v1.0.1 新增：汉字占比 / 正文提取 / 中文标点
+        checkEq("纯中文占比 1.0", 1.0, LangUtils.hanRatio("你购买了金苹果"));
+        checkEq("纯英文占比 0.0", 0.0, LangUtils.hanRatio("rush mid now"));
+        check("带本地化队伍名的英文喊话占比很低", LangUtils.hanRatio("[MVP+] [红队] Steve: rush mid") < 0.2);
+        check("中文击杀播报占比不高（所以不能只看占比）", LangUtils.hanRatio("isabellab2012被Venomed击杀。") < 0.2);
+        check("识别中文标点：句号", LangUtils.containsCjkPunctuation("hello。"));
+        check("识别中文标点：右角括号", LangUtils.containsCjkPunctuation("hbs_」被逼入末路"));
+        check("识别中文标点：全角问号", LangUtils.containsCjkPunctuation("有人进攻？"));
+        check("英文标点不算中文标点", !LangUtils.containsCjkPunctuation("stop! why? ok."));
+        checkEq("取冒号后的正文", "rush mid", LangUtils.messageBody("[MVP+] [红队] Steve: rush mid"));
+        checkEq("没有冒号时用整条", "hello world", LangUtils.messageBody("hello world"));
     }
 
     private static void commandSplit() {
@@ -82,6 +97,57 @@ public class VerifyCore {
         check("空命令返回 null", CommandMessage.split("", config.translateCommandArgs) == null);
         check("null 返回 null", CommandMessage.split(null, config.translateCommandArgs) == null);
         check("只有命令名返回 null", CommandMessage.split("msg", config.translateCommandArgs) == null);
+    }
+
+    /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
+    private static void hypixelSamples() {
+        System.out.println("== Hypixel 真实聊天样本回归 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        // bug 1：中文客户端的英文喊话带本地化队伍名 [红队]，以前「见汉字就跳过」导致整条不翻译
+        assertTranslate(config, "[MVP+] [红队] Mguappe: rush");
+        assertTranslate(config, "[MVP+] [红队] Enimoria2013: blue u will delete by yellow so stop kil us");
+        assertTranslate(config, "[MVP+] [红队] Enimoria2013: yellow stop cheating! u Scaffold");
+        assertTranslate(config, "[MVP+] [红队] Mguappe: u def obby dia");
+        assertTranslate(config, "[MVP+] [红队] 小张: inc mid");
+        assertTranslate(config, "Chunky_Monk: omw mid");
+        assertTranslate(config, "+4 Bed Wars XP (Diamonds)");
+
+        // 服务器本地化的中文消息不能被误判成英文（否则会白花钱并多出一行重复译文）
+        assertSkip(config, "团队 > Mguappe: 有人进攻！");
+        assertSkip(config, "你购买了金苹果");
+        assertSkip(config, "+11 tokens! (时长奖励)");
+        assertSkip(config, "isabellab2012被Venomed击杀。");
+        assertSkip(config, "hbs_」被NikeFig」逼入末路。");
+        assertSkip(config, "2bi7因踩到了Enimoria2013的烧烤酱而跌落边缘。");
+        assertSkip(config, "Fxring被MikahManz07塞进了戴维·琼斯的箱子");
+        assertSkip(config, "[MVP+] [红队] 小张: 你们去中路");
+
+        // 默认忽略规则仍要能挡住经验/代币刷屏
+        boolean xpIgnored = false;
+        for (String regex : config.ignorePatterns) {
+            if (Pattern.compile(regex, Pattern.CASE_INSENSITIVE)
+                    .matcher("+15 Bed Wars XP (Time Played)").find()) {
+                xpIgnored = true;
+            }
+        }
+        check("+15 Bed Wars XP 命中默认 ignorePatterns", xpIgnored);
+
+        // 自己消息的回显不翻译
+        check("自己的回显跳过",
+                !IncomingFilter.decide("[MVP+] [红队] Steve: rush mid", config, false, true).translate());
+    }
+
+    private static void assertTranslate(TranslatorConfig config, String text) {
+        IncomingFilter.Decision decision = IncomingFilter.decide(text, config, false, false);
+        check("应翻译: " + text + (decision.translate() ? "" : " -> 实际跳过(" + decision.reason() + ")"),
+                decision.translate());
+    }
+
+    private static void assertSkip(TranslatorConfig config, String text) {
+        IncomingFilter.Decision decision = IncomingFilter.decide(text, config, false, false);
+        check("应跳过: " + text + (decision.translate() ? " -> 实际翻译了" : " (" + decision.reason() + ")"),
+                !decision.translate());
     }
 
     private static void assertSplit(String label, String command, String head, String message, TranslatorConfig config) {
@@ -167,11 +233,16 @@ public class VerifyCore {
             checkEq("user 内容", "Hello world", messages.get(1).getAsJsonObject().get("content").getAsString());
             String systemPrompt = messages.get(0).getAsJsonObject().get("content").getAsString();
             check("system 提示词提示了中文方向", systemPrompt.contains("Simplified Chinese"));
+            // v1.0.1：术语表要注入「收到消息」方向的提示词，解决 U def / obby / dia 不翻译的问题
+            check("术语表已注入", systemPrompt.contains("obby=黑曜石") && systemPrompt.contains("术语与缩写对照表"));
+            check("术语表要求按含义翻译", systemPrompt.contains("不要保留英文原样"));
+            check("提示词说明了要保留 [红队] 这类前缀", systemPrompt.contains("[红队]"));
 
             new DeepSeekClient(config).translate("你好", Direction.OUTGOING);
             JsonObject outgoing = JsonParser.parseString(server.lastBody).getAsJsonObject();
             String outgoingPrompt = outgoing.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
             check("发送方向提示词提示了英文", outgoingPrompt.contains("English"));
+            check("发送方向不注入中文术语表", !outgoingPrompt.contains("obby=黑曜石"));
         }
     }
 

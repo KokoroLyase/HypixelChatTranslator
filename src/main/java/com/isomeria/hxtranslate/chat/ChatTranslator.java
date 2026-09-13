@@ -5,6 +5,7 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.CommandMessage;
+import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.mojang.authlib.GameProfile;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
@@ -20,6 +21,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -40,6 +42,12 @@ public final class ChatTranslator {
     /** 记住最近发出的英文，避免服务器回显时又被翻译回中文。 */
     private static final int RECENT_SENT_LIMIT = 8;
 
+    /** 没配 API Key 时的提示间隔，避免每条消息都刷屏。 */
+    private static final long NO_KEY_WARN_INTERVAL_MS = 60_000L;
+
+    /** 调试输出里原文的截断长度。 */
+    private static final int DEBUG_TEXT_LIMIT = 60;
+
     private final TranslatorConfig config;
     private final TranslationService service;
 
@@ -47,8 +55,14 @@ public final class ChatTranslator {
     private final List<Pattern> compiledPatterns = new ArrayList<>();
     private List<String> compiledFrom;
 
+    private final AtomicInteger receivedCount = new AtomicInteger();
+    private final AtomicInteger translatedCount = new AtomicInteger();
+    private final AtomicInteger skippedCount = new AtomicInteger();
+    private final AtomicInteger failedCount = new AtomicInteger();
+
     /** 模组自己调用 sendChat/sendCommand 时要忽略事件，否则会无限递归。 */
     private volatile boolean programmaticSend;
+    private volatile long lastMissingKeyWarning;
 
     public ChatTranslator(TranslatorConfig config, TranslationService service) {
         this.config = config;
@@ -86,25 +100,33 @@ public final class ChatTranslator {
             return;
         }
         String text = plain.strip();
-        if (text.isEmpty() || text.length() > config.maxIncomingChars) {
-            return;
-        }
-        // 已经是中文、或者不像英文，就不浪费 token
-        if (LangUtils.containsHan(text)) {
-            return;
-        }
-        if (LangUtils.countLatinLetters(text) < config.minLatinLetters) {
-            return;
-        }
-        if (isIgnored(text)) {
-            return;
-        }
-        if (config.skipOwnEcho && isOwnEcho(text)) {
+        if (text.isEmpty()) {
             return;
         }
 
-        service.submit(text, Direction.INCOMING, (ok, translated, error) -> {
+        receivedCount.incrementAndGet();
+
+        // 关键：不能「含汉字就跳过」。Hypixel 按客户端语言把队伍名本地化成 [红队]，
+        // 于是英文喊话 "[MVP+] [红队] Steve: rush mid" 里也有汉字。
+        // 具体判断规则见 IncomingFilter（那里有完整的说明和离线回归测试）。
+        IncomingFilter.Decision decision = IncomingFilter.decide(
+                text, config, isIgnored(text), config.skipOwnEcho && isOwnEcho(text));
+        if (!decision.translate()) {
+            skipIncoming(decision.reason(), text);
+            return;
+        }
+        if (!service.isReady()) {
+            skipIncoming("未配置 API Key", text);
+            warnMissingKeyThrottled();
+            return;
+        }
+
+        boolean accepted = service.submit(text, Direction.INCOMING, (ok, translated, error) -> {
             if (!ok) {
+                failedCount.incrementAndGet();
+                if (config.debugLog) {
+                    debug("翻译失败: " + error + " §8| " + shorten(text));
+                }
                 if (config.showErrorsInChat && config.enabled) {
                     Feedback.error("翻译失败: " + error);
                 }
@@ -113,11 +135,48 @@ public final class ChatTranslator {
             if (!config.enabled) {
                 return;
             }
+            translatedCount.incrementAndGet();
             String line = config.includeOriginalInIncoming
                     ? "§7" + text + " §8▏ " + config.incomingPrefix + translated
                     : config.incomingPrefix + translated;
             Feedback.info(line);
         });
+
+        if (!accepted) {
+            skipIncoming("超出每分钟限流", text);
+            return;
+        }
+        debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s", decision.hanRatio() * 100, shorten(text)));
+    }
+
+    private void skipIncoming(String reason, String text) {
+        skippedCount.incrementAndGet();
+        debug("跳过（" + reason + "）: " + shorten(text));
+    }
+
+    /** 没配 Key 时给一次可见的提示，否则用户只会觉得“模组没反应”。 */
+    private void warnMissingKeyThrottled() {
+        long now = System.currentTimeMillis();
+        if (now - lastMissingKeyWarning < NO_KEY_WARN_INTERVAL_MS) {
+            return;
+        }
+        lastMissingKeyWarning = now;
+        Feedback.error("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
+    }
+
+    private void debug(String message) {
+        if (!config.debugLog) {
+            return;
+        }
+        HxTranslateClient.LOGGER.info("[debug] {}", message);
+        Feedback.hint(message);
+    }
+
+    private static String shorten(String text) {
+        String oneLine = text.replace('\n', ' ').replace('\r', ' ');
+        return oneLine.length() <= DEBUG_TEXT_LIMIT
+                ? oneLine
+                : oneLine.substring(0, DEBUG_TEXT_LIMIT) + "…";
     }
 
     private boolean isIgnored(String text) {
@@ -176,6 +235,19 @@ public final class ChatTranslator {
         }
     }
 
+    /** 给 /hxtranslate status 用的统计信息。 */
+    public String counters() {
+        return "§7收到 §f" + receivedCount.get() + " §7条 §8| §a已翻译 §f" + translatedCount.get()
+                + " §8| §e跳过 §f" + skippedCount.get() + " §8| §c失败 §f" + failedCount.get();
+    }
+
+    public void resetCounters() {
+        receivedCount.set(0);
+        translatedCount.set(0);
+        skippedCount.set(0);
+        failedCount.set(0);
+    }
+
     // ------------------------------------------------------------------
     // 发送消息
     // ------------------------------------------------------------------
@@ -220,6 +292,7 @@ public final class ChatTranslator {
                     sendProgrammatically(connection, outgoing, false);
                     Feedback.info(config.outgoingPrefix + outgoing);
                 } else {
+                    failedCount.incrementAndGet();
                     sendProgrammatically(connection, message, false);
                     if (config.showErrorsInChat) {
                         Feedback.error("翻译失败，已发送原文: " + error);
@@ -284,8 +357,11 @@ public final class ChatTranslator {
                     }
                     rememberSent(outgoing);
                     Feedback.info(config.outgoingPrefix + "/" + payload);
-                } else if (config.showErrorsInChat) {
-                    Feedback.error("命令内容翻译失败，已发送原文: " + error);
+                } else {
+                    failedCount.incrementAndGet();
+                    if (config.showErrorsInChat) {
+                        Feedback.error("命令内容翻译失败，已发送原文: " + error);
+                    }
                 }
             });
         });

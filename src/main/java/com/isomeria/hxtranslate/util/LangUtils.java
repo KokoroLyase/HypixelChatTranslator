@@ -50,6 +50,85 @@ public final class LangUtils {
         return count;
     }
 
+    /** 统计文本里汉字的个数。 */
+    public static int countHan(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (isHan(cp)) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 汉字在「汉字 + 拉丁字母」里占的比例，用来判断这条消息本身是不是中文。
+     *
+     * <p>为什么不能简单地「含汉字就跳过」：Hypixel 会按客户端语言把队伍名本地化成
+     * {@code [红队]}，于是英文喊话会变成 {@code [MVP+] [红队] Steve: rush mid} —— 里面确实有汉字，
+     * 但它显然是一条英文消息，必须翻译。真正的中文消息汉字占比会很高。
+     *
+     * @return 0.0 ~ 1.0；没有汉字时返回 0
+     */
+    public static double hanRatio(String text) {
+        int han = countHan(text);
+        if (han == 0) {
+            return 0.0;
+        }
+        int total = han + countLatinLetters(text);
+        return total == 0 ? 0.0 : (double) han / total;
+    }
+
+    /**
+     * 是否包含中文/全角标点（。！？；，、」等）。
+     *
+     * <p>这是判断「本来就是中文消息」的强信号：Hypixel 本地化过的中文播报几乎必然带这些标点
+     * （例如 {@code isabellab2012被Venomed击杀。}），而英文消息几乎不会用全角标点。
+     * 光看汉字占比不够——上面这条消息里英文玩家名很长，汉字占比只有 0.15。
+     */
+    public static boolean containsCjkPunctuation(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (isCjkPunctuation(cp)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isCjkPunctuation(int cp) {
+        return (cp >= 0x3000 && cp <= 0x303F)      // 、。〈〉《》「」【】〜 等
+                || (cp >= 0xFF01 && cp <= 0xFF0F)  // 全角 ！＂＃＄％＆＇（）＊＋，－．／
+                || (cp >= 0xFF1A && cp <= 0xFF20)  // 全角 ：；＜＝＞？＠
+                || (cp >= 0xFF3B && cp <= 0xFF40)
+                || (cp >= 0xFF5B && cp <= 0xFF65)
+                || cp == 0x2026;                   // …
+    }
+
+    /**
+     * 取聊天正文：玩家喊话通常是 {@code 前缀 玩家名: 正文}，而前缀里可能带本地化的队伍名
+     * （{@code [红队]}）。判断语言时只看正文更准。
+     */
+    public static String messageBody(String text) {
+        if (text == null) {
+            return "";
+        }
+        int idx = text.indexOf(": ");
+        if (idx >= 0 && idx + 2 < text.length()) {
+            return text.substring(idx + 2);
+        }
+        return text;
+    }
+
     /** 缓存用的归一化 key：去掉首尾空白、压缩连续空白、统一小写。 */
     public static String normalizeKey(String text) {
         if (text == null) {

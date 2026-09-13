@@ -10,6 +10,7 @@
 
 > 仓库：<https://github.com/KokoroLyase/HypixelChatTranslator>
 > 下载：见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)（也可以点 [Actions](https://github.com/KokoroLyase/HypixelChatTranslator/actions) 里任意一次成功构建，在 Artifacts 里下载）。
+> 更新记录：[CHANGELOG.md](CHANGELOG.md)
 
 ---
 
@@ -28,7 +29,7 @@
 1. 安装 **Fabric Loader ≥ 0.19.3**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.0+26.2.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.2)）。
-3. 把本模组 **`hx-chat-translator-1.0.0.jar`** 放进同一个 `mods` 文件夹：
+3. 把本模组 **`hx-chat-translator-<版本>.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
@@ -61,12 +62,13 @@
 ### 游戏内命令
 
 ```
-/hxtranslate                 查看当前状态
+/hxtranslate                 查看当前状态（含消息统计）
 /hxtranslate on|off          开关总闸
 /hxtranslate incoming on|off 只控制「收消息翻译」
 /hxtranslate outgoing on|off 只控制「发消息翻译」
 /hxtranslate key <Key>       设置 DeepSeek API Key
 /hxtranslate test <文本>      测试翻译一段文本（结果会打印在聊天栏）
+/hxtranslate debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
 /hxtranslate reload          重新读取配置文件并清空缓存
 ```
 
@@ -101,6 +103,8 @@
 | `outgoingPrefix` | `§8[§a→EN§8] §f` | 自己发出去后的英文回显前缀 |
 | `includeOriginalInIncoming` | `false` | 译文里是否再带上原文 |
 | `minLatinLetters` | `2` | 至少几个拉丁字母才认为“像英文” |
+| `chineseRatioThreshold` | `0.4` | 正文里汉字占比达到多少就认为「本来就是中文」而跳过（见下方「为什么需要这个阈值」） |
+| `glossary` | 约 50 条 | Hypixel / Bed Wars 术语表，`缩写=含义`；会追加到提示词里，要求模型按含义翻译而不是保留 `obby`/`dia`/`u def` 这类英文缩写。清空即可关闭 |
 | `maxIncomingChars` | `240` | 超过这个长度不翻译 |
 | `maxOutgoingChars` | `256` | 译文最大长度（原版聊天框上限 256，超长会被服务器拒绝），超出会按词边界截断并加省略号 |
 | `requestsPerMinute` | `40` | 每分钟最多请求次数（防刷屏烧钱） |
@@ -109,15 +113,38 @@
 | `ignorePatterns` | 若干正则 | 命中的消息不翻译（服务器提示音效等） |
 | `skipOwnEcho` | `true` | 自己发出的消息被服务器回显时不再翻回中文 |
 | `showErrorsInChat` | `true` | 出错时在聊天栏提示 |
-| `debugLog` | `false` | 往 `logs/latest.log` 写详细日志 |
+| `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/hxtranslate debug on`） |
 | `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词，可自行微调语气 |
+| `configVersion` | 当前版本号 | 配置结构版本，请勿手改；升级模组时会自动把老版提示词/术语表升级到新默认值，你自定义过的内容不会被覆盖 |
+
+### 为什么需要 `chineseRatioThreshold`
+
+你的客户端是中文时，Hypixel 会把队伍名**本地化**后塞进聊天内容，于是英文喊话长这样：
+
+```
+[MVP+] [红队] Mguappe: rush        ← 里面有汉字，但这是英文消息，必须翻译
+```
+
+而服务器自己发的中文消息长这样：
+
+```
+isabellab2012被Venomed击杀。         ← 汉字占比只有 0.15（玩家名很长），但它是中文
+```
+
+所以判断逻辑用了三条信号，缺一不可（实现在 `IncomingFilter`，有专门的离线回归测试）：
+
+1. **含中文/全角标点**（。！？；，、」等）→ 判为中文，跳过；
+2. **只看冒号后面的正文**的汉字占比 ≥ `chineseRatioThreshold` → 判为中文，跳过；
+3. 正文里拉丁字母太少 → 不是英文，跳过。
+
+如果遇到误判，可以调这个阈值（调低 = 更容易判成英文去翻译，调高 = 更保守）。
 
 ## 6. 工作原理
 
 ```
 收到消息:  ChatListener/系统消息 → Fabric ClientReceiveMessageEvents
-           → 过滤（是否已是中文 / 是否像英文 / 是否命中忽略规则 / 是否自己的回显）
-           → 线程池 POST https://api.deepseek.com/chat/completions
+           → IncomingFilter 过滤（中文标点? / 正文汉字占比? / 有英文吗? / 忽略规则? / 自己的回显?）
+           → 线程池 POST https://api.deepseek.com/chat/completions（带上术语表）
            → 回到客户端主线程 → Hud.getChat().addClientSystemMessage("[译] …")
 
 发送消息:  回车 → Fabric ClientSendMessageEvents.ALLOW_CHAT
@@ -154,6 +181,20 @@
 **服务器里出现的消息太多，翻译刷屏 / 太费钱**
 把“收到的消息翻译”关掉：`/hxtranslate incoming off`，或调低 `requestsPerMinute`、往 `ignorePatterns` 里加正则。
 
+**玩家喊话没被翻译 / 有些消息没有译文**
+先 `/hxtranslate debug on`，模组会逐条打印是「正在翻译」还是「跳过（原因）」。常见原因：
+
+- 提示「未配置 API Key」→ 去配置 Key；
+- 提示「超出每分钟限流」→ 调大 `requestsPerMinute`；
+- 提示「含中文标点 / 已经是中文」→ 这条本来就是中文（服务器按你的客户端语言本地化过）；
+- 提示「命中 ignorePatterns」→ 你的忽略正则把它挡了。
+
+> v1.0.0 有个已知 bug：中文客户端收到的英文喊话带着本地化的 `[红队]` 前缀，被误判成中文而整条跳过。**v1.0.1 已修复**，请升级。
+
+**`obby` / `dia` / `u def` / `inc` 这类缩写没有被翻译**
+v1.0.1 起内置了约 50 条 Bed Wars 术语表并要求模型按含义翻译。如果还有不认识的缩写，
+直接往配置的 `glossary` 里加一条（例如 `"gapple=金苹果"`），然后 `/hxtranslate reload` 即可生效。
+
 **在 Hypixel 用会被封号吗？**
 本模组只做「读取聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏，属于常见的聊天辅助类客户端模组。但 Hypixel 的模组政策由服务器单方面解释，请自行阅读其 *Allowed Modifications* 并自行承担风险。
 
@@ -167,7 +208,7 @@
 ```bash
 export JAVA_HOME=/path/to/jdk-25
 ./gradlew build
-# 产物: build/libs/hx-chat-translator-1.0.0.jar
+# 产物: build/libs/hx-chat-translator-<版本>.jar
 ```
 
 只用到了 Fabric API（`fabric-message-api-v1` / `fabric-key-mapping-api-v1` / `fabric-command-api-v2` / `fabric-lifecycle-events-v1`），无需额外依赖。

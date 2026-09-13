@@ -25,10 +25,20 @@ import java.util.Map;
  */
 public final class TranslatorConfig {
 
+    /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
+    public static final int CURRENT_CONFIG_VERSION = 2;
+
+    /** 老版本提示词的识别标记，只在迁移时使用。 */
+    private static final String LEGACY_INCOMING_MARKER = "Keep common gaming abbreviations meaningful";
+    private static final String LEGACY_OUTGOING_MARKER = "let's go mid";
+
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
             .disableHtmlEscaping()
             .create();
+
+    /** 配置文件结构版本，请勿手动修改。 */
+    public int configVersion = CURRENT_CONFIG_VERSION;
 
     // ------------------------------------------------------------------
     // DeepSeek
@@ -74,7 +84,7 @@ public final class TranslatorConfig {
     /** 出错时在聊天栏提示。 */
     public boolean showErrorsInChat = true;
 
-    /** 输出调试日志到 latest.log。 */
+    /** 调试模式：把每条消息的处理结果写进 latest.log，并同步打印到聊天栏。 */
     public boolean debugLog = false;
 
     // ------------------------------------------------------------------
@@ -97,6 +107,15 @@ public final class TranslatorConfig {
     /** 一条消息至少包含多少个拉丁字母才认为“像英文”。 */
     public int minLatinLetters = 2;
 
+    /**
+     * 汉字在「汉字 + 拉丁字母」中的占比达到多少，就认为这条消息本来就是中文，不再翻译。
+     *
+     * <p>这个阈值存在的原因：Hypixel 会按客户端语言把队伍名本地化成 {@code [红队]}，
+     * 于是 {@code [MVP+] [红队] Steve: rush mid} 这种英文喊话里也带汉字（占比约 0.1），
+     * 必须照样翻译；而真正的中文消息占比通常在 0.6 以上。默认 0.4 能干净地分开这两种情况。
+     */
+    public double chineseRatioThreshold = 0.4;
+
     /** 超过这个长度的消息不翻译（防止刷屏/超长文本）。 */
     public int maxIncomingChars = 240;
 
@@ -114,6 +133,63 @@ public final class TranslatorConfig {
             "^\\+\\d+ .*(XP|Coins|Tokens)",
             "^(You|A player) (joined|left)",
             "^Sending you to"
+    ));
+
+    /**
+     * Hypixel / Bed Wars 术语与缩写对照表，格式 {@code 英文=中文含义}。
+     *
+     * <p>会追加到「收到消息」的提示词里，要求模型按含义翻译而不是原样保留英文缩写。
+     * 清空这个列表即可关闭术语表。
+     */
+    public List<String> glossary = new ArrayList<>(List.of(
+            "obby=黑曜石（obsidian）",
+            "dia=钻石（diamond）",
+            "dias=钻石",
+            "def=防守（defend）；\"u def\"=你来防守",
+            "inc=有人进攻（incoming）",
+            "mid=中路、中间的资源点",
+            "gen=资源点、刷资源机（generator）",
+            "rush=速攻、直接冲家",
+            "bed=床（要破坏的目标）",
+            "final=终杀（final kill）",
+            "void=虚空",
+            "kb=击退（knockback）",
+            "pot=药水（potion）",
+            "invis=隐身药水",
+            "jump=跳跃药水",
+            "speed=速度药水",
+            "pearl=末影珍珠",
+            "fb=火球（fireball）",
+            "gap=金苹果（golden apple）",
+            "gaps=金苹果",
+            "sharp=锋利附魔",
+            "prot=保护附魔",
+            "scaffold=搭桥（多指作弊搭桥）",
+            "reach=攻击距离（多指作弊）",
+            "hack=开挂",
+            "hacker=外挂玩家",
+            "cheater=作弊玩家",
+            "noob=菜鸟、新手",
+            "ez=太简单了（嘲讽）",
+            "gg=打得好",
+            "wp=干得漂亮",
+            "afk=挂机",
+            "brb=马上回来",
+            "gtg=我要下了",
+            "omw=在路上",
+            "ty=谢谢",
+            "thx=谢谢",
+            "np=不客气",
+            "sry=抱歉",
+            "pls=请",
+            "u=你",
+            "ur=你的、你是",
+            "r=are（例如 \"r u ok\" = 你还好吗）",
+            "y=是",
+            "n=不",
+            "1v1=单挑",
+            "team=队伍",
+            "island=岛"
     ));
 
     /**
@@ -140,15 +216,19 @@ public final class TranslatorConfig {
 
     public String incomingSystemPrompt = """
             You are a translation engine embedded in a Minecraft client.
-            Task: translate the user's chat message into Simplified Chinese.
+            Task: translate the received chat message into Simplified Chinese.
             Rules:
-            - The text comes from the Hypixel Minecraft server, so keep player names, ranks ([MVP+], [VIP]),
-              item names, numbers, coordinates and server slang unchanged when they are already clear.
-            - Keep common gaming abbreviations meaningful (e.g. "gg", "wp", "afk", "brb", "1v1") and add a short
-              Chinese explanation only when the meaning is not obvious.
+            - The text comes from the Hypixel Minecraft server. It usually starts with server-added prefixes
+              such as "[MVP+]", a team tag like "[红队]" or a player name followed by ":". Keep those prefixes,
+              player names, numbers and coordinates exactly as they are, and translate only the real message.
+            - A Chinese team tag such as "[红队]" is added by the server because the client language is Chinese.
+              It does NOT mean the message itself is Chinese: when the message body is English, translate it.
+            - Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the English
+              abbreviation (for example "obby" -> 黑曜石, "dia" -> 钻石, "u def" -> 你来防守, "inc" -> 有人进攻,
+              "mid" -> 中路). Use the glossary below when it is provided.
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
             - Do NOT add quotes, prefixes, emojis or any extra text.
-            - If the text is already Chinese, output it unchanged.
+            - If the message body is already Chinese, output it unchanged.
             Output only the translated text.""";
 
     public String outgoingSystemPrompt = """
@@ -157,7 +237,8 @@ public final class TranslatorConfig {
             Hypixel Minecraft server.
             Rules:
             - Keep player names, numbers, coordinates and Minecraft terms unchanged.
-            - Use short, natural gaming English (e.g. "gg", "nice", "let's go mid").
+            - Use short, natural gaming English. Well-known Hypixel / Bed Wars abbreviations are welcome when
+              they are unambiguous ("def", "inc", "mid", "obby", "dia", "gg"), but never produce mixed-language text.
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
             - Do NOT add quotes, prefixes, emojis, greetings or any extra text.
             - If the text is already English, output it unchanged.
@@ -187,11 +268,51 @@ public final class TranslatorConfig {
                 throw new JsonSyntaxException("配置文件为空");
             }
             loaded.normalize();
+            loaded.migrate();
             return loaded;
         } catch (IOException | JsonSyntaxException e) {
             HxTranslateClient.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
             return new TranslatorConfig();
         }
+    }
+
+    /**
+     * 把老版本配置文件里的内容升级到新版默认值。
+     *
+     * <p>只覆盖「还是老版默认值」或空白的字段，用户自己改过的提示词不会被冲掉。
+     */
+    private void migrate() {
+        if (configVersion >= CURRENT_CONFIG_VERSION) {
+            return;
+        }
+        TranslatorConfig defaults = new TranslatorConfig();
+        boolean changed = false;
+
+        if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKER)) {
+            incomingSystemPrompt = defaults.incomingSystemPrompt;
+            changed = true;
+        }
+        if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKER)) {
+            outgoingSystemPrompt = defaults.outgoingSystemPrompt;
+            changed = true;
+        }
+        if (glossary == null || glossary.isEmpty()) {
+            glossary = defaults.glossary;
+            changed = true;
+        }
+
+        configVersion = CURRENT_CONFIG_VERSION;
+        HxTranslateClient.LOGGER.info("配置已升级到 v{}（{}）", CURRENT_CONFIG_VERSION,
+                changed ? "提示词与术语表已更新" : "保留了你的自定义内容");
+        save();
+    }
+
+    private static boolean needsPromptUpgrade(String prompt, String legacyMarker) {
+        if (prompt == null || prompt.isBlank()) {
+            return true;
+        }
+        // 老版本的默认提示词：还带着识别标记，说明没被自定义过，可以安全替换
+        return prompt.contains(legacyMarker);
     }
 
     /** 热重载：把磁盘内容覆盖到当前实例（保持其它地方的引用仍然有效）。 */
@@ -221,6 +342,7 @@ public final class TranslatorConfig {
             model = "deepseek-chat";
         }
         minLatinLetters = Math.max(1, minLatinLetters);
+        chineseRatioThreshold = Math.min(1.0, Math.max(0.05, chineseRatioThreshold));
         maxIncomingChars = Math.max(16, maxIncomingChars);
         maxOutgoingChars = Math.max(16, maxOutgoingChars);
         requestsPerMinute = Math.max(1, requestsPerMinute);
@@ -230,6 +352,9 @@ public final class TranslatorConfig {
         temperature = Math.min(2.0, Math.max(0.0, temperature));
         if (ignorePatterns == null) {
             ignorePatterns = new ArrayList<>();
+        }
+        if (glossary == null) {
+            glossary = new ArrayList<>();
         }
         if (translateCommandArgs == null) {
             translateCommandArgs = new LinkedHashMap<>();
@@ -243,6 +368,7 @@ public final class TranslatorConfig {
     }
 
     private void copyFrom(TranslatorConfig o) {
+        this.configVersion = o.configVersion;
         this.apiKey = o.apiKey;
         this.apiBaseUrl = o.apiBaseUrl;
         this.model = o.model;
@@ -260,11 +386,13 @@ public final class TranslatorConfig {
         this.outgoingPrefix = o.outgoingPrefix;
         this.includeOriginalInIncoming = o.includeOriginalInIncoming;
         this.minLatinLetters = o.minLatinLetters;
+        this.chineseRatioThreshold = o.chineseRatioThreshold;
         this.maxIncomingChars = o.maxIncomingChars;
         this.maxOutgoingChars = o.maxOutgoingChars;
         this.requestsPerMinute = o.requestsPerMinute;
         this.cacheSize = o.cacheSize;
         this.ignorePatterns = o.ignorePatterns;
+        this.glossary = o.glossary;
         this.translateCommandArgs = o.translateCommandArgs;
         this.incomingSystemPrompt = o.incomingSystemPrompt;
         this.outgoingSystemPrompt = o.outgoingSystemPrompt;

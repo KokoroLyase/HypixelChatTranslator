@@ -59,7 +59,7 @@ public final class HxTranslateClient implements ClientModInitializer {
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(minecraft -> service.shutdown());
 
-        TranslateCommand.register(config, service);
+        TranslateCommand.register(config, service, translator);
 
         if (!config.hasApiKey()) {
             LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}", TranslatorConfig.configPath());
@@ -73,7 +73,7 @@ public final class HxTranslateClient implements ClientModInitializer {
             Feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
             Feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
-            Feedback.hint("F6 开关翻译，/hxtranslate status 查看状态");
+            Feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
         }
     }
 }

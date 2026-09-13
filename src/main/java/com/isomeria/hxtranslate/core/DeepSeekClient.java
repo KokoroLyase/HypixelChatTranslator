@@ -104,16 +104,29 @@ public final class DeepSeekClient {
         root.addProperty("temperature", config.temperature);
         root.addProperty("max_tokens", config.maxTokens);
 
-        String systemPrompt = direction.toChinese()
-                ? config.incomingSystemPrompt
-                : config.outgoingSystemPrompt;
-
         JsonArray messages = new JsonArray();
-        messages.add(message("system", systemPrompt));
+        messages.add(message("system", buildSystemPrompt(direction)));
         messages.add(message("user", text));
         root.add("messages", messages);
 
         return root.toString();
+    }
+
+    /**
+     * 组装系统提示词。
+     *
+     * <p>翻译方向是「英→中」时，把配置里的术语表追加进去，要求模型把 obby / dia / u def 这类
+     * Hypixel 缩写按含义翻成中文，而不是原样保留英文。
+     */
+    private String buildSystemPrompt(Direction direction) {
+        String base = direction.toChinese() ? config.incomingSystemPrompt : config.outgoingSystemPrompt;
+        if (!direction.toChinese() || config.glossary == null || config.glossary.isEmpty()) {
+            return base;
+        }
+        return base + "\n\n"
+                + "Minecraft / Hypixel / Bed Wars 术语与缩写对照表（必须按含义翻译成中文，"
+                + "不要保留英文原样；同一缩写有多种含义时按上下文选择最合适的一个）：\n"
+                + String.join("；", config.glossary);
     }
 
     private static JsonObject message(String role, String content) {
