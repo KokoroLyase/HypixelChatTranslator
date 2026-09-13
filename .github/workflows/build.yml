@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build
+        run: ./gradlew build --no-daemon --console=plain
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: hx-chat-translator
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+      # 打 v* 标签时自动发布 Release 并附上 jar；已存在则覆盖上传
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            && gh release upload "$GITHUB_REF_NAME" build/libs/*.jar --clobber \
+            || gh release create "$GITHUB_REF_NAME" build/libs/*.jar \
+                 --title "$GITHUB_REF_NAME" --generate-notes
