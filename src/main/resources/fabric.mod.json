@@ -1,0 +1,23 @@
+{
+	"schemaVersion": 1,
+	"id": "hxtranslate",
+	"version": "${version}",
+	"name": "Hypixel Chat Translator",
+	"description": "客户端聊天自动翻译：服务器英文消息自动翻成中文；你输入的中文自动翻成英文后发送（输入英文则不处理）。翻译由 DeepSeek API 提供。",
+	"authors": [
+		"isomeria"
+	],
+	"license": "MIT",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"com.isomeria.hxtranslate.HxTranslateClient"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~26.2",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

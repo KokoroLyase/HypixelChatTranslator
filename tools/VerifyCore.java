@@ -1,0 +1,298 @@
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.isomeria.hxtranslate.config.TranslatorConfig;
+import com.isomeria.hxtranslate.core.DeepSeekClient;
+import com.isomeria.hxtranslate.core.Direction;
+import com.isomeria.hxtranslate.util.CommandMessage;
+import com.isomeria.hxtranslate.util.LangUtils;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * 离线验证：不启动 Minecraft，直接验证翻译核心逻辑（语言判断、命令解析、DeepSeek 请求/响应）。
+ *
+ * <pre>
+ * javac -encoding UTF-8 -cp build/classes/java/main:libs/* -d build/verify tools/VerifyCore.java
+ * java  -cp build/classes/java/main:build/verify:libs/* VerifyCore
+ * </pre>
+ */
+public class VerifyCore {
+
+    private static int passed = 0;
+    private static int failed = 0;
+
+    public static void main(String[] args) throws Exception {
+        langUtils();
+        commandSplit();
+        httpSuccess();
+        httpBaseUrls();
+        httpErrors();
+        requestBody();
+
+        System.out.println();
+        System.out.println("通过 " + passed + " 项，失败 " + failed + " 项");
+        if (failed > 0) {
+            System.exit(1);
+        }
+    }
+
+    // ------------------------------------------------------------------
+
+    private static void langUtils() {
+        System.out.println("== 语言判断 ==");
+        check("英文不算汉字", !LangUtils.containsHan("Hello, how are you? gg wp"));
+        check("中文算汉字", LangUtils.containsHan("你好世界"));
+        check("中英混排算汉字", LangUtils.containsHan("gg 打得不错"));
+        check("日文假名不算汉字", !LangUtils.containsHan("こんにちは"));
+        check("中文标点不算汉字", !LangUtils.containsHan("，。！？"));
+        checkEq("拉丁字母数", 5, LangUtils.countLatinLetters("abc 12 DE!"));
+        checkEq("归一化", "hello world", LangUtils.normalizeKey("  Hello \t World  "));
+        checkEq("去双引号", "你好", LangUtils.stripWrappingQuotes("\"你好\""));
+        checkEq("去中文引号", "你好", LangUtils.stripWrappingQuotes("“你好”"));
+        checkEq("无引号不变", "hello", LangUtils.stripWrappingQuotes("hello"));
+        checkEq("单个引号不处理", "\"", LangUtils.stripWrappingQuotes("\""));
+
+        checkEq("短文本不截断", "hello", LangUtils.truncateForChat("hello", 256));
+        checkEq("正好等于上限不截断", "abcde", LangUtils.truncateForChat("abcde", 5));
+        String longText = "word ".repeat(100).trim();
+        String truncated = LangUtils.truncateForChat(longText, 20);
+        check("超长被截断到上限内: " + truncated, truncated.length() <= 20);
+        check("截断后带省略号", truncated.endsWith("…"));
+        checkEq("在词边界切断", "word word word…", truncated);
+        check("连续无空格也能硬切", LangUtils.truncateForChat("a".repeat(50), 10).length() <= 10);
+    }
+
+    private static void commandSplit() {
+        System.out.println("== 命令拆解 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        assertSplit("私聊", "msg Steve 你好世界", "msg Steve ", "你好世界", config);
+        assertSplit("回复", "r 你好", "r ", "你好", config);
+        assertSplit("队伍频", "pc 集合", "pc ", "集合", config);
+        assertSplit("大小写不敏感", "MSG Steve hi", "MSG Steve ", "hi", config);
+        assertSplit("双空格", "msg  Steve  你好", "msg  Steve  ", "你好", config);
+        assertSplit("回复双空格", "r   你好", "r   ", "你好", config);
+
+        check("未配置的命令不翻译", CommandMessage.split("kill 你好", config.translateCommandArgs) == null);
+        check("没有正文时返回 null", CommandMessage.split("msg Steve", config.translateCommandArgs) == null);
+        check("空命令返回 null", CommandMessage.split("", config.translateCommandArgs) == null);
+        check("null 返回 null", CommandMessage.split(null, config.translateCommandArgs) == null);
+        check("只有命令名返回 null", CommandMessage.split("msg", config.translateCommandArgs) == null);
+    }
+
+    private static void assertSplit(String label, String command, String head, String message, TranslatorConfig config) {
+        CommandMessage.Split split = CommandMessage.split(command, config.translateCommandArgs);
+        if (split == null) {
+            fail(label + " -> 不应该为 null");
+            return;
+        }
+        checkEq(label + " head", head, split.head());
+        checkEq(label + " message", message, split.message());
+    }
+
+    // ------------------------------------------------------------------
+
+    private static void httpSuccess() throws Exception {
+        System.out.println("== DeepSeek 正常返回 ==");
+        try (MockServer server = new MockServer()) {
+            server.response = """
+                    {"id":"1","choices":[{"index":0,"message":{"role":"assistant","content":"你好，世界"},"finish_reason":"stop"}]}
+                    """;
+            DeepSeekClient client = clientFor(server, "sk-test-key");
+
+            DeepSeekClient.Result result = client.translate("Hello world", Direction.INCOMING);
+            check("请求成功", result.ok());
+            checkEq("译文", "你好，世界", result.text());
+            checkEq("请求路径", "/chat/completions", server.lastPath);
+            checkEq("鉴权头", "Bearer sk-test-key", server.lastAuth);
+            checkEq("请求方法", "POST", server.lastMethod);
+        }
+
+        // 模型有时会加引号
+        try (MockServer server = new MockServer()) {
+            server.response = """
+                    {"choices":[{"message":{"role":"assistant","content":"\\"Where are you?\\""}}]}
+                    """;
+            DeepSeekClient.Result result = clientFor(server, "sk-test").translate("你在哪", Direction.OUTGOING);
+            check("去掉模型加的引号", result.ok() && "Where are you?".equals(result.text()));
+        }
+    }
+
+    private static void httpBaseUrls() throws Exception {
+        System.out.println("== API 地址归一化 ==");
+        try (MockServer server = new MockServer()) {
+            server.response = ok("x");
+
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port + "/";
+            new DeepSeekClient(config).translate("hi", Direction.INCOMING);
+            checkEq("去掉结尾斜杠", "/chat/completions", server.lastPath);
+
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port + "/v1";
+            new DeepSeekClient(config).translate("hi", Direction.INCOMING);
+            checkEq("带 /v1 前缀", "/v1/chat/completions", server.lastPath);
+
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port + "/v1/chat/completions";
+            new DeepSeekClient(config).translate("hi", Direction.INCOMING);
+            checkEq("已是完整地址不重复拼接", "/v1/chat/completions", server.lastPath);
+        }
+    }
+
+    private static void requestBody() throws Exception {
+        System.out.println("== 请求体 ==");
+        try (MockServer server = new MockServer()) {
+            server.response = ok("translated");
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.model = "deepseek-chat";
+
+            new DeepSeekClient(config).translate("Hello world", Direction.INCOMING);
+
+            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            checkEq("model", "deepseek-chat", body.get("model").getAsString());
+            check("stream=false", !body.get("stream").getAsBoolean());
+            check("temperature 存在", body.has("temperature"));
+            check("max_tokens 存在", body.has("max_tokens"));
+
+            JsonArray messages = body.getAsJsonArray("messages");
+            checkEq("消息条数", 2, messages.size());
+            checkEq("system 角色", "system", messages.get(0).getAsJsonObject().get("role").getAsString());
+            checkEq("user 角色", "user", messages.get(1).getAsJsonObject().get("role").getAsString());
+            checkEq("user 内容", "Hello world", messages.get(1).getAsJsonObject().get("content").getAsString());
+            String systemPrompt = messages.get(0).getAsJsonObject().get("content").getAsString();
+            check("system 提示词提示了中文方向", systemPrompt.contains("Simplified Chinese"));
+
+            new DeepSeekClient(config).translate("你好", Direction.OUTGOING);
+            JsonObject outgoing = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            String outgoingPrompt = outgoing.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
+            check("发送方向提示词提示了英文", outgoingPrompt.contains("English"));
+        }
+    }
+
+    private static void httpErrors() throws Exception {
+        System.out.println("== 错误处理 ==");
+        try (MockServer server = new MockServer()) {
+            DeepSeekClient client = clientFor(server, "sk-bad");
+
+            server.status = 401;
+            server.response = "{\"error\":{\"message\":\"Authentication Fails\"}}";
+            DeepSeekClient.Result r401 = client.translate("hi", Direction.INCOMING);
+            check("401 失败", !r401.ok());
+            check("401 提示 Key 无效: " + r401.error(), r401.error().contains("API Key"));
+
+            server.status = 402;
+            server.response = "{\"error\":{\"message\":\"Insufficient Balance\"}}";
+            check("402 提示余额不足: " + client.translate("hi", Direction.INCOMING).error(),
+                    client.translate("hi", Direction.INCOMING).error().contains("余额"));
+
+            server.status = 429;
+            server.response = "{\"error\":{\"message\":\"Rate limit\"}}";
+            check("429 提示限流", client.translate("hi", Direction.INCOMING).error().contains("限流"));
+
+            server.status = 500;
+            server.response = "oops";
+            check("500 提示服务不可用", client.translate("hi", Direction.INCOMING).error().contains("服务暂时不可用"));
+
+            server.status = 200;
+            server.response = "{\"choices\":[]}";
+            DeepSeekClient.Result empty = client.translate("hi", Direction.INCOMING);
+            check("空 choices 失败", !empty.ok() && empty.error().contains("为空"));
+
+            server.status = 200;
+            server.response = "not json at all";
+            check("非 JSON 失败", !client.translate("hi", Direction.INCOMING).ok());
+        }
+
+        System.out.println("== 网络异常 ==");
+        TranslatorConfig config = new TranslatorConfig();
+        config.apiKey = "sk-test";
+        config.apiBaseUrl = "http://127.0.0.1:1";
+        config.httpTimeoutSeconds = 3;
+        DeepSeekClient.Result refused = new DeepSeekClient(config).translate("hi", Direction.INCOMING);
+        check("连接失败不抛异常", !refused.ok());
+        check("连接失败提示网络错误: " + refused.error(), refused.error().contains("网络错误"));
+
+        System.out.println("== 没有 Key ==");
+        TranslatorConfig noKey = new TranslatorConfig();
+        check("没 Key 直接失败", !new DeepSeekClient(noKey).translate("hi", Direction.INCOMING).ok());
+    }
+
+    // ------------------------------------------------------------------
+
+    private static DeepSeekClient clientFor(MockServer server, String key) {
+        TranslatorConfig config = new TranslatorConfig();
+        config.apiKey = key;
+        config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+        config.httpTimeoutSeconds = 5;
+        return new DeepSeekClient(config);
+    }
+
+    private static String ok(String content) {
+        return "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"" + content + "\"}}]}";
+    }
+
+    /** 只用于测试的本地 HTTP 服务，记录最后一次请求。 */
+    private static final class MockServer implements AutoCloseable {
+        private final HttpServer server;
+        final int port;
+        volatile int status = 200;
+        volatile String response = "{}";
+        volatile String lastPath;
+        volatile String lastAuth;
+        volatile String lastBody;
+        volatile String lastMethod;
+
+        MockServer() throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/", exchange -> {
+                lastPath = exchange.getRequestURI().getPath();
+                lastMethod = exchange.getRequestMethod();
+                lastAuth = exchange.getRequestHeaders().getFirst("Authorization");
+                lastBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                byte[] payload = response.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
+                exchange.sendResponseHeaders(status, payload.length);
+                exchange.getResponseBody().write(payload);
+                exchange.close();
+            });
+            server.start();
+            port = server.getAddress().getPort();
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
+    }
+
+    // ------------------------------------------------------------------
+
+    private static void check(String label, boolean condition) {
+        if (condition) {
+            passed++;
+            System.out.println("  [OK]   " + label);
+        } else {
+            fail(label);
+        }
+    }
+
+    private static void checkEq(String label, Object expected, Object actual) {
+        if (expected == null ? actual == null : expected.equals(actual)) {
+            passed++;
+            System.out.println("  [OK]   " + label + " = " + actual);
+        } else {
+            fail(label + " 期望 <" + expected + "> 实际 <" + actual + ">");
+        }
+    }
+
+    private static void fail(String label) {
+        failed++;
+        System.out.println("  [FAIL] " + label);
+    }
+}
