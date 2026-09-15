@@ -330,10 +330,19 @@ public final class ChatTranslator {
             return true;
         }
         if (!service.isReady()) {
-            if (config.showErrorsInChat) {
-                Feedback.error("未配置 DeepSeek API Key，本条已按原文发送。用 /hxtranslate key <你的Key> 配置。");
+            // 没配 Key 也算「翻译不了」，和 failureFallback 保持一致
+            if (sendOriginalOnFailure()) {
+                if (config.showErrorsInChat) {
+                    Feedback.error("未配置 DeepSeek API Key，本条已按原文发送。"
+                            + "用 §f/hxtranslate key <你的Key>§c 配置，或 §f/hxtranslate outgoing off§c 关掉发送翻译。");
+                }
+                return true;
             }
-            return true;
+            if (config.showErrorsInChat) {
+                Feedback.error("未配置 DeepSeek API Key，本条未发送。"
+                        + "用 §f/hxtranslate key <你的Key>§c 配置，或 §f/hxtranslate outgoing off§c 直接发原文。");
+            }
+            return false;
         }
 
         // 记下发起翻译时所在的连接：翻译回来时如果已经不是同一个连接，
@@ -421,10 +430,16 @@ public final class ChatTranslator {
             return true;
         }
         if (!service.isReady()) {
-            if (config.showErrorsInChat) {
-                Feedback.error("未配置 DeepSeek API Key，本条命令已按原文发送。");
+            if (sendOriginalOnFailure()) {
+                if (config.showErrorsInChat) {
+                    Feedback.error("未配置 DeepSeek API Key，本条命令已按原文发送。");
+                }
+                return true;
             }
-            return true;
+            if (config.showErrorsInChat) {
+                Feedback.error("未配置 DeepSeek API Key，这条命令未发送（按 ↑ 可找回）。");
+            }
+            return false;
         }
 
         Minecraft originClient = Minecraft.getInstance();
@@ -445,9 +460,12 @@ public final class ChatTranslator {
                     return;
                 }
                 if (ok) {
-                    String outgoing = LangUtils.truncateForChat(translated, config.maxOutgoingChars);
+                    // 命令总长同样受原版 256 字符限制，命令名 + 玩家名（head）也要占额度，
+                    // 否则给名字很长的玩家发长句时整条命令会超限被服务器拒绝
+                    int budget = Math.max(16, config.maxOutgoingChars - head.length());
+                    String outgoing = LangUtils.truncateForChat(translated, budget);
                     if (!outgoing.equals(translated)) {
-                        Feedback.hint("译文超过 " + config.maxOutgoingChars + " 字符，已截断。");
+                        Feedback.hint("译文超过 " + budget + " 字符（要给命令本身留位置），已截断。");
                     }
                     String payload = head + outgoing;
                     rememberSent(outgoing);

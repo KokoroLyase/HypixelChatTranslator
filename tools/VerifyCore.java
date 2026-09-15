@@ -42,6 +42,7 @@ public class VerifyCore {
         v103Regressions();
         v104Hardening();
         v105ApiAndSafety();
+        v106Review();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -433,6 +434,19 @@ public class VerifyCore {
             check("熔断期间直接拒绝并说明原因",
                     !blocked.ok() && blocked.error().contains("暂停"));
         }
+    }
+
+    /** v1.0.6：复核发现的逻辑问题——本模组自己的客户端命令不能被「未知命令兜底」劫持。 */
+    private static void v106Review() {
+        System.out.println("== v1.0.6 复核：自己的命令不被劫持 ==");
+        TranslatorConfig config = new TranslatorConfig();
+        // 这些命令如果被劫持，会被取消并当成服务器命令发出去
+        assertNoCommand(config, "hxtranslate test 这是一句很长的中文话");
+        assertNoCommand(config, "hxt test 大家快来这里集合");
+        assertNoCommand(config, "hxtranslate key sk-abcdefghijklmn");
+        assertNoCommand(config, "HXTRANSLATE test 中文测试文本要长一点");
+        check("isAlwaysProtected 认得出自己的命令", CommandMessage.isAlwaysProtected("hxtranslate status"));
+        check("别的命令不算自己的命令", !CommandMessage.isAlwaysProtected("shout hello"));
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */

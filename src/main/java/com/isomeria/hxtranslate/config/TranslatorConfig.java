@@ -2,12 +2,13 @@ package com.isomeria.hxtranslate.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.isomeria.hxtranslate.HxTranslateClient;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
-import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -403,7 +404,16 @@ public final class TranslatorConfig {
         }
     }
 
-    /** 从磁盘读取配置，文件不存在则写入一份带默认值的模板。 */
+    /**
+     * 从磁盘读取配置，文件不存在则写入一份带默认值的模板。
+     *
+     * <p>整个升级过程是自动的，用户不需要手动改文件：
+     * <ol>
+     *   <li>{@link #migrate()} 按版本号把老默认值换成新默认值（不覆盖用户自定义内容）；</li>
+     *   <li>{@link #fillMissingFields} 把本次新增、文件里还没有的字段补写进去，
+     *       这样用户能直接在 json 里看到并调整新选项。</li>
+     * </ol>
+     */
     public static TranslatorConfig load() {
         Path path = configPath();
         if (!Files.exists(path)) {
@@ -413,17 +423,45 @@ public final class TranslatorConfig {
             return defaults;
         }
 
-        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
-            TranslatorConfig loaded = GSON.fromJson(reader, TranslatorConfig.class);
+        try {
+            String json = Files.readString(path, StandardCharsets.UTF_8);
+            TranslatorConfig loaded = GSON.fromJson(json, TranslatorConfig.class);
             if (loaded == null) {
                 throw new JsonSyntaxException("配置文件为空");
             }
             loaded.normalize();
             loaded.migrate();
+            loaded.fillMissingFields(json, path);
             return loaded;
         } catch (IOException | JsonSyntaxException e) {
             HxTranslateClient.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
             return new TranslatorConfig();
+        }
+    }
+
+    /**
+     * 把「当前版本有、但配置文件里没有」的顶层字段补写进文件。
+     *
+     * <p>补字段和换默认值是两件事：版本迁移负责改值，这里负责让新选项出现在文件里。
+     * 只会在确实缺字段时写盘，不会每次启动都重写。
+     */
+    private void fillMissingFields(String diskJson, Path path) {
+        try {
+            JsonObject onDisk = JsonParser.parseString(diskJson).getAsJsonObject();
+            JsonObject current = GSON.toJsonTree(this).getAsJsonObject();
+            List<String> missing = new ArrayList<>();
+            for (String key : current.keySet()) {
+                if (!onDisk.has(key)) {
+                    missing.add(key);
+                }
+            }
+            if (missing.isEmpty()) {
+                return;
+            }
+            save();
+            HxTranslateClient.LOGGER.info("配置文件已自动补全新字段 {}（原有设置未改动）: {}", missing, path);
+        } catch (RuntimeException e) {
+            HxTranslateClient.LOGGER.warn("补全配置字段失败（不影响使用）: {}", e.toString());
         }
     }
 
