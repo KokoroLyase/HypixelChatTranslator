@@ -164,12 +164,10 @@ public final class ChatTranslator {
         // 关键：不能「含汉字就跳过」。Hypixel 按客户端语言把队伍名本地化成 [红队]，
         // 于是英文喊话 "[MVP+] [红队] Steve: rush mid" 里也有汉字。
         // 具体判断规则见 IncomingFilter（那里有完整的说明和离线回归测试）。
-        String ownEcho = config.skipOwnEcho ? findOwnEcho(text) : null;
+        String ownEcho = ownEchoReason(text);
         IncomingFilter.Decision decision = IncomingFilter.decide(text, config, isIgnored(text), ownEcho != null);
         if (!decision.translate()) {
-            skipIncoming(ownEcho != null
-                    ? decision.reason() + "（匹配到自己发过的 \"" + shorten(ownEcho) + "\"）"
-                    : decision.reason(), text);
+            skipIncoming(ownEcho == null ? decision.reason() : decision.reason() + "（" + ownEcho + "）", text);
             return;
         }
 
@@ -293,6 +291,41 @@ public final class ChatTranslator {
      */
     private synchronized String findOwnEcho(String plain) {
         return EchoMatcher.findEcho(plain, recentlySent);
+    }
+
+    /**
+     * 这条消息是不是「自己发的」，并给出用于调试输出的说明。
+     *
+     * <p><b>优先认说话人名字</b>：Hypixel 的系统聊天里本来就写着谁在说话，
+     * 认名字既能准确认出自己的回显，又不会把别人说的同一句话误当成回显。
+     * 以前只看「正文和我发过的一样不一样」，于是你自己说了句 {@code gg} 之后，
+     * 15 秒内别人说的每个 {@code gg} 都会被静默跳过 —— 玩家反馈的「别人的 gg 不翻译」。
+     *
+     * <p>只有认不出说话人（消息格式没见过）时才退回正文比对。
+     *
+     * @return null 表示不是自己的消息；否则返回给玩家/日志看的说明
+     */
+    private String ownEchoReason(String text) {
+        if (!config.skipOwnEcho) {
+            return null;
+        }
+        Boolean own = EchoMatcher.isOwnMessage(text, localPlayerName());
+        if (own != null) {
+            return own ? "自己发的消息" : null;
+        }
+        // 认不出说话人（格式没见过）：退回正文比对，那一步带 15 秒时间窗
+        String matched = findOwnEcho(text);
+        return matched == null ? null : "匹配到自己发过的 \"" + shorten(matched) + "\"";
+    }
+
+    /** 本地玩家的名字；还没进入世界时返回 null（那时也不会有聊天可处理）。 */
+    private String localPlayerName() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.player == null) {
+            return null;
+        }
+        GameProfile profile = minecraft.player.getGameProfile();
+        return profile == null ? null : profile.name();
     }
 
     private synchronized void rememberSent(String english) {

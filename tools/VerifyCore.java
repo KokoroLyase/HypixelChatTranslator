@@ -49,6 +49,7 @@ public class VerifyCore {
         v106Review();
         v107Fixes();
         v108Audit();
+        v111ScreenshotFixes();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -671,6 +672,61 @@ public class VerifyCore {
             }
         }
         return false;
+    }
+
+    /**
+     * v1.1.1：玩家截图反馈的两个 bug，用例里的字符串就是截图里的原话。
+     *
+     * <p><b>图1</b>：{@code Im_Bad_At_PKMN失足跌入虚空。} 是服务器本地化过的中文播报，
+     * 却被翻译了一遍 —— 聊天栏多出一行一模一样的 {@code [译] Im_Bad_At_PKMN失足跌入虚空。}，
+     * 还白花一次请求。根因：玩家名被切成 {@code im} / {@code bad} / {@code at} 三个
+     * 「英文信号词」，把整条中文消息判成了英文句子。
+     *
+     * <p><b>图2</b>：自己说了句 {@code gg} 之后，别人说的 {@code gg} 全都不翻译了。
+     * 根因：回显判断只看「正文和我发过的一样不一样」，不看说话人 ——
+     * 而系统聊天里本来就写着谁在说话。
+     */
+    private static void v111ScreenshotFixes() {
+        System.out.println("== v1.1.1：玩家截图反馈 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        // ---- 图1：本地化中文播报不能被翻译 ----
+        assertSkip(config, "Im_Bad_At_PKMN失足跌入虚空。");
+        checkEq("玩家名里的 im/bad/at 不再算英文信号词", 0,
+                LangUtils.countEnglishHintWords("Im_Bad_At_PKMN失足跌入虚空。"));
+        assertSkip(config, "Im_Bad_At_PKMN被G19sy击杀。");
+        checkEq("同一句话换成普通名字也照样跳过", 0,
+                LangUtils.countEnglishHintWords("bedsyuu失足跌入虚空。"));
+        // 但这个词出现在真正的英文句子里时，仍要翻译（名字和句子之间有空格）
+        assertTranslate(config, "Im_Bad_At_PKMN was thrown into the void by G19sy.");
+        assertTranslate(config, "bad at the game, u def mid");
+        // 截图里其它几行
+        assertSkip(config, "你购买了 Wood");
+        assertSkip(config, "铁锭不足！还需要铁锭x21!");
+        assertTranslate(config, "You earned 187 Bed Wars XP");
+
+        // ---- 图2：按说话人认回显，不再按正文猜 ----
+        check("别人的 gg：名字对不上，不是我的消息（关键修复）",
+                Boolean.FALSE.equals(EchoMatcher.isOwnMessage("[VIP] KineticRules: gg", "Isomeria")));
+        check("别人的 gg：说一样的话也不是我的",
+                Boolean.FALSE.equals(EchoMatcher.isOwnMessage("DonTlacario04: gg", "Isomeria")));
+        check("自己的 gg：名字对上才是我的",
+                Boolean.TRUE.equals(EchoMatcher.isOwnMessage("Isomeria: gg", "Isomeria")));
+        check("名字比对大小写不敏感",
+                Boolean.TRUE.equals(EchoMatcher.isOwnMessage("[MVP+] isomeria: gg", "Isomeria")));
+        check("队伍/喊话前缀里的名字也能认出来",
+                Boolean.TRUE.equals(EchoMatcher.isOwnMessage("[喊话] [红队] [MVP+] Isomeria: gg", "Isomeria")));
+        check("To xxx 是自己发出的私聊",
+                Boolean.TRUE.equals(EchoMatcher.isOwnMessage("To Steve: hi", "Isomeria")));
+        check("别人私聊给我（From）不是我的消息",
+                Boolean.FALSE.equals(EchoMatcher.isOwnMessage("From Steve: gg", "Isomeria")));
+        check("认不出说话人时返回 null（调用方退回正文比对）",
+                EchoMatcher.isOwnMessage("Guild > Steve > hello", "Isomeria") == null);
+        check("拿不到本地名字时也返回 null（退回正文比对）",
+                EchoMatcher.isOwnMessage("[MVP+] Steve: gg", null) == null);
+        check("服务器公告不误判成玩家发言",
+                EchoMatcher.speakerOf("You earned 187 Bed Wars XP") == null);
+        checkEq("说话人解析", "Steve", EchoMatcher.speakerOf("Party > [MVP+] Steve: hi").name());
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */

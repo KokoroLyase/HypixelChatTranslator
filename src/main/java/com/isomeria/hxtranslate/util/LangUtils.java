@@ -190,17 +190,39 @@ public final class LangUtils {
             "carry", "clutch", "obby", "dia", "dias", "gen", "pot", "void", "gap", "fb"
     );
 
-    /** 正文里出现了几个「英文信号词」。≥2 个基本可以断定这是一句英文。 */
+    /**
+     * 正文里出现了几个「英文信号词」。≥2 个基本可以断定这是一句英文。
+     *
+     * <p><b>含汉字的「词」整块跳过</b>：Hypixel 的本地化播报会把玩家名直接粘在中文上，
+     * 例如 {@code Im_Bad_At_PKMN失足跌入虚空。} —— 玩家名会被切成 {@code im} / {@code bad} / {@code at}
+     * 三个信号词，于是整条中文播报被误判成「英文句子」而送去翻译（玩家反馈的真实 bug，
+     * 见 VerifyCore 里用截图原文写的回归用例）。名字不是句子。
+     *
+     * <p>反过来，像 {@code 3_0HY was thrown into a black hole by G19sy. 最终击杀！} 这种
+     * 玩家名与英文句子之间是有空格的，照旧按句子统计，不受影响。
+     */
     public static int countEnglishHintWords(String text) {
         if (text == null || text.isEmpty()) {
             return 0;
         }
         int count = 0;
+        for (String word : text.split("\\s+")) {
+            if (word.isEmpty() || containsHan(word)) {
+                continue;
+            }
+            count += countHintWordsInWord(word);
+        }
+        return count;
+    }
+
+    /** 单个「不含汉字的词」里命中的信号词数（词内还会按非字母再切，例如 {@code Bad_At} 算两个）。 */
+    private static int countHintWordsInWord(String word) {
+        int count = 0;
         int i = 0;
-        int length = text.length();
+        int length = word.length();
         StringBuilder token = new StringBuilder();
         while (i <= length) {
-            char c = i < length ? text.charAt(i) : ' ';
+            char c = i < length ? word.charAt(i) : ' ';
             if (Character.isLetter(c) && c < 128) {
                 token.append(Character.toLowerCase(c));
             } else {

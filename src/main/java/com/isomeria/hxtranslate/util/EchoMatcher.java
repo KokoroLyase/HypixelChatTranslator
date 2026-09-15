@@ -94,4 +94,86 @@ public final class EchoMatcher {
     public static String findEcho(String incoming, Iterable<Sent> sentMessages) {
         return findEcho(incoming, sentMessages, System.currentTimeMillis());
     }
+
+    /**
+     * 系统聊天里的说话人。
+     *
+     * @param name     玩家名
+     * @param outgoing true 表示这是<b>自己发出去</b>的消息（{@code To xxx:} 这种私聊回显）
+     */
+    public record Speaker(String name, boolean outgoing) {
+    }
+
+    /**
+     * 从一条系统聊天里认出发言人，例如：
+     *
+     * <pre>
+     * [MVP+] Steve: inc mid              → Steve
+     * [喊话] [红队] [MVP+] Alex: gg       → Alex
+     * Party &gt; [MVP+] Steve: hi           → Steve
+     * To Steve: hi                       → Steve（outgoing，是我发的私聊）
+     * </pre>
+     *
+     * <p>为什么要认名字：光靠「正文和我说过的一样」猜回显是不可靠的 ——
+     * 你自己说了句 {@code gg}，接下来 15 秒里别人说的每个 {@code gg} 都会被当成你的回显而跳过，
+     * 这就是玩家反馈的「别人的 gg 不翻译」（见 VerifyCore 回归用例）。
+     * 系统聊天里本来就带着名字，认名字比猜正文可靠得多。
+     *
+     * @return 说话人；格式认不出来（没有 {@code ": "}、名字不像玩家名）时返回 null
+     */
+    public static Speaker speakerOf(String text) {
+        if (text == null) {
+            return null;
+        }
+        int idx = text.indexOf(": ");
+        if (idx <= 0) {
+            return null;
+        }
+        // 「To Steve: ...」是自己发出去的私聊
+        boolean outgoing = text.startsWith("To ");
+        // 名字是 ": " 前面最后一个词（Hypixel 的 [MVP+]、[红队]、队伍名这些前缀里都不含空格）
+        String head = text.substring(0, idx).strip();
+        int space = head.lastIndexOf(' ');
+        String name = space < 0 ? head : head.substring(space + 1);
+        // 「Guild > Steve」这种用 > 分隔的写法
+        int gt = name.lastIndexOf('>');
+        if (gt >= 0) {
+            name = name.substring(gt + 1);
+        }
+        name = name.strip();
+        return isPlayerName(name) ? new Speaker(name, outgoing) : null;
+    }
+
+    /** 名字是否像 Minecraft 玩家名：字母/数字/下划线，1~20 位（正版是 3~16 位）。 */
+    private static boolean isPlayerName(String name) {
+        if (name.isEmpty() || name.length() > 20) {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            boolean allowed = (c < 128 && Character.isLetterOrDigit(c)) || c == '_';
+            if (!allowed) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 这条系统聊天是不是本地玩家自己发的。
+     *
+     * @param localName 本地玩家名；还没进世界时传 null
+     * @return {@code TRUE} / {@code FALSE}；<b>{@code null} 表示认不出说话人</b>，
+     *         这种情况调用方应退回「正文比对」（见 {@link #findEcho}）
+     */
+    public static Boolean isOwnMessage(String text, String localName) {
+        Speaker speaker = speakerOf(text);
+        if (speaker == null) {
+            return null;
+        }
+        if (speaker.outgoing()) {
+            return Boolean.TRUE;
+        }
+        return localName == null ? null : speaker.name().equalsIgnoreCase(localName);
+    }
 }
