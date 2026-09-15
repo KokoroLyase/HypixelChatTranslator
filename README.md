@@ -240,10 +240,12 @@ v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 �
 ```bash
 export JAVA_HOME=/path/to/jdk-25
 ./gradlew build
-# 产物: build/libs/hx-chat-translator-<版本>.jar
+# 产物: build/libs/hx-chat-translator-<版本>+mc26.2-fabric.jar
 ```
 
 只用到了 Fabric API（`fabric-message-api-v1` / `fabric-key-mapping-api-v1` / `fabric-command-api-v2` / `fabric-lifecycle-events-v1`），无需额外依赖。
+
+发布新版本（版本号规则、文件命名、保留旧版、配置迁移等约定）见 [RELEASING.md](RELEASING.md)。
 
 ### 离线自检（不需要启动游戏）
 
