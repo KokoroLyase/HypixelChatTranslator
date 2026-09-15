@@ -15,6 +15,8 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -51,6 +53,9 @@ public class VerifyCore {
         v108Audit();
         v111ScreenshotFixes();
         v112BannerIgnore();
+        v113ConfigDurability();
+        v113ApiTextAndRequest();
+        v113OwnMessageAndRules();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -613,12 +618,16 @@ public class VerifyCore {
             config.retryOnFailure = false; // 熔断用例不要每次都等 800ms 退避
 
             // 4) 错误正文里的 § 和换行必须清洗掉再进聊天栏
+            //    断言必须要求「真正的原因仍然出现」：只断言「不含 § / 不含换行」的话，
+            //    把 extractErrorMessage 改成 return "" 也照样是绿的（等于没保护这条接线）。
             DeepSeekClient client = new DeepSeekClient(config);
             server.status = 500;
             server.response = "{\"error\":{\"message\":\"§c网关坏了\\n请稍后重试\"}}";
             DeepSeekClient.Result dirty = client.translate("hi", Direction.INCOMING);
             check("接口错误正文里的 § 被清洗", !dirty.ok() && !dirty.error().contains("§"));
             check("接口错误正文里的换行被清洗", !dirty.ok() && !dirty.error().contains("\n"));
+            check("接口错误正文清洗后仍带着真正的原因",
+                    !dirty.ok() && dirty.error().contains("网关坏了 请稍后重试"));
             server.status = 200;
 
             // 5) 熔断后复位要能立刻重试（/hxtranslate reload 会调用它）
@@ -788,14 +797,298 @@ public class VerifyCore {
         checkEq("自定义内容原样保留", "^我的自定义规则", custom.ignorePatterns.get(0));
     }
 
-    /** 这条消息是否命中默认 ignorePatterns（等价于 ChatTranslator.isIgnored 的判定）。 */
+    /**
+     * 这条消息是否命中 {@code ignorePatterns}。
+     *
+     * <p>刻意调用 <b>生产代码用的同一个函数</b>（{@link LangUtils#compilePatterns} +
+     * {@link LangUtils#matchesAny}）：以前这里自己抄了一遍
+     * {@code Pattern.compile(regex, CASE_INSENSITIVE).matcher(text).find()}，
+     * 于是 ChatTranslator 那边把 {@code find()} 改成 {@code matches()}、或者丢了
+     * {@code CASE_INSENSITIVE}，下面那些横幅用例全都是绿的 —— 用例其实没在保护任何东西。
+     */
     private static boolean hitsIgnorePattern(TranslatorConfig config, String text) {
-        for (String regex : config.ignorePatterns) {
-            if (Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(text).find()) {
-                return true;
+        return LangUtils.matchesAny(text, LangUtils.compilePatterns(config.ignorePatterns, null));
+    }
+
+    // ------------------------------------------------------------------
+    // v1.1.3：核心链路审计（没有玩家截图，是复查出来的；样本按「真实可能出现的输入」构造）
+    // ------------------------------------------------------------------
+
+    /**
+     * 配置文件是用户资产：读坏了要备份、写要原子、不认识的字段不能抹掉。
+     *
+     * <p>这一组用例填补的是「磁盘 I/O 路径此前 0 覆盖」的空白 —— 而本次审计最严重的发现
+     * （没有 {@code configVersion} 的老配置被当成最新版，所有迁移被跳过）正好在这条路径上。
+     */
+    private static void v113ConfigDurability() throws IOException {
+        System.out.println("== v1.1.3：配置不再丢 ==");
+        Path dir = Files.createTempDirectory("hxtranslate-verify-");
+        try {
+            // ---- 1) v1.0.0 时代的配置：文件里**没有** configVersion（v1.0.1 起才写）----
+            //    Gson 会给「文件里没有的键」保留字段初始值，也就是当前版本号 6，
+            //    于是迁移第一行就判定「已是最新」直接返回 —— 模型名永远停在已下线的 deepseek-chat。
+            JsonObject legacyJson = new JsonObject();
+            legacyJson.addProperty("apiKey", "sk-legacy");
+            legacyJson.addProperty("model", "deepseek-chat");
+            legacyJson.addProperty("temperature", 1.3);
+            legacyJson.addProperty("httpTimeoutSeconds", 20);
+            legacyJson.addProperty("requestsPerMinute", 40);
+            legacyJson.add("glossary", new JsonArray());
+            legacyJson.addProperty("incomingSystemPrompt",
+                    "You translate Minecraft chat. Keep common gaming abbreviations meaningful.");
+            JsonArray legacyIgnores = new JsonArray();
+            legacyIgnores.add("^\\+\\d+ .*(XP|Coins|Tokens)");
+            legacyIgnores.add("^(You|A player) (joined|left)");
+            legacyIgnores.add("^Sending you to");
+            legacyJson.add("ignorePatterns", legacyIgnores);
+            Path legacyFile = dir.resolve("hxtranslate.json");
+            Files.writeString(legacyFile, legacyJson.toString(), StandardCharsets.UTF_8);
+
+            TranslatorConfig legacy = TranslatorConfig.load(legacyFile);
+            checkEq("没有 configVersion 的旧配置：模型名换成当前的（否则每条请求 400）",
+                    "deepseek-flash", legacy.model);
+            checkEq("没有 configVersion 的旧配置：版本号升到当前", TranslatorConfig.CURRENT_CONFIG_VERSION,
+                    legacy.configVersion);
+            checkEq("旧配置的每分钟上限跟随新默认值", 60, legacy.requestsPerMinute);
+            checkEq("旧配置的读取超时跟随新默认值", 15, legacy.httpTimeoutSeconds);
+            check("旧配置的术语表被补齐", legacy.glossary.size() > 10);
+            checkEq("旧配置补上了横幅规则", 5, legacy.ignorePatterns.size());
+            check("旧配置的老提示词被换成了新默认值", legacy.incomingSystemPrompt.contains("Examples:"));
+            checkEq("用户写的 API Key 原样保留", "sk-legacy", legacy.apiKey);
+            check("迁移结果落盘（configVersion 已写进文件）",
+                    Files.readString(legacyFile, StandardCharsets.UTF_8).contains("\"configVersion\": 6"));
+
+            // ---- 2) 坏 JSON：备份原件 + 给玩家看的原因，且绝不静默覆盖 ----
+            Path brokenFile = dir.resolve("broken.json");
+            String brokenText = "{\n  \"apiKey\": \"sk-USER-SECRET\",\n  \"glossary\": [\"我的词=意思\"]\n"
+                    + "  \"debugLog\": true\n}"; // 少一个逗号，正是手改配置最容易犯的错
+            Files.writeString(brokenFile, brokenText, StandardCharsets.UTF_8);
+
+            TranslatorConfig fallback = TranslatorConfig.load(brokenFile);
+            check("坏配置：给出给玩家看的警告（不是只写日志）",
+                    fallback.loadWarning() != null && fallback.loadWarning().contains("JSON"));
+            check("坏配置：本次退回默认值", !fallback.hasApiKey());
+            checkEq("坏配置：原文件一字未改", brokenText, Files.readString(brokenFile, StandardCharsets.UTF_8));
+
+            List<Path> backups = backupsOf(dir, "broken.json.broken-");
+            checkEq("坏配置：生成了备份", 1, backups.size());
+            // 用例本身要抗「备份没生成」：否则一条断言失败会以异常收场，后面的用例全都跑不到
+            checkEq("坏配置：备份内容就是原件（Key 还在）", brokenText, readIfExists(backups));
+            // 之后任何一次 save()（按 F6、/hxtranslate on|key|debug…）都会写新文件，
+            // 但备份必须还在 —— 这就是「配置不会永久丢」的底线。
+            fallback.save(brokenFile);
+            checkEq("坏配置：保存之后备份仍在，内容可恢复", brokenText, readIfExists(backups));
+
+            // ---- 3) 数值笔误（例如 configVersion 写成 6.5）同样不能静默 ----
+            Path typoFile = dir.resolve("typo.json");
+            Files.writeString(typoFile, "{\"configVersion\": 6.5, \"apiKey\": \"sk-typo\"}", StandardCharsets.UTF_8);
+            TranslatorConfig typo = TranslatorConfig.load(typoFile);
+            check("数值笔误：有警告", typo.loadWarning() != null);
+            checkEq("数值笔误：原件也备份了", 1, backupsOf(dir, "typo.json.broken-").size());
+
+            // ---- 4) 不认识的字段不能被抹掉（用户备注 / 新版模组写过的字段）----
+            Path noteFile = dir.resolve("note.json");
+            TranslatorConfig note = new TranslatorConfig();
+            note.apiKey = "sk-note";
+            note.save(noteFile);
+            JsonObject withNote = JsonParser.parseString(Files.readString(noteFile, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            withNote.addProperty("myNote", "别删我");
+            Files.writeString(noteFile, withNote.toString(), StandardCharsets.UTF_8);
+            TranslatorConfig reloadedNote = TranslatorConfig.load(noteFile);
+            reloadedNote.save(noteFile);
+            JsonObject afterSave = JsonParser.parseString(Files.readString(noteFile, StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            check("保存不会抹掉模组不认识的字段",
+                    afterSave.has("myNote") && "别删我".equals(afterSave.get("myNote").getAsString()));
+            checkEq("认识的字段照常写回", "sk-note", afterSave.get("apiKey").getAsString());
+
+            // ---- 5) 写入是原子的：先写 .tmp 再改名，中途崩溃不会留下半个 json ----
+            Path atomicFile = dir.resolve("atomic.json");
+            check("原子写入成功", TranslatorConfig.writeAtomically(atomicFile, "{\"hello\":1}"));
+            checkEq("原子写入内容正确", "{\"hello\":1}",
+                    Files.readString(atomicFile, StandardCharsets.UTF_8));
+            check("原子写入不留下临时文件", !Files.exists(dir.resolve("atomic.json.tmp")));
+
+            // ---- 6) normalize 的上下限：调大 maxOutgoingChars 会被服务器踢，调小 cacheSize 没意义 ----
+            TranslatorConfig bounds = new TranslatorConfig();
+            bounds.maxOutgoingChars = 999;
+            bounds.cacheSize = 0;
+            bounds.normalize();
+            checkEq("maxOutgoingChars 上限夹到原版聊天框长度", TranslatorConfig.MAX_OUTGOING_CHARS_LIMIT,
+                    bounds.maxOutgoingChars);
+            checkEq("cacheSize 下限显式化", TranslatorConfig.MIN_CACHE_SIZE, bounds.cacheSize);
+
+            // ---- 7) 提示词迁移：只替换「老版默认值」，手写提示词一字不动（RELEASING §5）----
+            //    以前的判据是「提示词里没有 Examples: 就换成默认值」——手写提示词本来就可能没有这一段，
+            //    于是用户自己写的提示词会被整段覆盖。现在只认老版默认值的识别标记。
+            TranslatorConfig customPrompt = new TranslatorConfig();
+            customPrompt.configVersion = 3;
+            customPrompt.incomingSystemPrompt = "只翻译成中文，别啰嗦。";
+            customPrompt.outgoingSystemPrompt = "Translate into natural English.";
+            customPrompt.applyMigrations();
+            checkEq("手写的接收方向提示词不被覆盖", "只翻译成中文，别啰嗦。", customPrompt.incomingSystemPrompt);
+            checkEq("手写的发送方向提示词不被覆盖", "Translate into natural English.",
+                    customPrompt.outgoingSystemPrompt);
+
+            TranslatorConfig oldDefault = new TranslatorConfig();
+            oldDefault.configVersion = 3;
+            oldDefault.incomingSystemPrompt =
+                    "You translate Minecraft chat. Keep common gaming abbreviations meaningful.";
+            oldDefault.outgoingSystemPrompt = "Translate into English. never produce mixed-language text";
+            oldDefault.applyMigrations();
+            check("老版默认提示词仍然会被升级到新默认值",
+                    oldDefault.incomingSystemPrompt.contains("Examples:")
+                            && oldDefault.outgoingSystemPrompt.contains("Examples:"));
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    /** 读第一份备份；没有备份时返回空串（让断言报红，而不是抛异常中断整轮自检）。 */
+    private static String readIfExists(List<Path> backups) throws IOException {
+        return backups.isEmpty() ? "" : Files.readString(backups.get(0), StandardCharsets.UTF_8);
+    }
+
+    /** 等一段有限的时间；超时算失败（避免用例把构建挂死）。 */
+    private static boolean await(CountDownLatch latch) {
+        try {
+            return latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /** 目录里以某个前缀开头的文件（用来找 {@code xxx.broken-<时间戳>} 备份）。 */
+    private static List<Path> backupsOf(Path dir, String prefix) throws IOException {
+        try (var stream = Files.list(dir)) {
+            return stream.filter(p -> p.getFileName().toString().startsWith(prefix)).toList();
+        }
+    }
+
+    private static void deleteRecursively(Path dir) throws IOException {
+        if (!Files.exists(dir)) {
+            return;
+        }
+        try (var stream = Files.walk(dir)) {
+            for (Path path : stream.sorted(Collections.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
             }
         }
-        return false;
+    }
+
+    /**
+     * 接口返回的文本一律先清洗再进聊天栏/服务器，以及请求体里的两个开关。
+     *
+     * <p>译文以前没过 {@code sanitizeOneLine}（只有错误正文过了）：换行会被原版
+     * {@code StringSplitter.splitLines} 拆成**多条独立聊天行**，译文那行会因此丢掉 {@code [译]} 前缀，
+     * 看起来就像服务器自己说的话；{@code §} 则会被渲染成颜色代码。
+     */
+    private static void v113ApiTextAndRequest() throws IOException {
+        System.out.println("== v1.1.3：接口文本清洗与请求体 ==");
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.requestsPerMinute = 1000;
+            config.retryOnFailure = false;
+            DeepSeekClient client = new DeepSeekClient(config);
+
+            // 1) 译文里的换行与 § 代码
+            server.response = ok("第一行\\n第二行 §c红字");
+            DeepSeekClient.Result multi = client.translate("hello there", Direction.INCOMING);
+            check("译文里的换行被清洗", multi.ok() && !multi.text().contains("\n"));
+            check("译文里的 § 代码被清洗", multi.ok() && !multi.text().contains("§"));
+            checkEq("清洗只是压成一行，内容还在", "第一行 第二行 红字", multi.text());
+
+            // 2) 清洗之后才判空：整段控制字符等于模型什么也没给
+            server.response = ok("\\u0000\\u0007");
+            DeepSeekClient.Result blank = client.translate("hello there", Direction.INCOMING);
+            check("清洗后为空的译文判为失败", !blank.ok() && blank.error().contains("空翻译"));
+
+            // 3) 响应体过大：以前 readAllBytes 会把客户端堆打爆，OOM 从工作线程穿出去，
+            //    那条出站消息连「未能翻译」都不会计数，直接静默消失。
+            server.response = ok("x".repeat(2 * 1024 * 1024));
+            DeepSeekClient.Result huge = client.translate("hello there", Direction.INCOMING);
+            check("超大响应被拒绝而不是打爆客户端", !huge.ok() && huge.error().contains("过大"));
+
+            // 4) 模型名同样是接口给的文本（用户可能配第三方中转站）
+            server.response = "{\"data\":[{\"id\":\"deepseek-flash\"},{\"id\":\"bad\\nname §c\"}]}";
+            DeepSeekClient.Result models = client.listModels();
+            check("模型名里的换行被清洗", models.ok() && !models.text().contains("\n"));
+            check("模型名里的颜色代码被清洗（只去掉接口带来的 §c）",
+                    models.ok() && models.text().contains("bad name") && !models.text().contains("§c"));
+            check("模型列表自己的高亮分隔符保留（§7 / §f 是本模组加的）",
+                    models.ok() && models.text().contains("§7, §f") && models.text().contains("deepseek-flash"));
+
+            // 5) 思考模式：新模型默认开思考，关掉时才传 temperature（开了传也没用，官方文档如此）
+            TranslatorConfig thinkingConfig = new TranslatorConfig();
+            thinkingConfig.apiKey = "sk-test";
+            thinkingConfig.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            thinkingConfig.enableThinking = true;
+            server.response = ok("ok");
+            new DeepSeekClient(thinkingConfig).translate("hi", Direction.INCOMING);
+            JsonObject thinkingBody = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            checkEq("思考模式开启时 thinking.type", "enabled",
+                    thinkingBody.getAsJsonObject("thinking").get("type").getAsString());
+            check("思考模式开启时不传 temperature（传了不生效）", !thinkingBody.has("temperature"));
+
+            // 6) 缓存必须区分方向：同一句话两个方向的译文完全不同
+            //    注意必须**等第一条落进缓存**再提交第二条：两条一起提交时第二条在缓存写入前就查过了，
+            //    那样即使缓存 key 不带方向也会各发一次请求 —— 用例会变成「怎么改都绿」。
+            TranslatorConfig cacheConfig = new TranslatorConfig();
+            cacheConfig.apiKey = "sk-test";
+            cacheConfig.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            cacheConfig.requestsPerMinute = 1000;
+            TranslationService service = new TranslationService(cacheConfig);
+            int before = server.requestCount.get();
+
+            CountDownLatch first = new CountDownLatch(1);
+            service.submit("方向缓存测试", Direction.INCOMING, (ok, t, e) -> first.countDown());
+            check("第一个方向完成", await(first));
+            checkEq("第一个方向发了一次请求", before + 1, server.requestCount.get());
+
+            CountDownLatch second = new CountDownLatch(1);
+            service.submit("方向缓存测试", Direction.OUTGOING, (ok, t, e) -> second.countDown());
+            check("第二个方向完成", await(second));
+            checkEq("换方向必须重新翻译（缓存按方向分开）", before + 2, server.requestCount.get());
+
+            // 反面对照：同方向重复必须命中缓存，不再花钱
+            CountDownLatch repeat = new CountDownLatch(1);
+            service.submit("方向缓存测试", Direction.INCOMING, (ok, t, e) -> repeat.countDown());
+            check("同方向重复完成", await(repeat));
+            checkEq("同方向重复命中缓存，不再发请求", before + 2, server.requestCount.get());
+            service.shutdown();
+        }
+    }
+
+    /**
+     * 「是不是自己的消息」与「忽略规则」这两条判定。
+     *
+     * <p>{@code To } 开头只是必要条件，不是充分条件：{@code To view your stats, type: /stats}
+     * 这种服务器提示也以 To 开头、也含 {@code ": "}，以前会被整条当成「自己发的私聊」而永不翻译。
+     */
+    private static void v113OwnMessageAndRules() {
+        System.out.println("== v1.1.3：自己的消息 / 忽略规则判定 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        check("To xxx: 仍然是自己发出的私聊",
+                Boolean.TRUE.equals(EchoMatcher.isOwnMessage("To Steve: hi", "Isomeria")));
+        Boolean systemHint = EchoMatcher.isOwnMessage("To view your stats, type: /stats", "Isomeria");
+        check("以 To 开头的服务器提示不算自己的消息", !Boolean.TRUE.equals(systemHint));
+        check("同一条提示仍然会被翻译",
+                IncomingFilter.decide("To view your stats, type: /stats", config, false, false).translate());
+
+        // 忽略规则：编译 + 匹配都用生产代码那一份实现（见 hitsIgnorePattern 的说明）
+        check("忽略规则仍能命中 / 不误伤",
+                hitsIgnorePattern(config, "▬▬▬▬▬▬▬▬ Bed Wars")
+                        && !hitsIgnorePattern(config, "[MVP+] Steve: rush mid"));
+        check("非法正则只跳过、不炸",
+                LangUtils.compilePatterns(List.of("[未闭合", "^\\\\+\\\\d+ .*(XP|Coins|Tokens)"), null).size() == 1);
+        check("空/缺省列表安全",
+                LangUtils.compilePatterns(null, null).isEmpty()
+                        && !LangUtils.matchesAny("any text", LangUtils.compilePatterns(null, null)));
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
@@ -1054,7 +1347,11 @@ public class VerifyCore {
                 byte[] payload = response.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
                 exchange.sendResponseHeaders(effectiveStatus, payload.length);
-                exchange.getResponseBody().write(payload);
+                try {
+                    exchange.getResponseBody().write(payload);
+                } catch (IOException ignored) {
+                    // 客户端读到自己要的部分就断开了（例如「响应过大」用例），属预期情况
+                }
                 exchange.close();
             });
             server.start();

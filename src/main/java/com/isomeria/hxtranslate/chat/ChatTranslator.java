@@ -26,7 +26,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * 翻译的核心逻辑：
@@ -187,8 +186,10 @@ public final class ChatTranslator {
                 return;
             }
             translatedCount.incrementAndGet();
+            // 拼进聊天栏的原文同样只能是一行：服务器可以下发多行消息，
+            // 换行会被原版拆成多条聊天行，把「[译] …」那行挤掉前缀、看起来像服务器说的话。
             String line = config.includeOriginalInIncoming
-                    ? "§7" + text + " §8▏ " + config.incomingPrefix + translated
+                    ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + config.incomingPrefix + translated
                     : config.incomingPrefix + translated;
             Feedback.info(line);
         });
@@ -245,39 +246,36 @@ public final class ChatTranslator {
 
     private static String shorten(String text) {
         String oneLine = text.replace('\n', ' ').replace('\r', ' ');
-        return oneLine.length() <= DEBUG_TEXT_LIMIT
-                ? oneLine
-                : oneLine.substring(0, DEBUG_TEXT_LIMIT) + "…";
+        if (oneLine.length() <= DEBUG_TEXT_LIMIT) {
+            return oneLine;
+        }
+        String cut = oneLine.substring(0, DEBUG_TEXT_LIMIT);
+        // 别把代理对（emoji）劈成两半：孤立的高位代理在聊天栏/日志里是乱码方块。
+        // 这是 LangUtils.truncateForChat 里同一条规则的漏网分支（那边加了保护，这里漏了）。
+        if (Character.isHighSurrogate(cut.charAt(cut.length() - 1))) {
+            cut = cut.substring(0, cut.length() - 1);
+        }
+        return cut + "…";
     }
 
     private boolean isIgnored(String text) {
-        for (Pattern pattern : patterns()) {
-            if (pattern.matcher(text).find()) {
-                return true;
-            }
-        }
-        return false;
+        return LangUtils.matchesAny(text, patterns());
     }
 
-    /** 配置里的正则只在内容变化时重新编译。 */
+    /**
+     * 配置里的正则只在内容变化时重新编译。
+     *
+     * <p>编译规则本身在 {@link LangUtils#compilePatterns} 里，和离线自检共用同一份 ——
+     * 免得「用例测的是自检自己抄的一份实现」。
+     */
     private List<Pattern> patterns() {
         List<String> source = config.ignorePatterns;
         if (source == compiledFrom) {
             return compiledPatterns;
         }
         compiledPatterns.clear();
-        if (source != null) {
-            for (String regex : source) {
-                if (regex == null || regex.isBlank()) {
-                    continue;
-                }
-                try {
-                    compiledPatterns.add(Pattern.compile(regex, Pattern.CASE_INSENSITIVE));
-                } catch (PatternSyntaxException e) {
-                    HxTranslateClient.LOGGER.warn("忽略无效的 ignorePatterns 正则 '{}': {}", regex, e.getDescription());
-                }
-            }
-        }
+        compiledPatterns.addAll(LangUtils.compilePatterns(source,
+                regex -> HxTranslateClient.LOGGER.warn("忽略无效的 ignorePatterns 正则: {}", regex)));
         compiledFrom = source;
         return compiledPatterns;
     }
@@ -410,7 +408,10 @@ public final class ChatTranslator {
                     }
                     String outgoing = truncateTranslated(translated, config.maxOutgoingChars, "");
                     rememberSent(outgoing);
-                    sendProgrammatically(connection, outgoing, false);
+                    if (!sendProgrammatically(connection, outgoing, false)) {
+                        // 发送本身失败：sendProgrammatically 已经在聊天栏报错，这里不再谎报成功
+                        return;
+                    }
                     sentCount.incrementAndGet();
                     Feedback.info(config.outgoingPrefix + outgoing);
                 }));
@@ -559,7 +560,10 @@ public final class ChatTranslator {
                             "（要给命令本身留位置）");
                     String payload = head + outgoing;
                     rememberSent(outgoing);
-                    sendProgrammatically(connection, payload, true);
+                    if (!sendProgrammatically(connection, payload, true)) {
+                        // 同上：没发出去就不算发出
+                        return;
+                    }
                     sentCount.incrementAndGet();
                     Feedback.info(config.outgoingPrefix + "/" + payload);
                 }));
@@ -572,7 +576,13 @@ public final class ChatTranslator {
         return false;
     }
 
-    private void sendProgrammatically(ClientPacketListener connection, String payload, boolean asCommand) {
+    /**
+     * 真正把内容发出去。
+     *
+     * <p>返回 {@code false} 表示这次发送失败了：调用方**不能**再记一条「发出译文」，
+     * 也不能打一行「[→EN] …」的回显 —— 否则聊天栏和统计都会声称一条根本没发出去的消息已经发出。
+     */
+    private boolean sendProgrammatically(ClientPacketListener connection, String payload, boolean asCommand) {
         programmaticSend = true;
         try {
             if (asCommand) {
@@ -580,11 +590,13 @@ public final class ChatTranslator {
             } else {
                 connection.sendChat(payload);
             }
+            return true;
         } catch (RuntimeException e) {
             HxTranslateClient.LOGGER.error("发送翻译结果失败: {}", e.toString());
             if (config.showErrorsInChat) {
                 Feedback.error("发送失败: " + e.getMessage());
             }
+            return false;
         } finally {
             programmaticSend = false;
         }

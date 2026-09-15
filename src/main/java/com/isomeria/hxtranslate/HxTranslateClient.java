@@ -69,6 +69,11 @@ public final class HxTranslateClient implements ClientModInitializer {
 
     private void showStartupNotice() {
         Feedback.info("§8[§bhx§8] §7Hypixel 聊天翻译已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了，
+        // 甚至重新输入一遍 Key 把原件覆盖掉（原文件已经备份过，但先说清楚能省掉这一步）。
+        if (config.loadWarning() != null) {
+            Feedback.error(config.loadWarning());
+        }
         if (!config.hasApiKey()) {
             Feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
             Feedback.hint("配置文件: " + TranslatorConfig.configPath());

@@ -60,8 +60,11 @@ public final class TranslateCommand {
                     service.resetRateLimit();
                     // 重载往往是因为「刚换了 Key / 接口地址」，这时不该让之前攒下的熔断继续挡着
                     service.resetCircuit();
-                    context.getSource().sendFeedback(Component.literal(
-                            "§a配置已重新加载：缓存已清空、限流与熔断已复位"));
+                    // 文件改坏了要当场说：否则玩家会以为「reload 没生效」而反复重试
+                    String warning = config.loadWarning();
+                    context.getSource().sendFeedback(Component.literal(warning == null
+                            ? "§a配置已重新加载：缓存已清空、限流与熔断已复位"
+                            : "§c配置重新加载有问题：" + warning));
                     return 1;
                 }))
                 .then(ClientCommands.literal("debug")
@@ -98,7 +101,10 @@ public final class TranslateCommand {
                 })).then(ClientCommands.literal("off").executes(context -> {
                     config.translateOutgoing = false;
                     config.save();
-                    context.getSource().sendFeedback(Component.literal("§c已关闭：中文不再翻译，直接发送"));
+                    // 这条只管「直接打出来的聊天」：命令正文由 translateCommandMessages 单独控制，
+                    // 以前这里的提示是「中文不再翻译，直接发送」，和 /shout 仍会被翻译的实际行为不符。
+                    context.getSource().sendFeedback(Component.literal(
+                            "§c已关闭：直接打出的中文不再翻译（命令正文见 §ftranslateCommandMessages§c）"));
                     return 1;
                 })))
                 .then(ClientCommands.literal("key")

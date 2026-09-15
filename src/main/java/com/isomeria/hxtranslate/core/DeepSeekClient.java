@@ -8,6 +8,7 @@ import com.isomeria.hxtranslate.HxTranslateClient;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.util.LangUtils;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -38,6 +39,10 @@ public final class DeepSeekClient {
     private static final double CHINESE_OUTPUT_MAX_RATIO = 0.5;
     /** 对话补全的路径；配置里可能只写了域名，也可能把完整地址写进来。 */
     private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
+    /** 成功响应体的读取上限（正常译文最多几百字符，1 MiB 已经非常宽松）。 */
+    private static final int MAX_RESPONSE_BYTES = 1024 * 1024;
+    /** 错误响应体的读取上限：反正最终只截 160 字符显示给玩家。 */
+    private static final int MAX_ERROR_BYTES = 64 * 1024;
 
     /** 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。 */
     public record Result(boolean ok, String text, String error, boolean retryable) {
@@ -140,7 +145,12 @@ public final class DeepSeekClient {
             connection.setRequestProperty("Authorization", "Bearer " + config.apiKey.trim());
 
             int status = connection.getResponseCode();
-            String response = readBody(connection, status);
+            Result read = readBody(connection, status);
+            if (!read.ok()) {
+                // 连正文都读不出来（太大或读失败）：错误响应就退化成只看状态码
+                return status < 200 || status >= 300 ? httpError(status, "") : read;
+            }
+            String response = read.text();
             if (status < 200 || status >= 300) {
                 return httpError(status, response);
             }
@@ -152,12 +162,19 @@ public final class DeepSeekClient {
             StringBuilder names = new StringBuilder();
             for (JsonElement element : data) {
                 JsonObject model = element.getAsJsonObject();
-                if (model.has("id")) {
-                    if (!names.isEmpty()) {
-                        names.append("§7, §f");
-                    }
-                    names.append(model.get("id").getAsString());
+                if (!model.has("id")) {
+                    continue;
                 }
+                // 模型名是不可信文本：先清洗再拼进我们自己的颜色代码里。
+                // 分隔符里的 §7 / §f 是本模组加的高亮，不属于接口内容，不能一起洗掉。
+                String id = cleanApiText(model.get("id").getAsString());
+                if (id.isEmpty()) {
+                    continue;
+                }
+                if (!names.isEmpty()) {
+                    names.append("§7, §f");
+                }
+                names.append(id);
             }
             return Result.success(names.toString());
         } catch (IOException e) {
@@ -194,7 +211,12 @@ public final class DeepSeekClient {
             }
 
             int status = connection.getResponseCode();
-            String response = readBody(connection, status);
+            Result read = readBody(connection, status);
+            if (!read.ok()) {
+                // 连正文都读不出来（太大或读失败）：错误响应就退化成只看状态码
+                return status < 200 || status >= 300 ? httpError(status, "") : read;
+            }
+            String response = read.text();
 
             if (status < 200 || status >= 300) {
                 return httpError(status, response);
@@ -289,16 +311,41 @@ public final class DeepSeekClient {
         return json;
     }
 
-    private static String readBody(HttpURLConnection connection, int status) throws IOException {
-        InputStream stream = (status >= 200 && status < 300)
-                ? connection.getInputStream()
-                : connection.getErrorStream();
-        if (stream == null) {
-            return "";
+    private Result readBody(HttpURLConnection connection, int status) {
+        boolean success = status >= 200 && status < 300;
+        int limit = success ? MAX_RESPONSE_BYTES : MAX_ERROR_BYTES;
+        try (InputStream in = success ? connection.getInputStream() : connection.getErrorStream()) {
+            if (in == null) {
+                return Result.success("");
+            }
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int read;
+            while ((read = in.read(chunk)) != -1) {
+                if (buffer.size() + read > limit) {
+                    return Result.failure("接口返回内容过大（超过 " + (limit / 1024) + " KB），已忽略");
+                }
+                buffer.write(chunk, 0, read);
+            }
+            return Result.success(buffer.toString(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return Result.retryableFailure("网络错误: " + e.getClass().getSimpleName());
         }
-        try (InputStream in = stream) {
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
+    }
+
+    /**
+     * 清洗「接口返回的文本」——译文、模型名都走这里。
+     *
+     * <p>这些内容对模组来说是**不可信输入**（不少用户配的是第三方中转站），而它们最终都会
+     * 拼进 {@code Component.literal(...)} 显示在聊天栏：{@code §} 会被渲染成颜色代码，
+     * 换行则会被原版 {@code StringSplitter.splitLines} 拆成**多条独立的聊天行** ——
+     * 译文那一行会因此少掉 {@code [译]} 前缀，看起来就像服务器自己说的话。
+     *
+     * <p>v1.0.8 给「接口错误正文」加过同一道清洗，但只接在错误分支上；这里把译文与模型名也
+     * 收到同一个出口，规则只有一条：进聊天栏之前先压成一行、去掉格式代码。
+     */
+    private static String cleanApiText(String text) {
+        return LangUtils.sanitizeOneLine(text);
     }
 
     private Result parseResponse(String response, String sourceText, Direction direction) {
@@ -316,7 +363,7 @@ public final class DeepSeekClient {
             if (message == null || !message.has("content")) {
                 return Result.failure("返回内容缺少 message.content");
             }
-            String content = LangUtils.stripWrappingQuotes(message.get("content").getAsString());
+            String content = cleanApiText(LangUtils.stripWrappingQuotes(message.get("content").getAsString()));
             if (content.isEmpty()) {
                 return Result.failure("模型返回了空翻译");
             }

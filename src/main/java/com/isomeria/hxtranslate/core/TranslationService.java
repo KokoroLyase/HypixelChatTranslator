@@ -79,7 +79,9 @@ public final class TranslationService {
         return new LinkedHashMap<>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
-                return size() > Math.max(16, config.cacheSize);
+                // 下限用配置里的常量，别在这里写魔法数字：以前这里是 Math.max(16, ...)，
+                // 于是用户把 cacheSize 设成 0/3 都不生效，和 README 的说明也对不上。
+                return size() > Math.max(TranslatorConfig.MIN_CACHE_SIZE, config.cacheSize);
             }
         };
     }

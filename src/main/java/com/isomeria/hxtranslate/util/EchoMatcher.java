@@ -129,8 +129,10 @@ public final class EchoMatcher {
         if (idx <= 0) {
             return null;
         }
-        // 「To Steve: ...」是自己发出去的私聊
-        boolean outgoing = text.startsWith("To ");
+        // 「To Steve: ...」是自己发出去的私聊回显。
+        // 必须要求「To 」后面**紧跟**名字和冒号：服务器提示也可能以 To 开头、也含 ": "，
+        // 例如 "To view your stats, type: /stats" —— 以前这种整条会被当成「自己发的消息」而永不翻译。
+        boolean outgoing = isOutgoingPrivateMessage(text, idx);
         // 名字是 ": " 前面最后一个词（Hypixel 的 [MVP+]、[红队]、队伍名这些前缀里都不含空格）
         String head = text.substring(0, idx).strip();
         int space = head.lastIndexOf(' ');
@@ -142,6 +144,15 @@ public final class EchoMatcher {
         }
         name = name.strip();
         return isPlayerName(name) ? new Speaker(name, outgoing) : null;
+    }
+
+    /** {@code To <玩家名>: } 才是自己发出的私聊；其它的「以 To 开头的服务器提示」不算。 */
+    private static boolean isOutgoingPrivateMessage(String text, int colonSpaceIndex) {
+        if (!text.startsWith("To ")) {
+            return false;
+        }
+        // "To " 之后到 ": " 之前必须正好是一个玩家名（不能带空格、逗号之类的其它词）
+        return isPlayerName(text.substring(3, colonSpaceIndex).strip());
     }
 
     /** 名字是否像 Minecraft 玩家名：字母/数字/下划线，1~20 位（正版是 3~16 位）。 */

@@ -2,6 +2,7 @@ package com.isomeria.hxtranslate.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
@@ -9,10 +10,14 @@ import com.isomeria.hxtranslate.HxTranslateClient;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
-import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +34,23 @@ public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
     public static final int CURRENT_CONFIG_VERSION = 6;
+
+    /**
+     * v1.0.0 的配置文件里<b>没有</b> {@code configVersion} 这个字段（v1.0.1 起才写），
+     * 所以「文件里没有版本号」要当成这个版本，见 {@link #treatMissingVersionAsFirst(String, TranslatorConfig)}。
+     */
+    private static final int VERSION_WITHOUT_FIELD = 1;
+
+    /** {@code cacheSize} 的实际下限：再小就等于关掉缓存，重复消息会重新花钱，没有意义。 */
+    public static final int MIN_CACHE_SIZE = 16;
+
+    /**
+     * {@code maxOutgoingChars} 的硬上限 = 原版聊天输入框的长度上限。
+     *
+     * <p>超过它的聊天包会被服务端拒收（原版实现直接断连），所以这个值只能调小、不能调大，
+     * 见 {@link #normalize()}。
+     */
+    public static final int MAX_OUTGOING_CHARS_LIMIT = 256;
 
     /**
      * v1.1.1 及之前的默认 {@code ignorePatterns}。
@@ -75,6 +97,14 @@ public final class TranslatorConfig {
 
     /** 配置文件结构版本，请勿手动修改。 */
     public int configVersion = CURRENT_CONFIG_VERSION;
+
+    /**
+     * 这次读取配置时出的问题，正常为 {@code null}（见 {@link #loadWarning()}）。
+     *
+     * <p>{@code transient}：只给玩家看的临时状态，不写进 json ——
+     * 否则它会变成一个「文件里没有的字段」，每次启动都被 {@link #fillMissingFields} 当成缺字段重写一遍。
+     */
+    private transient String loadWarning;
 
     // ------------------------------------------------------------------
     // DeepSeek
@@ -445,10 +475,21 @@ public final class TranslatorConfig {
      * </ol>
      */
     public static TranslatorConfig load() {
-        Path path = configPath();
+        return load(configPath());
+    }
+
+    /**
+     * 从指定路径读取配置（{@link #load()} 用正式路径，这个重载让离线自检能在临时目录里跑完整流程）。
+     *
+     * <p><b>配置是用户资产，读不出来也不能弄丢它</b>：解析失败时先把原文件整份备份成
+     * {@code hxtranslate.json.broken-<时间戳>}，再退回默认值，并把原因记在 {@link #loadWarning()} 里。
+     * （以前这里只写一行日志、不做备份：用户手改 json 漏一个逗号，之后随便按一下 F6 —— 也就是任何一次
+     * {@link #save()} —— 就会把这份文件覆盖成默认值，Key、术语表、忽略规则全部永久消失。）
+     */
+    public static TranslatorConfig load(Path path) {
         if (!Files.exists(path)) {
             TranslatorConfig defaults = new TranslatorConfig();
-            defaults.save();
+            defaults.save(path);
             HxTranslateClient.LOGGER.info("已生成默认配置文件: {}", path);
             return defaults;
         }
@@ -459,14 +500,110 @@ public final class TranslatorConfig {
             if (loaded == null) {
                 throw new JsonSyntaxException("配置文件为空");
             }
+            treatMissingVersionAsFirst(json, loaded);
             loaded.normalize();
-            loaded.migrate();
+            loaded.migrate(path);
             loaded.fillMissingFields(json, path);
             return loaded;
         } catch (IOException | JsonSyntaxException e) {
+            Path backup = backupBrokenFile(path);
             HxTranslateClient.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
-            return new TranslatorConfig();
+            if (backup != null) {
+                HxTranslateClient.LOGGER.error("原文件已备份为 {}，修好后可改回原名", backup);
+            }
+            TranslatorConfig fallback = new TranslatorConfig();
+            fallback.loadWarning = describeLoadFailure(e, backup);
+            return fallback;
         }
+    }
+
+    /**
+     * 本次读取配置时遇到的问题；正常读取时为 {@code null}。
+     *
+     * <p>调用方（启动提示、{@code /hxtranslate reload}）应该把它转达给玩家 ——
+     * 「Key 没了 / 设置变回默认」如果只写在日志里，玩家只会以为模组坏了。
+     */
+    public String loadWarning() {
+        return loadWarning;
+    }
+
+    /** 给玩家看的失败说明：说清「这次按默认跑」和「原件在哪」。 */
+    private static String describeLoadFailure(Exception e, Path backup) {
+        String reason = (e instanceof JsonSyntaxException) ? "JSON 语法有误" : "文件读取失败";
+        if (backup == null) {
+            return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
+                    + "原文件未被改动，修好后执行 /hxtranslate reload。";
+        }
+        return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
+                + "原文件已备份为 " + backup.getFileName() + "，修好后改回原名并执行 /hxtranslate reload。";
+    }
+
+    /**
+     * 文件里没有 {@code configVersion} 时，把它当成 {@link #VERSION_WITHOUT_FIELD}（v1.0.0 时代）。
+     *
+     * <p>Gson 遇到「文件里没有这个键」会保留字段初始值，而初始值就是**当前**版本号，
+     * 于是 {@link #applyMigrations()} 第一行的「已经是最新版」判定会直接命中：
+     * 从 v1.0.0 一路升上来的用户，{@code model} 永远停在已下线的 {@code deepseek-chat}（每条请求 400）、
+     * 术语表为空、提示词和忽略规则也停在 v1.0.0 —— 而且 {@link #fillMissingFields} 还会把
+     * 当前版本号写回文件，从此任何版本都不会再修它。
+     *
+     * <p>当成 v1 是安全的：迁移只会补缺、只替换「仍是旧版默认值」的字段（见 {@link #applyMigrations()}）。
+     * 手写的最小配置（只有 {@code {"apiKey": "..."}}）走同一条路，结果是提示词/术语表/命令名单被补成默认值，
+     * 用户写下的 apiKey 不受影响。
+     */
+    private static void treatMissingVersionAsFirst(String diskJson, TranslatorConfig loaded) {
+        try {
+            if (!JsonParser.parseString(diskJson).getAsJsonObject().has("configVersion")) {
+                loaded.configVersion = VERSION_WITHOUT_FIELD;
+                HxTranslateClient.LOGGER.info("配置里没有 configVersion（v1.0.0 时代的文件），按 v{} 执行迁移",
+                        VERSION_WITHOUT_FIELD);
+            }
+        } catch (RuntimeException e) {
+            // 不是 JSON 对象：交给后面的迁移逻辑按当前值处理，不影响主流程
+            HxTranslateClient.LOGGER.warn("无法判断配置版本号（{}）", e.toString());
+        }
+    }
+
+    /**
+     * 把损坏的配置整份另存一份备份。
+     *
+     * <p>备份失败（磁盘满、权限不足）返回 {@code null}：备份是保险，不能反过来挡住「先用默认值跑起来」。
+     */
+    private static Path backupBrokenFile(Path path) {
+        Path backup = uniqueBackupPath(path, System.currentTimeMillis());
+        try {
+            Files.copy(path, backup);
+            return backup;
+        } catch (IOException e) {
+            HxTranslateClient.LOGGER.error("备份损坏的配置文件失败: {}", e.toString());
+            return null;
+        }
+    }
+
+    /** 备份文件名：{@code hxtranslate.json.broken-20260915-140312}，与配置同目录。纯函数，可离线测试。 */
+    public static Path brokenBackupPath(Path path, long timestampMillis) {
+        String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+                .withZone(ZoneId.systemDefault())
+                .format(Instant.ofEpochMilli(timestampMillis));
+        Path fileName = path.getFileName();
+        String name = (fileName == null ? "hxtranslate.json" : fileName.toString()) + ".broken-" + stamp;
+        Path parent = path.getParent();
+        return parent == null ? Path.of(name) : parent.resolve(name);
+    }
+
+    /** 同一秒里坏两次也不覆盖上一份备份：依次尝试 {@code -2}、{@code -3}…。 */
+    public static Path uniqueBackupPath(Path path, long timestampMillis) {
+        Path candidate = brokenBackupPath(path, timestampMillis);
+        if (!Files.exists(candidate)) {
+            return candidate;
+        }
+        for (int i = 2; i < 100; i++) {
+            Path next = candidate.resolveSibling(candidate.getFileName() + "-" + i);
+            if (!Files.exists(next)) {
+                return next;
+            }
+        }
+        return candidate;
     }
 
     /**
@@ -488,7 +625,7 @@ public final class TranslatorConfig {
             if (missing.isEmpty()) {
                 return;
             }
-            save();
+            save(path);
             HxTranslateClient.LOGGER.info("配置文件已自动补全新字段 {}（原有设置未改动）: {}", missing, path);
         } catch (RuntimeException e) {
             HxTranslateClient.LOGGER.warn("补全配置字段失败（不影响使用）: {}", e.toString());
@@ -500,13 +637,13 @@ public final class TranslatorConfig {
      *
      * <p>只覆盖「还是老版默认值」或空白的字段，用户自己改过的内容不会被冲掉。
      */
-    private void migrate() {
+    private void migrate(Path path) {
         int before = configVersion;
         boolean changed = applyMigrations();
         if (configVersion != before) {
             HxTranslateClient.LOGGER.info("配置已从 v{} 升级到 v{}（{}）", before, configVersion,
                     changed ? "新增默认值已补齐，自定义内容保留" : "无需改动");
-            save();
+            save(path);
         }
     }
 
@@ -572,13 +709,15 @@ public final class TranslatorConfig {
 
         // ---- v3 -> v4：提示词换成带少样本示例的版本、术语表补词、限流默认值 40 -> 60 ----
         if (from < 4) {
-            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKERS)
-                    || !incomingSystemPrompt.contains("Examples:")) {
+            // 只认「老版默认提示词」（带 LEGACY_* 标记），不再用「里面没有 Examples:」当判据：
+            // 手写提示词本来就可能没有 Examples:，那样会被整段换成默认值 —— 直接违反 §5
+            // 「绝不覆盖用户自定义」。历史上每个版本的默认提示词都带标记（v1.0.0~v1.0.2 有第一/第二条，
+            // v1.0.3 起带 Examples），所以只用标记判断不会漏掉任何该升级的配置。
+            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKERS)) {
                 incomingSystemPrompt = defaults.incomingSystemPrompt;
                 changed = true;
             }
-            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKERS)
-                    || !outgoingSystemPrompt.contains("Examples:")) {
+            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKERS)) {
                 outgoingSystemPrompt = defaults.outgoingSystemPrompt;
                 changed = true;
             }
@@ -684,14 +823,81 @@ public final class TranslatorConfig {
     }
 
     public void save() {
-        Path path = configPath();
+        save(configPath());
+    }
+
+    /**
+     * 保存到指定路径（{@link #save()} 用正式路径，这个重载让离线自检能在临时目录里验证完整流程）。
+     */
+    public void save(Path path) {
+        Path parent = path.toAbsolutePath().getParent();
         try {
-            Files.createDirectories(path.getParent());
-            try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
-                GSON.toJson(this, writer);
+            if (parent != null) {
+                Files.createDirectories(parent);
             }
+            writeAtomically(path, serializeKeepingUnknownFields(path));
         } catch (IOException e) {
             HxTranslateClient.LOGGER.error("保存配置失败: {}", e.toString());
+        }
+    }
+
+    /**
+     * 序列化当前配置，同时保留文件里那些「我们不认识的键」。
+     *
+     * <p>直接 {@code GSON.toJson(this)} 是按字段白名单整份重写：用户自己加的备注字段，
+     * 或者「装过新版模组又换回旧版」时新版写进去的字段，都会在下次保存时被悄悄抹掉。
+     * 配置是用户资产，不属于当前结构的键一律原样留着（同名键以当前值为准）。
+     */
+    private String serializeKeepingUnknownFields(Path path) {
+        JsonObject current = GSON.toJsonTree(this).getAsJsonObject();
+        try {
+            if (!Files.exists(path)) {
+                return GSON.toJson(current);
+            }
+            JsonElement onDisk = JsonParser.parseString(Files.readString(path, StandardCharsets.UTF_8));
+            if (!onDisk.isJsonObject()) {
+                return GSON.toJson(current);
+            }
+            JsonObject merged = onDisk.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> entry : current.entrySet()) {
+                merged.add(entry.getKey(), entry.getValue());
+            }
+            return GSON.toJson(merged);
+        } catch (IOException | RuntimeException e) {
+            // 旧文件读不出来（例如刚被改坏）：直接按当前内容重写，损坏的那份已经在 load() 里备份过了
+            HxTranslateClient.LOGGER.warn("读取旧配置失败，本次按当前内容重写: {}", e.toString());
+            return GSON.toJson(current);
+        }
+    }
+
+    /**
+     * 原子写入：先写同目录的临时文件，再改名覆盖目标。
+     *
+     * <p>以前是直接 {@code Files.newBufferedWriter(目标)} —— 它先截断目标文件再写，
+     * 写到一半崩溃/断电就留下半个 json，下次启动解析失败。改名在同一目录内是原子的
+     * （Windows 亦然），于是磁盘上要么是完整的新内容、要么是完整的旧内容。
+     *
+     * @return 是否写入成功
+     */
+    public static boolean writeAtomically(Path path, String json) {
+        Path temp = path.resolveSibling(path.getFileName() + ".tmp");
+        try {
+            Files.writeString(temp, json, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                // 少见（某些网络盘/共享目录）：退回普通覆盖，至少内容已经完整写进临时文件了
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+            return true;
+        } catch (IOException e) {
+            HxTranslateClient.LOGGER.error("写入配置失败: {}", e.toString());
+            try {
+                Files.deleteIfExists(temp);
+            } catch (IOException ignored) {
+                // 临时文件删不掉也无妨：下一次写入会覆盖它
+            }
+            return false;
         }
     }
 
@@ -706,10 +912,14 @@ public final class TranslatorConfig {
         minLatinLetters = Math.max(1, minLatinLetters);
         chineseRatioThreshold = Math.min(1.0, Math.max(0.05, chineseRatioThreshold));
         maxIncomingChars = Math.max(16, maxIncomingChars);
-        maxOutgoingChars = Math.max(16, maxOutgoingChars);
+        // 上限同样要夹紧：原版聊天框和服务端都按 256 个字符判定，超长的聊天包会被拒收甚至断连 ——
+        // 把 maxOutgoingChars 调大不是「能发更长的句子」，而是「可能被服务器踢」。
+        maxOutgoingChars = Math.min(MAX_OUTGOING_CHARS_LIMIT, Math.max(16, maxOutgoingChars));
         requestsPerMinute = Math.max(1, requestsPerMinute);
         maxPendingTranslations = Math.max(1, maxPendingTranslations);
-        cacheSize = Math.max(0, cacheSize);
+        // 下限显式写出来：以前这个 16 藏在 TranslationService 里，配置写 0 也关不掉缓存，
+        // 与 README 的「翻译缓存条数」不符。
+        cacheSize = Math.max(MIN_CACHE_SIZE, cacheSize);
         connectTimeoutSeconds = Math.max(1, connectTimeoutSeconds);
         httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
         maxTokens = Math.max(32, maxTokens);
@@ -754,6 +964,8 @@ public final class TranslatorConfig {
 
     private void copyFrom(TranslatorConfig o) {
         this.configVersion = o.configVersion;
+        // 重载失败的原因也要跟着过来，否则 /hxtranslate reload 之后提示就丢了
+        this.loadWarning = o.loadWarning;
         this.apiKey = o.apiKey;
         this.apiBaseUrl = o.apiBaseUrl;
         this.model = o.model;

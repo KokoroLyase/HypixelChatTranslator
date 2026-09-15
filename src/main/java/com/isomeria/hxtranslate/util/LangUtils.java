@@ -1,7 +1,13 @@
 package com.isomeria.hxtranslate.util;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * 语言与文本小工具。刻意不依赖任何 Minecraft 类，方便离线单元测试。
@@ -267,6 +273,49 @@ public final class LangUtils {
             return "";
         }
         return text.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 编译配置里的正则（{@code ignorePatterns} 这类）。
+     *
+     * <p>放在这里是为了让「生产代码」和「离线自检」用同一份规则：自检如果自己抄一遍
+     * {@code Pattern.compile(regex, CASE_INSENSITIVE)}，那么生产代码哪天把 {@link Matcher#find()}
+     * 改成 {@link Matcher#matches()}、或者丢掉 {@code CASE_INSENSITIVE}，用例照样是绿的
+     * —— 等于那些用例根本没在保护东西。
+     *
+     * @param onInvalid 遇到写错的正则时回调（传正则原文），可以为 null；调用方决定怎么记日志
+     */
+    public static List<Pattern> compilePatterns(List<String> regexes, Consumer<String> onInvalid) {
+        if (regexes == null || regexes.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<Pattern> compiled = new ArrayList<>(regexes.size());
+        for (String regex : regexes) {
+            if (regex == null || regex.isBlank()) {
+                continue;
+            }
+            try {
+                compiled.add(Pattern.compile(regex, Pattern.CASE_INSENSITIVE));
+            } catch (PatternSyntaxException e) {
+                if (onInvalid != null) {
+                    onInvalid.accept(regex);
+                }
+            }
+        }
+        return compiled;
+    }
+
+    /** 文本是否命中任意一条已编译的正则（子串语义，不区分大小写）。 */
+    public static boolean matchesAny(String text, List<Pattern> patterns) {
+        if (text == null || patterns == null) {
+            return false;
+        }
+        for (Pattern pattern : patterns) {
+            if (pattern.matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 去掉模型有时会自作主张加上的包裹引号。 */
