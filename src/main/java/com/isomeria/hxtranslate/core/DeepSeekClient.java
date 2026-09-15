@@ -34,6 +34,8 @@ public final class DeepSeekClient {
     private static final long BREAKER_OPEN_MS = 60_000L;
     /** 重试前的退避时间。 */
     private static final long RETRY_BACKOFF_MS = 800L;
+    /** 发送方向的译文汉字占比达到多少，就判定「模型根本没翻译」。 */
+    private static final double CHINESE_OUTPUT_MAX_RATIO = 0.5;
 
     /** 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。 */
     public record Result(boolean ok, String text, String error, boolean retryable) {
@@ -190,7 +192,7 @@ public final class DeepSeekClient {
             if (status < 200 || status >= 300) {
                 return httpError(status, response);
             }
-            return parseResponse(response, text);
+            return parseResponse(response, text, direction);
         } catch (IOException e) {
             HxTranslateClient.LOGGER.warn("翻译请求失败: {}", e.toString());
             return Result.retryableFailure("网络错误: " + e.getClass().getSimpleName());
@@ -282,7 +284,7 @@ public final class DeepSeekClient {
         }
     }
 
-    private Result parseResponse(String response, String sourceText) {
+    private Result parseResponse(String response, String sourceText, Direction direction) {
         try {
             JsonElement parsed = JsonParser.parseString(response);
             if (!parsed.isJsonObject()) {
@@ -306,6 +308,13 @@ public final class DeepSeekClient {
             int limit = Math.max(80, sourceText.length() * 4);
             if (content.length() > limit) {
                 return Result.failure("译文长度异常（" + content.length() + " 字符，疑似模型没有只输出译文）");
+            }
+            // 发送方向必须真的译成英文：模型偶尔会把中文原样吐回来（短句、口语尤其容易），
+            // 那样等于替玩家把中文发到英文服，正是本模组要避免的事。
+            // 阈值取一半：英文译文里夹一个中文玩家名（"find 小明 to play"）不会被误杀，
+            // 整句原样返回中文（占比 1.0）一定拦下。
+            if (!direction.toChinese() && LangUtils.hanRatio(content) >= CHINESE_OUTPUT_MAX_RATIO) {
+                return Result.failure("模型没有译成英文（返回的仍是中文）");
             }
             return Result.success(content);
         } catch (RuntimeException e) {

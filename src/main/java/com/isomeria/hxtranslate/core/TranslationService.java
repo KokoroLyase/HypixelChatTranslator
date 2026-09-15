@@ -109,6 +109,20 @@ public final class TranslationService {
         }
 
         String key = direction.name() + '|' + LangUtils.normalizeKey(text);
+
+        // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
+        // 免得延迟滚雪球、内存也跟着涨。
+        //
+        // 这一步必须排在限流之前：被背压挡下的请求根本没有发出去，
+        // 却先把每分钟的配额吃掉，等于让后面的消息替它买单。
+        ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
+        if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
+            if (config.debugLog) {
+                HxTranslateClient.LOGGER.info("[queue-full] 丢弃 {}", text);
+            }
+            return SubmitResult.QUEUE_FULL;
+        }
+
         String cached;
         synchronized (this) {
             cached = cache.get(key);
@@ -117,7 +131,12 @@ public final class TranslationService {
             if (config.debugLog) {
                 HxTranslateClient.LOGGER.info("[cache] {} {}", direction.label(), text);
             }
-            callback.onResult(true, cached, null);
+            // 缓存命中也要走同一个执行队列，绝不能在这里直接回调调用方。
+            // 发送方向是单线程 FIFO，直接回调等于让「命中缓存的第二条」插队：
+            // 先发的那条还在等网络，后发的这条已经排队去发了，译文就会乱序。
+            // （v1.0.5 为「连打两条中文乱序」改成了单线程池，但漏了这条捷径。）
+            String hit = cached;
+            pool.execute(() -> callback.onResult(true, hit, null));
             return SubmitResult.ACCEPTED;
         }
 
@@ -126,16 +145,6 @@ public final class TranslationService {
                 HxTranslateClient.LOGGER.info("[rate-limit] 丢弃 {}", text);
             }
             return SubmitResult.RATE_LIMITED;
-        }
-
-        // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
-        // 免得延迟滚雪球、内存也跟着涨。
-        ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
-        if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
-            if (config.debugLog) {
-                HxTranslateClient.LOGGER.info("[queue-full] 丢弃 {}", text);
-            }
-            return SubmitResult.QUEUE_FULL;
         }
 
         pool.execute(() -> {

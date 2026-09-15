@@ -16,9 +16,12 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -43,6 +46,7 @@ public class VerifyCore {
         v104Hardening();
         v105ApiAndSafety();
         v106Review();
+        v107Fixes();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -229,23 +233,23 @@ public class VerifyCore {
         // ---- EchoMatcher：v1.0.2 的「包含」判断会把别人的话误判成自己的回显 ----
         String shout1 = "[喊话] [黄队] [MVP+] Maceuser: green u have a real good range";
         String shout2 = "[喊话] [红队] [MVP+] iFarmUnityPhoneFri: ur so sweaty bro chill! fr fr";
-        check("发过 \"u\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout1, List.of("u")) == null);
-        check("发过 \"so\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout2, List.of("so")) == null);
+        check("发过 \"u\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout1, justSent("u")) == null);
+        check("发过 \"so\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout2, justSent("so")) == null);
         check("发过 \"hi\" 不会把含 hi 的句子误判成回显",
-                EchoMatcher.findEcho("[MVP+] Steve: hi there buddy", List.of("hi")) == null);
+                EchoMatcher.findEcho("[MVP+] Steve: hi there buddy", justSent("hi")) == null);
         check("发过 \"go\" 不会把别人的话误判成回显",
-                EchoMatcher.findEcho("[MVP+] Alex: going mid now", List.of("go")) == null);
+                EchoMatcher.findEcho("[MVP+] Alex: going mid now", justSent("go")) == null);
 
         // 真正的回显仍然要被认出来
         check("自己的喊话回显能认出来",
                 EchoMatcher.findEcho("[喊话] [黄队] Isomeria: hello everyone come mid",
-                        List.of("hello everyone come mid")) != null);
-        check("自己的私聊回显能认出来", EchoMatcher.findEcho("To Steve: hi", List.of("hi")) != null);
+                        justSent("hello everyone come mid")) != null);
+        check("自己的私聊回显能认出来", EchoMatcher.findEcho("To Steve: hi", justSent("hi")) != null);
         check("自己发的英文回显能认出来（v1.0.3 起英文也会被记住）",
-                EchoMatcher.findEcho("[MVP+] Isomeria: nice bed defense", List.of("nice bed defense")) != null);
+                EchoMatcher.findEcho("[MVP+] Isomeria: nice bed defense", justSent("nice bed defense")) != null);
         check("服务器截断的长消息也能认出来",
                 EchoMatcher.findEcho("Steve: this is a very long message that got",
-                        List.of("this is a very long message that got cut off")) != null);
+                        justSent("this is a very long message that got cut off")) != null);
 
         // ---- LangUtils 新信号 ----
         checkEq("英文信号词：英文句子", 3, LangUtils.countEnglishHintWords("was thrown into a black hole by G19sy"));
@@ -449,9 +453,107 @@ public class VerifyCore {
         check("别的命令不算自己的命令", !CommandMessage.isAlwaysProtected("shout hello"));
     }
 
+    /**
+     * v1.0.7：复核发现的 4 个真实缺陷 + 1 道防御。
+     *
+     * <p>其中「缓存命中插队」是 v1.0.5「连打两条中文乱序」那次修复漏掉的路径：
+     * 当时把发送方向改成了单线程 FIFO，但缓存命中在 {@code submit()} 里直接回调，
+     * 根本没进那个队列。
+     */
+    private static void v107Fixes() throws Exception {
+        System.out.println("== v1.0.7：缓存插队 / 回显时间窗 / 模型兜底 / 未翻译输出 ==");
+
+        // 1) 模型名兜底值：空 model 不能回落成已下线的 deepseek-chat
+        TranslatorConfig blankModel = new TranslatorConfig();
+        blankModel.model = "   ";
+        blankModel.normalize();
+        checkEq("空模型名兜底成当前默认模型", "deepseek-flash", blankModel.model);
+        checkEq("默认模型常量与字段一致", TranslatorConfig.DEFAULT_MODEL, new TranslatorConfig().model);
+
+        // 2) 回显时间窗：自己发过的短译文不能整局都拿去吞别人的话
+        long now = System.currentTimeMillis();
+        check("时间窗内：自己发出去的译文回显认得出来",
+                EchoMatcher.findEcho("[MVP+] Isomeria: wp",
+                        List.of(EchoMatcher.Sent.at("wp", now - 900)), now) != null);
+        check("玩家反馈场景：约 1 分钟后别人说的 wp 必须照常翻译",
+                EchoMatcher.findEcho("[MVP+] [红队] Steve: wp",
+                        List.of(EchoMatcher.Sent.at("wp", now - 60_000)), now) == null);
+        check("时间窗边缘内仍算自己的回显",
+                EchoMatcher.findEcho("[MVP+] Isomeria: ty",
+                        List.of(EchoMatcher.Sent.at("ty", now - 14_000)), now) != null);
+        check("超过时间窗的长消息也不再认领",
+                EchoMatcher.findEcho("[MVP+] Steve: inc mid, u def obby",
+                        List.of(EchoMatcher.Sent.at("inc mid, u def obby", now - 16_000)), now) == null);
+        check("时钟回拨时宁可多翻一条，也不吞别人的话",
+                EchoMatcher.findEcho("[MVP+] Steve: wp",
+                        List.of(EchoMatcher.Sent.at("wp", now + 5_000)), now) == null);
+
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+
+            // 3) 发送方向：模型原样返回中文必须按失败处理
+            //    （否则等于替玩家把中文发到英文服，正是本模组要避免的事）
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.response = ok("你好世界");
+            DeepSeekClient.Result unchanged = client.translate("你好世界", Direction.OUTGOING);
+            check("译文仍是中文 -> 判为失败", !unchanged.ok() && unchanged.error().contains("仍是中文"));
+
+            server.response = ok("find 小明 to play");
+            check("英文译文里夹中文玩家名不算「没翻译」",
+                    client.translate("找小明一起玩", Direction.OUTGOING).ok());
+
+            server.response = ok("你好世界");
+            check("接收方向返回中文是正常的（不受这道校验影响）",
+                    client.translate("hello world", Direction.INCOMING).ok());
+
+            // 4) 缓存命中不能插队：先发的必须先回调
+            server.delayMs = 0;
+            server.response = ok("cached translation");
+            TranslationService service = new TranslationService(config);
+            CountDownLatch warmed = new CountDownLatch(1);
+            checkEq("预热请求受理", TranslationService.SubmitResult.ACCEPTED,
+                    service.submit("你好世界", Direction.OUTGOING, (ok, t, e) -> warmed.countDown()));
+            check("预热请求完成（结果已进缓存）", warmed.await(10, TimeUnit.SECONDS));
+
+            server.delayMs = 600;
+            server.response = ok("network translation");
+            List<String> order = Collections.synchronizedList(new ArrayList<>());
+            CountDownLatch both = new CountDownLatch(2);
+            service.submit("这是一条要走网络的中文消息", Direction.OUTGOING,
+                    (ok, t, e) -> { order.add("先发(走网络)"); both.countDown(); });
+            service.submit("你好世界", Direction.OUTGOING,
+                    (ok, t, e) -> { order.add("后发(命中缓存)"); both.countDown(); });
+            check("两条都拿到回调", both.await(10, TimeUnit.SECONDS));
+            checkEq("命中缓存的第二条不插队，仍然先发先回",
+                    List.of("先发(走网络)", "后发(命中缓存)"), List.copyOf(order));
+            service.shutdown();
+
+            // 5) 被背压挡下的请求不该消耗每分钟配额
+            TranslatorConfig burst = new TranslatorConfig();
+            burst.apiKey = "sk-test";
+            burst.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            burst.requestsPerMinute = 100;
+            burst.maxPendingTranslations = 1;
+            TranslationService serviceBurst = new TranslationService(burst);
+            server.delayMs = 1500;
+            // 接收方向是 2 个工作线程：先让两个线程都忙起来，队列才是空的
+            serviceBurst.submit("背压一", Direction.INCOMING, (ok, t, e) -> { });
+            serviceBurst.submit("背压二", Direction.INCOMING, (ok, t, e) -> { });
+            Thread.sleep(400);
+            checkEq("两个工作线程都忙时仍可排队一条", TranslationService.SubmitResult.ACCEPTED,
+                    serviceBurst.submit("背压三", Direction.INCOMING, (ok, t, e) -> { }));
+            checkEq("队列积压 -> QUEUE_FULL", TranslationService.SubmitResult.QUEUE_FULL,
+                    serviceBurst.submit("背压四", Direction.INCOMING, (ok, t, e) -> { }));
+            checkEq("被挡下的请求不消耗限流配额（只应记 3 条）", 3,
+                    serviceBurst.usedRequestsThisMinute());
+            serviceBurst.shutdown();
+        }
+    }
+
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
-    private static void hypixelSamples() {
-        System.out.println("== Hypixel 真实聊天样本回归 ==");
+    private static void hypixelSamples() {        System.out.println("== Hypixel 真实聊天样本回归 ==");
         TranslatorConfig config = new TranslatorConfig();
 
         // bug 1：中文客户端的英文喊话带本地化队伍名 [红队]，以前「见汉字就跳过」导致整条不翻译
@@ -486,6 +588,15 @@ public class VerifyCore {
         // 自己消息的回显不翻译
         check("自己的回显跳过",
                 !IncomingFilter.decide("[MVP+] [红队] Steve: rush mid", config, false, true).translate());
+    }
+
+    /** 把一批文本当作「刚刚发出」的消息，用于回显比对测试。 */
+    private static List<EchoMatcher.Sent> justSent(String... texts) {
+        List<EchoMatcher.Sent> sent = new ArrayList<>(texts.length);
+        for (String text : texts) {
+            sent.add(EchoMatcher.Sent.now(text));
+        }
+        return sent;
     }
 
     private static void assertTranslate(TranslatorConfig config, String text) {

@@ -30,6 +30,15 @@ public final class TranslatorConfig {
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
     public static final int CURRENT_CONFIG_VERSION = 5;
 
+    /**
+     * 当前默认模型名（2026-09 起 DeepSeek 的有效名字）。
+     *
+     * <p>做成常量是因为 {@link #normalize()} 里也要用同一个兜底值：
+     * 之前那里写死了已经下线的 {@code deepseek-chat}，而迁移只在 {@code configVersion < 5}
+     * 时才会纠正模型名 —— 于是「已经是 v5 的配置 + model 被清空」会让每条请求都 400。
+     */
+    public static final String DEFAULT_MODEL = "deepseek-flash";
+
     /** v1.0.5 之前默认的模型名，2026-09 起 DeepSeek 已下线该名称。 */
     private static final List<String> RETIRED_MODELS = List.of(
             "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
@@ -64,7 +73,7 @@ public final class TranslatorConfig {
     public String apiBaseUrl = "https://api.deepseek.com";
 
     /** 使用的模型。2026-09 起 DeepSeek 只提供 deepseek-flash 与 deepseek-v4-pro，旧名 deepseek-chat 已下线。 */
-    public String model = "deepseek-flash";
+    public String model = DEFAULT_MODEL;
 
     /**
      * 是否开启思考模式。
@@ -648,13 +657,13 @@ public final class TranslatorConfig {
         }
     }
 
-    /** 修正明显不合理的值，避免用户手改配置后崩溃。 */
-    private void normalize() {
+    /** 修正明显不合理的值，避免用户手改配置后崩溃或一直失败。 */
+    public void normalize() {
         if (apiBaseUrl == null || apiBaseUrl.isBlank()) {
             apiBaseUrl = "https://api.deepseek.com";
         }
         if (model == null || model.isBlank()) {
-            model = "deepseek-chat";
+            model = DEFAULT_MODEL;
         }
         minLatinLetters = Math.max(1, minLatinLetters);
         chineseRatioThreshold = Math.min(1.0, Math.max(0.05, chineseRatioThreshold));

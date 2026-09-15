@@ -41,7 +41,7 @@ import java.util.regex.PatternSyntaxException;
  */
 public final class ChatTranslator {
 
-    /** 记住最近发出的英文，避免服务器回显时又被翻译回中文。 */
+    /** 记住最近发出的英文，避免服务器回显时又被翻译回中文（带时间窗，见 EchoMatcher）。 */
     private static final int RECENT_SENT_LIMIT = 8;
 
     /** 同一条聊天栏告警的最小间隔，避免接口异常时刷屏。 */
@@ -53,7 +53,7 @@ public final class ChatTranslator {
     private final TranslatorConfig config;
     private final TranslationService service;
 
-    private final Deque<String> recentlySent = new ArrayDeque<>();
+    private final Deque<EchoMatcher.Sent> recentlySent = new ArrayDeque<>();
     private final List<Pattern> compiledPatterns = new ArrayList<>();
     private List<String> compiledFrom;
 
@@ -272,7 +272,7 @@ public final class ChatTranslator {
     /**
      * 判断这条消息是不是自己刚发出去、被服务器回显回来的。
      *
-     * <p>匹配逻辑抽在 {@link EchoMatcher} 里，那里有离线回归测试。
+     * <p>匹配逻辑（整条一致 + 时间窗）抽在 {@link EchoMatcher} 里，那里有离线回归测试。
      *
      * @return 命中的那条自己发过的消息；不是自己的回显则返回 null
      */
@@ -281,11 +281,11 @@ public final class ChatTranslator {
     }
 
     private synchronized void rememberSent(String english) {
-        String normalized = LangUtils.normalizeKey(english);
-        if (normalized.isEmpty()) {
+        EchoMatcher.Sent sent = EchoMatcher.Sent.now(english);
+        if (sent.text().isEmpty()) {
             return;
         }
-        recentlySent.addLast(normalized);
+        recentlySent.addLast(sent);
         while (recentlySent.size() > RECENT_SENT_LIMIT) {
             recentlySent.removeFirst();
         }
