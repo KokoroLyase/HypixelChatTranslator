@@ -70,6 +70,7 @@
 /hxtranslate outgoing on|off 只控制「发消息翻译」
 /hxtranslate key <Key>       设置 DeepSeek API Key
 /hxtranslate test <文本>      测试翻译一段文本（结果会打印在聊天栏）
+/hxtranslate models          查询 DeepSeek 当前可用的模型名（接口改版时自查）
 /hxtranslate debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
 /hxtranslate reload          重新读取配置文件并清空缓存
 ```
@@ -106,8 +107,10 @@
 | --- | --- | --- |
 | `apiKey` | `""` | DeepSeek API Key |
 | `apiBaseUrl` | `https://api.deepseek.com` | 接口地址，用中转站时改这里 |
-| `model` | `deepseek-chat` | 模型；`deepseek-chat` 快且便宜 |
-| `temperature` | `1.3` | DeepSeek 官方建议的翻译温度 |
+| `model` | `deepseek-flash` | 模型。**2026-09 起 DeepSeek 只提供 `deepseek-flash` 与 `deepseek-v4-pro`**，旧的 `deepseek-chat` 已下线（升级时会自动改过来） |
+| `enableThinking` | `false` | 是否开启思考模式。新模型**默认开启**，聊天翻译既慢又贵，所以默认显式关闭 |
+| `temperature` | `0.7` | 采样温度；翻译要稳定，别调太高（思考模式下该参数不生效） |
+| `retryOnFailure` | `true` | 429/5xx/网络抖动时自动重试一次；连续失败 5 次后熔断 60 秒 |
 | `enabled` | `true` | 总开关 |
 | `translateIncoming` | `true` | 翻译收到的英文 |
 | `translateOutgoing` | `true` | 翻译自己发的中文 |
@@ -131,6 +134,9 @@
 | `httpTimeoutSeconds` | `20` | 请求超时 |
 | `ignorePatterns` | 若干正则 | 命中的消息不翻译（服务器提示音效等） |
 | `skipOwnEcho` | `true` | 自己发出（含直接打英文）的消息被服务器回显时不再翻回中文 |
+| `failureFallback` | `CANCEL` | 发送方向翻译失败时：`CANCEL` = 不发送、只在聊天栏提示（默认）；`SEND_ORIGINAL` = 按中文原文发出去 |
+| `blacklistedPlayers` | `[]` | 永不翻译这些玩家的消息（写游戏名即可），朋友是中国人时很有用 |
+| `connectTimeoutSeconds` | `5` | 建立连接超时 |
 | `showErrorsInChat` | `true` | 出错时在聊天栏提示 |
 | `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/hxtranslate debug on`） |
 | `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词（内含少样本示例），可自行微调语气 |
@@ -194,7 +200,11 @@ Hypixel 的聊天内容很"脏"：同一个句子里可能既有中文又有英�
 执行 `/hxtranslate key sk-xxx`，或编辑 `config/hxtranslate.json` 后 `/hxtranslate reload`。
 
 **提示 401 / 402 / 429**
-401 = Key 无效；402 = DeepSeek 账户余额不足；429 = 请求太频繁（调小 `requestsPerMinute`）。
+401 = Key 无效；402 = DeepSeek 账户余额不足；429 = 请求太频繁（调小 `requestsPerMinute`；模组本身会自动重试一次，连续失败 5 次会熔断 60 秒）。
+
+**提示 400 / 模型不可用**
+DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek-flash`）。执行
+`/hxtranslate models` 看当前可用的模型名，再把配置里的 `model` 改成列表里的名字，然后 `/hxtranslate reload`。
 
 **我发中文后要等一秒才发出去**
 正常现象：模组先取消原发送，等翻译结果回来再发，期间聊天栏会显示「翻译中…」。
@@ -234,7 +244,16 @@ v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 �
 **换了别的服务器 / 单机还能用吗？**
 能。它只监听客户端聊天事件，和具体服务器无关。
 
-## 9. 从源码构建
+## 9. 隐私与合规
+
+- **聊天内容会发到 DeepSeek 的服务器**：开启的「收到翻译」会把**其他玩家**在游戏里说的话发送给 DeepSeek API 才能翻译 —— 这是本模组的工作原理，不是可选项。介意的话用 `/hxtranslate incoming off` 关掉接收方向，只保留你自己发消息时的翻译。
+- **不会上传**账号、密码、坐标、背包等游戏数据；模组只读取聊天栏文本，并且只把需要翻译的那一条发出去。
+- **API Key** 只存在你本机的 `.minecraft/config/hxtranslate.json`，只用于直连 DeepSeek。本模组没有任何自建服务器，不会把 Key 或聊天内容转发到别处。
+- **不要**把配置文件或日志发给别人（里面有 Key）；仓库的 `.gitignore` 已排除本地配置。
+- **服务器规则**：本模组只做「读聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏。但个别服务器把「自动代发」视为宏，请自行查阅所在服务器规则（Hypixel 见 *Allowed Modifications*）。
+- **DeepSeek 服务条款**：使用即表示你同意 <https://api-docs.deepseek.com/zh-cn/> 的条款与计费方式。
+
+## 10. 从源码构建
 
 需要 **JDK 25**：
 
@@ -259,6 +278,6 @@ javac -encoding UTF-8 -cp "build/classes/java/main:$LIBS" -d build/verify tools/
 java -cp "build/classes/java/main:build/verify:$LIBS" VerifyCore
 ```
 
-## 10. 许可
+## 11. 许可
 
 MIT。

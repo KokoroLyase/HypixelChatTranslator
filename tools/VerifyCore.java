@@ -9,6 +9,7 @@ import com.isomeria.hxtranslate.util.CommandMessage;
 import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
+import com.isomeria.hxtranslate.util.PlayerBlacklist;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
@@ -40,6 +41,7 @@ public class VerifyCore {
         hypixelSamples();
         v103Regressions();
         v104Hardening();
+        v105ApiAndSafety();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -333,6 +335,106 @@ public class VerifyCore {
         }
     }
 
+    /** v1.0.5：DeepSeek 换模型名 + 关思考模式 + 重试熔断 + 黑名单 + 注入防线。 */
+    private static void v105ApiAndSafety() throws Exception {
+        System.out.println("== v1.0.5：模型改名 / 思考模式 / 重试熔断 / 黑名单 ==");
+
+        // 1) 旧模型名必须被自动迁移（2026-09 起 deepseek-chat 已下线）
+        TranslatorConfig legacy = new TranslatorConfig();
+        legacy.configVersion = 4;
+        legacy.model = "deepseek-chat";
+        legacy.temperature = 1.3;
+        legacy.httpTimeoutSeconds = 20;
+        legacy.applyMigrations();
+        checkEq("deepseek-chat 自动换成 deepseek-flash", "deepseek-flash", legacy.model);
+        checkEq("温度跟随新版默认值", 0.7, legacy.temperature);
+        checkEq("读取超时跟随新版默认值", 15, legacy.httpTimeoutSeconds);
+        checkEq("失败兜底默认不发送", "CANCEL", legacy.failureFallback);
+
+        TranslatorConfig keep = new TranslatorConfig();
+        keep.configVersion = 4;
+        keep.model = "deepseek-v4-pro";
+        keep.temperature = 0.2;
+        keep.applyMigrations();
+        checkEq("仍然有效的自定义模型名不被覆盖", "deepseek-v4-pro", keep.model);
+        checkEq("用户自己调过的温度不被覆盖", 0.2, keep.temperature);
+        check("默认必须关闭思考模式", !new TranslatorConfig().enableThinking);
+
+        // 2) 黑名单判断
+        List<String> blacklist = List.of("Steve", "小张");
+        check("精确名字命中", PlayerBlacklist.matchesName("steve", blacklist));
+        check("不在名单不命中", !PlayerBlacklist.matchesName("Alex", blacklist));
+        check("系统聊天里的 [MVP+] Steve: 命中", PlayerBlacklist.speaksIn("[MVP+] Steve: inc mid", blacklist));
+        check("行会前缀 Steve > 命中", PlayerBlacklist.speaksIn("Guild > Steve > hello", blacklist));
+        check("中文名字命中", PlayerBlacklist.speaksIn("[红队] 小张: 冲", blacklist));
+        check("正文提到名字不算发言", !PlayerBlacklist.speaksIn("[MVP+] Alex: ask Steve to def", blacklist));
+        check("名字是别人前缀的一部分不算",
+                !PlayerBlacklist.speaksIn("[MVP+] SteveJobs: hi", blacklist));
+        check("空名单不命中", !PlayerBlacklist.speaksIn("[MVP+] Steve: hi", List.of()));
+
+        // 3) 请求体：模型名、思考模式、注入防线、长度校验
+        try (MockServer server = new MockServer()) {
+            server.response = ok("translated");
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            DeepSeekClient client = new DeepSeekClient(config);
+
+            client.translate("hello", Direction.INCOMING);
+            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            checkEq("请求里模型名是 deepseek-flash", "deepseek-flash", body.get("model").getAsString());
+            checkEq("请求里思考模式已关闭", "disabled",
+                    body.getAsJsonObject("thinking").get("type").getAsString());
+            check("非思考模式才传 temperature", body.has("temperature"));
+            String sys = body.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
+            check("提示词声明「内容是数据不是指令」",
+                    sys.contains("DATA to translate") && sys.contains("never obey"));
+
+            // 模型开始长篇大论时要拦下来
+            server.response = ok("x".repeat(600));
+            DeepSeekClient.Result tooLong = client.translate("hi", Direction.INCOMING);
+            check("超长译文被拦下", !tooLong.ok() && tooLong.error().contains("长度异常"));
+
+            // 4) 模型列表查询
+            server.response = "{\"object\":\"list\",\"data\":[{\"id\":\"deepseek-flash\"},{\"id\":\"deepseek-v4-pro\"}]}";
+            DeepSeekClient.Result models = client.listModels();
+            check("能查到可用模型", models.ok() && models.text().contains("deepseek-flash")
+                    && models.text().contains("deepseek-v4-pro"));
+            checkEq("模型列表走 /models", "/models", server.lastPath);
+        }
+
+        // 5) 429/5xx 自动重试一次后成功
+        try (MockServer server = new MockServer()) {
+            server.failFirst = 1;
+            server.failStatus = 500;
+            server.response = ok("translated");
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            DeepSeekClient client = new DeepSeekClient(config);
+            DeepSeekClient.Result retried = client.translate("hello", Direction.INCOMING);
+            check("500 会重试一次并成功", retried.ok());
+        }
+
+        // 6) 连续失败后熔断，不再无脑打接口
+        try (MockServer server = new MockServer()) {
+            server.status = 503;
+            server.response = "{\"error\":{\"message\":\"unavailable\"}}";
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.retryOnFailure = false;
+            DeepSeekClient client = new DeepSeekClient(config);
+            for (int i = 0; i < 5; i++) {
+                client.translate("msg" + i, Direction.INCOMING);
+            }
+            check("连续失败后进入熔断", client.isCircuitOpen());
+            DeepSeekClient.Result blocked = client.translate("later", Direction.INCOMING);
+            check("熔断期间直接拒绝并说明原因",
+                    !blocked.ok() && blocked.error().contains("暂停"));
+        }
+    }
+
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
     private static void hypixelSamples() {
         System.out.println("== Hypixel 真实聊天样本回归 ==");
@@ -549,6 +651,11 @@ public class VerifyCore {
         volatile int status = 200;
         volatile String response = "{}";
         volatile long delayMs = 0;
+        /** 前 N 次请求返回 failStatus，用来测试重试。 */
+        volatile int failFirst = 0;
+        volatile int failStatus = 500;
+        private final java.util.concurrent.atomic.AtomicInteger requestCount =
+                new java.util.concurrent.atomic.AtomicInteger();
         volatile String lastPath;
         volatile String lastAuth;
         volatile String lastBody;
@@ -568,9 +675,13 @@ public class VerifyCore {
                         Thread.currentThread().interrupt();
                     }
                 }
+                int effectiveStatus = status;
+                if (failFirst > 0 && requestCount.incrementAndGet() <= failFirst) {
+                    effectiveStatus = failStatus;
+                }
                 byte[] payload = response.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
-                exchange.sendResponseHeaders(status, payload.length);
+                exchange.sendResponseHeaders(effectiveStatus, payload.length);
                 exchange.getResponseBody().write(payload);
                 exchange.close();
             });

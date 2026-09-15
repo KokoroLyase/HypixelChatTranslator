@@ -29,6 +29,24 @@ public final class Feedback {
         send(Component.literal("§8[hx] §a" + text));
     }
 
+    /**
+     * 在物品栏上方显示一行提示（action bar），不占用聊天栏。
+     *
+     * <p>「翻译中…」这类过程提示用它，避免把聊天内容顶上去。
+     */
+    public static void actionBar(String text) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null) {
+            return;
+        }
+        minecraft.execute(() -> {
+            if (minecraft.gui == null || minecraft.gui.hud == null) {
+                return;
+            }
+            minecraft.gui.hud.setOverlayMessage(Component.literal(text), false);
+        });
+    }
+
     private static void send(Component component) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft == null) {

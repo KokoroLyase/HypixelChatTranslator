@@ -8,6 +8,7 @@ import com.isomeria.hxtranslate.util.CommandMessage;
 import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
+import com.isomeria.hxtranslate.util.PlayerBlacklist;
 import com.mojang.authlib.GameProfile;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
@@ -96,6 +97,9 @@ public final class ChatTranslator {
         if (isLocalPlayer(sender)) {
             return;
         }
+        if (sender != null && isBlacklisted(sender.name())) {
+            return;
+        }
         handleIncoming(message.getString());
     }
 
@@ -106,6 +110,19 @@ public final class ChatTranslator {
         Minecraft minecraft = Minecraft.getInstance();
         return minecraft != null && minecraft.player != null
                 && minecraft.player.getUUID().equals(sender.id());
+    }
+
+    /** 名字是否在「永不翻译」黑名单里（朋友是中国人时很有用）。 */
+    private boolean isBlacklisted(String name) {
+        return PlayerBlacklist.matchesName(name, config.blacklistedPlayers);
+    }
+
+    /**
+     * 系统聊天里拿不到发送者，只能在文本里找「名字:」/「名字 &gt;」这样的模式。
+     * 判断细节见 {@link PlayerBlacklist}。
+     */
+    private boolean isBlacklistedSpeaker(String text) {
+        return PlayerBlacklist.speaksIn(text, config.blacklistedPlayers);
     }
 
     public void handleIncoming(String plain) {
@@ -122,6 +139,12 @@ public final class ChatTranslator {
         }
 
         receivedCount.incrementAndGet();
+
+        // 黑名单玩家（系统聊天拿不到发送者，只能按「名字:」模式识别）
+        if (isBlacklistedSpeaker(text)) {
+            skipIncoming("黑名单玩家", text);
+            return;
+        }
 
         // 关键：不能「含汉字就跳过」。Hypixel 按客户端语言把队伍名本地化成 [红队]，
         // 于是英文喊话 "[MVP+] [红队] Steve: rush mid" 里也有汉字。
@@ -313,14 +336,23 @@ public final class ChatTranslator {
             return true;
         }
 
+        // 记下发起翻译时所在的连接：翻译回来时如果已经不是同一个连接，
+        // 说明中途切了服务器/退了世界，绝不能把这条消息发到别的服务器去。
+        Minecraft minecraft = Minecraft.getInstance();
+        ClientPacketListener originConnection = minecraft == null ? null : minecraft.getConnection();
+
         TranslationService.SubmitResult submitted = service.submit(translatable, Direction.OUTGOING, (ok, translated, error) -> {
-            Minecraft minecraft = Minecraft.getInstance();
-            if (minecraft == null) {
+            Minecraft client = Minecraft.getInstance();
+            if (client == null) {
                 return;
             }
-            minecraft.execute(() -> {
-                ClientPacketListener connection = minecraft.getConnection();
+            client.execute(() -> {
+                ClientPacketListener connection = client.getConnection();
                 if (connection == null) {
+                    return;
+                }
+                if (connection != originConnection) {
+                    Feedback.error("期间切换了服务器，这条翻译已取消，没有发出去。");
                     return;
                 }
                 if (ok) {
@@ -333,10 +365,14 @@ public final class ChatTranslator {
                     Feedback.info(config.outgoingPrefix + outgoing);
                 } else {
                     failedCount.incrementAndGet();
-                    // 降级：翻译失败也要把用户的原话发出去，不能吞消息
-                    sendProgrammatically(connection, message, false);
-                    if (config.showErrorsInChat) {
-                        Feedback.error("翻译失败，已发送原文: " + error);
+                    if (sendOriginalOnFailure()) {
+                        // 配置成「失败就发原文」时才降级发送
+                        sendProgrammatically(connection, message, false);
+                        if (config.showErrorsInChat) {
+                            Feedback.error("翻译失败，已发送原文: " + error);
+                        }
+                    } else if (config.showErrorsInChat) {
+                        Feedback.error("翻译失败，本条未发送（按 ↑ 可找回刚才的内容）: " + error);
                     }
                 }
             });
@@ -349,8 +385,13 @@ public final class ChatTranslator {
             return true;
         }
 
-        Feedback.hint("翻译中… §8" + translatable);
+        Feedback.actionBar("§e⏳ 翻译中…");
         return false;
+    }
+
+    /** 翻译失败时是否按原文发出去（配置项 failureFallback）。 */
+    private boolean sendOriginalOnFailure() {
+        return "SEND_ORIGINAL".equalsIgnoreCase(config.failureFallback);
     }
 
     /** 命令字符串没有前导斜杠，这是原版 ChatScreen 的行为。 */
@@ -386,29 +427,41 @@ public final class ChatTranslator {
             return true;
         }
 
+        Minecraft originClient = Minecraft.getInstance();
+        ClientPacketListener originConnection = originClient == null ? null : originClient.getConnection();
+
         TranslationService.SubmitResult submitted = service.submit(message, Direction.OUTGOING, (ok, translated, error) -> {
-            Minecraft minecraft = Minecraft.getInstance();
-            if (minecraft == null) {
+            Minecraft client = Minecraft.getInstance();
+            if (client == null) {
                 return;
             }
-            minecraft.execute(() -> {
-                ClientPacketListener connection = minecraft.getConnection();
+            client.execute(() -> {
+                ClientPacketListener connection = client.getConnection();
                 if (connection == null) {
                     return;
                 }
-                String outgoing = LangUtils.truncateForChat(ok ? translated : message, config.maxOutgoingChars);
-                String payload = head + outgoing;
-                sendProgrammatically(connection, payload, true);
+                if (connection != originConnection) {
+                    Feedback.error("期间切换了服务器，这条命令已取消，没有发出去。");
+                    return;
+                }
                 if (ok) {
+                    String outgoing = LangUtils.truncateForChat(translated, config.maxOutgoingChars);
                     if (!outgoing.equals(translated)) {
                         Feedback.hint("译文超过 " + config.maxOutgoingChars + " 字符，已截断。");
                     }
+                    String payload = head + outgoing;
                     rememberSent(outgoing);
+                    sendProgrammatically(connection, payload, true);
                     Feedback.info(config.outgoingPrefix + "/" + payload);
                 } else {
                     failedCount.incrementAndGet();
-                    if (config.showErrorsInChat) {
-                        Feedback.error("命令内容翻译失败，已发送原文: " + error);
+                    if (sendOriginalOnFailure()) {
+                        sendProgrammatically(connection, head + message, true);
+                        if (config.showErrorsInChat) {
+                            Feedback.error("命令内容翻译失败，已发送原文: " + error);
+                        }
+                    } else if (config.showErrorsInChat) {
+                        Feedback.error("命令内容翻译失败，这条命令未发送（按 ↑ 可找回）: " + error);
                     }
                 }
             });
@@ -421,7 +474,7 @@ public final class ChatTranslator {
             return true;
         }
 
-        Feedback.hint("翻译中… §8/" + command);
+        Feedback.actionBar("§e⏳ 翻译中…");
         return false;
     }
 

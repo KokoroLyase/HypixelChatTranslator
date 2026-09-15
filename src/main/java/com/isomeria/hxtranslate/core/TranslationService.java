@@ -41,7 +41,10 @@ public final class TranslationService {
 
     private final TranslatorConfig config;
     private final DeepSeekClient client;
-    private final ThreadPoolExecutor executor;
+    /** 收到消息：2 个线程，允许并发。 */
+    private final ThreadPoolExecutor incomingExecutor;
+    /** 发出消息：单线程 FIFO，保证「你连打两条中文」时译文按原顺序发出去。 */
+    private final ThreadPoolExecutor outgoingExecutor;
     private final AtomicBoolean missingKeyWarned = new AtomicBoolean(false);
 
     /** LRU 翻译缓存，key = 方向 + 归一化原文。 */
@@ -55,8 +58,12 @@ public final class TranslationService {
         this.config = config;
         this.client = new DeepSeekClient(config);
         this.cache = createCache(config.cacheSize);
-        // 固定 2 个守护线程：够用又不会在刷屏时瞬间打出几十个并发请求
-        this.executor = new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+        this.incomingExecutor = newWorkerPool(2);
+        this.outgoingExecutor = newWorkerPool(1);
+    }
+
+    private static ThreadPoolExecutor newWorkerPool(int threads) {
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(), runnable -> {
             Thread thread = new Thread(runnable, "hxtranslate-worker");
             thread.setDaemon(true);
@@ -123,14 +130,15 @@ public final class TranslationService {
 
         // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
         // 免得延迟滚雪球、内存也跟着涨。
-        if (executor.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
+        ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
+        if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
             if (config.debugLog) {
                 HxTranslateClient.LOGGER.info("[queue-full] 丢弃 {}", text);
             }
             return SubmitResult.QUEUE_FULL;
         }
 
-        executor.execute(() -> {
+        pool.execute(() -> {
             DeepSeekClient.Result result = client.translate(text, direction);
             if (result.ok()) {
                 synchronized (this) {
@@ -149,7 +157,22 @@ public final class TranslationService {
 
     /** 正在执行 + 排队中的翻译请求数，给状态命令用。 */
     public int pendingTranslations() {
-        return executor.getQueue().size() + executor.getActiveCount();
+        return incomingExecutor.getQueue().size() + incomingExecutor.getActiveCount()
+                + outgoingExecutor.getQueue().size() + outgoingExecutor.getActiveCount();
+    }
+
+    /** 接口是否处于熔断状态（连续失败后暂停）。 */
+    public boolean isCircuitOpen() {
+        return client.isCircuitOpen();
+    }
+
+    public long circuitRemainingSeconds() {
+        return client.circuitRemainingSeconds();
+    }
+
+    /** 查询当前账号可用的模型列表（GET /models），接口改版后可自查。 */
+    public DeepSeekClient.Result listModels() {
+        return client.listModels();
     }
 
     /** 同步翻译，仅供游戏内 /hxtranslate test 这类需要立刻拿结果的场景使用。 */
@@ -202,6 +225,7 @@ public final class TranslationService {
 
     public void shutdown() {
         shutdown = true;
-        executor.shutdownNow();
+        incomingExecutor.shutdownNow();
+        outgoingExecutor.shutdownNow();
     }
 }

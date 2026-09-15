@@ -107,6 +107,20 @@ public final class TranslateCommand {
                                             "§a已保存 DeepSeek API Key（长度 " + key.length() + "，出于安全不回显内容）"));
                                     return 1;
                                 })))
+                .then(ClientCommands.literal("models").executes(context -> {
+                    context.getSource().sendFeedback(Component.literal("§7正在查询 DeepSeek 可用模型…"));
+                    Thread thread = new Thread(() -> {
+                        DeepSeekClient.Result result = service.listModels();
+                        if (result.ok()) {
+                            Feedback.success("可用模型: §f" + result.text() + "§a ｜ 当前使用: §f" + config.model);
+                        } else {
+                            Feedback.error("查询失败: " + result.error());
+                        }
+                    }, "hxtranslate-models");
+                    thread.setDaemon(true);
+                    thread.start();
+                    return 1;
+                }))
                 .then(ClientCommands.literal("test")
                         .then(ClientCommands.argument("text", StringArgumentType.greedyString())
                                 .executes(context -> {
@@ -139,8 +153,13 @@ public final class TranslateCommand {
                 + " §8| §7发送翻译: " + onOff(config.translateOutgoing)
                 + " §8| §7调试: " + onOff(config.debugLog)));
         source.sendFeedback(Component.literal("§7模型: §f" + config.model
+                + " §8| §7思考模式: " + onOff(config.enableThinking)
                 + " §8| §7API Key: " + (config.hasApiKey() ? "§a已配置" : "§c未配置")
                 + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条"));
+        if (service.isCircuitOpen()) {
+            source.sendFeedback(Component.literal("§c翻译服务连续失败，熔断中，还需 §f"
+                    + service.circuitRemainingSeconds() + " §c秒"));
+        }
         source.sendFeedback(Component.literal("§7本分钟请求: §f" + service.usedRequestsThisMinute()
                 + "§7/§f" + config.requestsPerMinute
                 + " §8| §7进行中: §f" + service.pendingTranslations()

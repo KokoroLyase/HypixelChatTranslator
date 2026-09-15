@@ -27,7 +27,12 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 4;
+    public static final int CURRENT_CONFIG_VERSION = 5;
+
+    /** v1.0.5 之前默认的模型名，2026-09 起 DeepSeek 已下线该名称。 */
+    private static final List<String> RETIRED_MODELS = List.of(
+            "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
+            "deepseek-coder", "deepseek-v3", "deepseek-v3.1");
 
     /** 老版本提示词的识别标记：提示词里还带着这些句子，说明它是旧版默认值，可以安全替换。 */
     private static final String[] LEGACY_INCOMING_MARKERS = {
@@ -57,17 +62,31 @@ public final class TranslatorConfig {
     /** API 地址，一般不用改。 */
     public String apiBaseUrl = "https://api.deepseek.com";
 
-    /** 使用的模型：deepseek-chat 快且便宜，deepseek-reasoner 更贵更慢。 */
-    public String model = "deepseek-chat";
+    /** 使用的模型。2026-09 起 DeepSeek 只提供 deepseek-flash 与 deepseek-v4-pro，旧名 deepseek-chat 已下线。 */
+    public String model = "deepseek-flash";
 
-    /** 采样温度，DeepSeek 官方建议翻译任务用 1.3。 */
-    public double temperature = 1.3;
+    /**
+     * 是否开启思考模式。
+     *
+     * <p>DeepSeek 新模型<b>默认开启思考模式且 effort=high</b>，聊天翻译完全不需要：
+     * 会多出几秒延迟，还会按输出 token 计费。所以默认显式关闭。
+     */
+    public boolean enableThinking = false;
+
+    /** 采样温度，翻译要稳定不要发挥。 */
+    public double temperature = 0.7;
 
     /** 单次回复的最大 token 数。 */
     public int maxTokens = 512;
 
-    /** HTTP 超时（秒）。 */
-    public int httpTimeoutSeconds = 20;
+    /** 建立连接超时（秒）。 */
+    public int connectTimeoutSeconds = 5;
+
+    /** 读取响应超时（秒）。 */
+    public int httpTimeoutSeconds = 15;
+
+    /** 请求失败（429/5xx/网络错误）时是否自动重试一次。 */
+    public boolean retryOnFailure = true;
 
     // ------------------------------------------------------------------
     // 开关
@@ -87,6 +106,16 @@ public final class TranslatorConfig {
 
     /** 不翻译自己刚发出的英文被服务器回显出来的那条消息。 */
     public boolean skipOwnEcho = true;
+
+    /**
+     * 发送方向翻译失败时怎么办：
+     * {@code CANCEL} = 不发送，只在聊天栏提示（默认，避免中文原样发到英文服）；
+     * {@code SEND_ORIGINAL} = 按中文原文发出去。
+     */
+    public String failureFallback = "CANCEL";
+
+    /** 永不翻译这些玩家的消息（写名字即可，朋友是中国人时很有用）。 */
+    public List<String> blacklistedPlayers = new ArrayList<>();
 
     /** 出错时在聊天栏提示。 */
     public boolean showErrorsInChat = true;
@@ -510,6 +539,33 @@ public final class TranslatorConfig {
             }
         }
 
+        // ---- v4 -> v5：DeepSeek 2026-09 起下线 deepseek-chat 等旧模型名 ----
+        if (from < 5) {
+            if (model == null || model.isBlank() || RETIRED_MODELS.contains(model.trim().toLowerCase(Locale.ROOT))) {
+                HxTranslateClient.LOGGER.info("模型名 {} 已下线，自动切换为 {}",
+                        model, defaults.model);
+                model = defaults.model;
+                changed = true;
+            }
+            // 思考模式默认关掉：新模型默认开启，聊天翻译既慢又贵
+            if (enableThinking) {
+                enableThinking = false;
+                changed = true;
+            }
+            if (temperature == 1.3) { // 旧默认值，跟随新版调低
+                temperature = defaults.temperature;
+                changed = true;
+            }
+            if (httpTimeoutSeconds == 20) { // 旧默认值
+                httpTimeoutSeconds = defaults.httpTimeoutSeconds;
+                changed = true;
+            }
+            if (failureFallback == null || failureFallback.isBlank()) {
+                failureFallback = defaults.failureFallback;
+                changed = true;
+            }
+        }
+
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -569,9 +625,20 @@ public final class TranslatorConfig {
         requestsPerMinute = Math.max(1, requestsPerMinute);
         maxPendingTranslations = Math.max(1, maxPendingTranslations);
         cacheSize = Math.max(0, cacheSize);
+        connectTimeoutSeconds = Math.max(1, connectTimeoutSeconds);
         httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
         maxTokens = Math.max(32, maxTokens);
         temperature = Math.min(2.0, Math.max(0.0, temperature));
+        if (failureFallback == null || failureFallback.isBlank()) {
+            failureFallback = "CANCEL";
+        }
+        failureFallback = failureFallback.trim().toUpperCase(Locale.ROOT);
+        if (!failureFallback.equals("SEND_ORIGINAL")) {
+            failureFallback = "CANCEL";
+        }
+        if (blacklistedPlayers == null) {
+            blacklistedPlayers = new ArrayList<>();
+        }
         if (ignorePatterns == null) {
             ignorePatterns = new ArrayList<>();
         }
@@ -603,14 +670,19 @@ public final class TranslatorConfig {
         this.apiKey = o.apiKey;
         this.apiBaseUrl = o.apiBaseUrl;
         this.model = o.model;
+        this.enableThinking = o.enableThinking;
         this.temperature = o.temperature;
         this.maxTokens = o.maxTokens;
+        this.connectTimeoutSeconds = o.connectTimeoutSeconds;
         this.httpTimeoutSeconds = o.httpTimeoutSeconds;
+        this.retryOnFailure = o.retryOnFailure;
         this.enabled = o.enabled;
         this.translateIncoming = o.translateIncoming;
         this.translateOutgoing = o.translateOutgoing;
         this.translateCommandMessages = o.translateCommandMessages;
         this.skipOwnEcho = o.skipOwnEcho;
+        this.failureFallback = o.failureFallback;
+        this.blacklistedPlayers = o.blacklistedPlayers;
         this.showErrorsInChat = o.showErrorsInChat;
         this.debugLog = o.debugLog;
         this.incomingPrefix = o.incomingPrefix;
