@@ -132,6 +132,14 @@ public final class TranslatorConfig {
     /** 每分钟最多请求多少次 API。 */
     public int requestsPerMinute = 60;
 
+    /**
+     * 排队中的翻译请求上限（背压）。
+     *
+     * <p>接口变慢时消息会堆在队列里，越堆越晚。积压超过这个数就先跳过新消息，
+     * 避免延迟滚雪球、内存也跟着涨。正常网络下这个值不会碰到。
+     */
+    public int maxPendingTranslations = 20;
+
     /** 翻译缓存条数。 */
     public int cacheSize = 500;
 
@@ -351,8 +359,19 @@ public final class TranslatorConfig {
     // 读写
     // ------------------------------------------------------------------
 
+    /**
+     * 配置文件路径：{@code .minecraft/config/hxtranslate.json}。
+     *
+     * <p>取不到 Fabric 环境（例如离线自检程序）时退回到相对路径，
+     * 保证这个辅助方法本身永远不会把调用方炸掉 —— 它只被日志和读写用，
+     * 不该因为环境缺失影响到翻译主流程。
+     */
     public static Path configPath() {
-        return FabricLoader.getInstance().getConfigDir().resolve("hxtranslate.json");
+        try {
+            return FabricLoader.getInstance().getConfigDir().resolve("hxtranslate.json");
+        } catch (Throwable ignored) {
+            return Path.of("config", "hxtranslate.json");
+        }
     }
 
     /** 从磁盘读取配置，文件不存在则写入一份带默认值的模板。 */
@@ -548,6 +567,7 @@ public final class TranslatorConfig {
         maxIncomingChars = Math.max(16, maxIncomingChars);
         maxOutgoingChars = Math.max(16, maxOutgoingChars);
         requestsPerMinute = Math.max(1, requestsPerMinute);
+        maxPendingTranslations = Math.max(1, maxPendingTranslations);
         cacheSize = Math.max(0, cacheSize);
         httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
         maxTokens = Math.max(32, maxTokens);
@@ -601,6 +621,7 @@ public final class TranslatorConfig {
         this.maxIncomingChars = o.maxIncomingChars;
         this.maxOutgoingChars = o.maxOutgoingChars;
         this.requestsPerMinute = o.requestsPerMinute;
+        this.maxPendingTranslations = o.maxPendingTranslations;
         this.cacheSize = o.cacheSize;
         this.ignorePatterns = o.ignorePatterns;
         this.glossary = o.glossary;

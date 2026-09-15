@@ -216,6 +216,29 @@ public final class LangUtils {
         return count;
     }
 
+    /**
+     * 去掉原版颜色/格式代码（{@code §a}、{@code §r}、{@code §l} 等）。
+     *
+     * <p>服务器把聊天打包成 Component 时，有些消息（Hypixel 尤其多）会把 {@code §} 代码直接写在
+     * 文本里，于是 {@code Component.getString()} 拿到的字符串带着一堆 {@code §x}。
+     * 这些符号对翻译没有意义，还可能被模型当成正文一起"翻译"，所以在送去翻译前先剔除。
+     */
+    public static String stripFormattingCodes(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\u00A7' && i + 1 < text.length()) {
+                i++; // 连同后一个格式字符一起丢掉
+                continue;
+            }
+            builder.append(c);
+        }
+        return builder.toString();
+    }
+
     /** 缓存用的归一化 key：去掉首尾空白、压缩连续空白、统一小写。 */
     public static String normalizeKey(String text) {
         if (text == null) {

@@ -8,8 +8,8 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -26,9 +26,22 @@ public final class TranslationService {
         void onResult(boolean ok, String text, String error);
     }
 
+    /** 提交结果：区分「没配 Key」「被限流」「队列积压」等不同降级原因。 */
+    public enum SubmitResult {
+        ACCEPTED,
+        NOT_READY,
+        RATE_LIMITED,
+        QUEUE_FULL,
+        EMPTY;
+
+        public boolean accepted() {
+            return this == ACCEPTED;
+        }
+    }
+
     private final TranslatorConfig config;
     private final DeepSeekClient client;
-    private final ExecutorService executor;
+    private final ThreadPoolExecutor executor;
     private final AtomicBoolean missingKeyWarned = new AtomicBoolean(false);
 
     /** LRU 翻译缓存，key = 方向 + 归一化原文。 */
@@ -42,7 +55,9 @@ public final class TranslationService {
         this.config = config;
         this.client = new DeepSeekClient(config);
         this.cache = createCache(config.cacheSize);
-        this.executor = Executors.newFixedThreadPool(2, runnable -> {
+        // 固定 2 个守护线程：够用又不会在刷屏时瞬间打出几十个并发请求
+        this.executor = new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(), runnable -> {
             Thread thread = new Thread(runnable, "hxtranslate-worker");
             thread.setDaemon(true);
             return thread;
@@ -74,16 +89,16 @@ public final class TranslationService {
     /**
      * 提交一条翻译请求。
      *
-     * @return true 表示已受理（回调一定会被调用，可能是同步的缓存命中）；
-     *         false 表示没受理（没配 Key、已关闭、或者被限流），调用方应自行决定降级行为。
+     * @return {@link SubmitResult#ACCEPTED} 表示已受理（回调一定会被调用，可能是同步的缓存命中）；
+     *         其它值表示没受理，调用方按原因决定降级行为。
      */
-    public boolean submit(String text, Direction direction, Callback callback) {
+    public SubmitResult submit(String text, Direction direction, Callback callback) {
         if (!isReady()) {
             warnMissingKeyOnce();
-            return false;
+            return SubmitResult.NOT_READY;
         }
         if (text == null || text.isBlank()) {
-            return false;
+            return SubmitResult.EMPTY;
         }
 
         String key = direction.name() + '|' + LangUtils.normalizeKey(text);
@@ -96,14 +111,23 @@ public final class TranslationService {
                 HxTranslateClient.LOGGER.info("[cache] {} {}", direction.label(), text);
             }
             callback.onResult(true, cached, null);
-            return true;
+            return SubmitResult.ACCEPTED;
         }
 
         if (!tryAcquireRateLimit()) {
             if (config.debugLog) {
                 HxTranslateClient.LOGGER.info("[rate-limit] 丢弃 {}", text);
             }
-            return false;
+            return SubmitResult.RATE_LIMITED;
+        }
+
+        // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
+        // 免得延迟滚雪球、内存也跟着涨。
+        if (executor.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
+            if (config.debugLog) {
+                HxTranslateClient.LOGGER.info("[queue-full] 丢弃 {}", text);
+            }
+            return SubmitResult.QUEUE_FULL;
         }
 
         executor.execute(() -> {
@@ -120,7 +144,12 @@ public final class TranslationService {
             }
             callback.onResult(result.ok(), result.text(), result.error());
         });
-        return true;
+        return SubmitResult.ACCEPTED;
+    }
+
+    /** 正在执行 + 排队中的翻译请求数，给状态命令用。 */
+    public int pendingTranslations() {
+        return executor.getQueue().size() + executor.getActiveCount();
     }
 
     /** 同步翻译，仅供游戏内 /hxtranslate test 这类需要立刻拿结果的场景使用。 */

@@ -4,6 +4,7 @@ import com.google.gson.JsonParser;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
+import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.CommandMessage;
 import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
@@ -38,6 +39,7 @@ public class VerifyCore {
         hypixelCommands();
         hypixelSamples();
         v103Regressions();
+        v104Hardening();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -271,6 +273,66 @@ public class VerifyCore {
         checkEq("用户自定义的限流值不被覆盖", 25, custom.requestsPerMinute);
     }
 
+    /** v1.0.4：按审计清单加固——格式代码清洗、自消息识别、背压、限流、错误节流。 */
+    private static void v104Hardening() throws Exception {
+        System.out.println("== v1.0.4 加固：格式代码 / 背压 / 限流 ==");
+
+        // 1) § 格式代码必须剔除，否则会被当成正文丢给模型
+        checkEq("剔除颜色/格式代码", "[MVP+] Steve: inc mid",
+                LangUtils.stripFormattingCodes("§7§l[MVP+] §r§fSteve: §ainc mid"));
+        checkEq("没有代码时原样返回", "hello world", LangUtils.stripFormattingCodes("hello world"));
+        checkEq("结尾孤立的 § 保留", "abc§", LangUtils.stripFormattingCodes("abc§"));
+        checkEq("null 安全", "", LangUtils.stripFormattingCodes(null));
+
+        TranslatorConfig config = new TranslatorConfig();
+        // 带格式代码的英文喊话：清洗后应当判为「该翻译」
+        String dirtyEnglish = "§7[喊话] §f[红队] §b[MVP+] §rSteve: §fgreen u have a real good range";
+        assertTranslate(config, LangUtils.stripFormattingCodes(dirtyEnglish).strip());
+        // 带格式代码的中文播报：清洗后仍然不该翻译
+        assertSkip(config, LangUtils.stripFormattingCodes("§c你购买了金苹果§r").strip());
+        assertSkip(config, LangUtils.stripFormattingCodes("§7Blaineley被G19sy塞进了戴维·琼斯的箱子。").strip());
+
+        // 2) TranslationService 提交结果要能区分「没配 Key / 被限流 / 队列积压」
+        try (MockServer server = new MockServer()) {
+            server.response = ok("translated");
+            server.delayMs = 700;
+
+            TranslatorConfig noKey = new TranslatorConfig();
+            TranslationService serviceNoKey = new TranslationService(noKey);
+            checkEq("没配 Key -> NOT_READY", TranslationService.SubmitResult.NOT_READY,
+                    serviceNoKey.submit("hello", Direction.INCOMING, (ok, t, e) -> { }));
+            serviceNoKey.shutdown();
+
+            TranslatorConfig limited = new TranslatorConfig();
+            limited.apiKey = "sk-test";
+            limited.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            limited.requestsPerMinute = 1;
+            TranslationService serviceLimited = new TranslationService(limited);
+            check("第一条受理", serviceLimited.submit("one", Direction.INCOMING, (ok, t, e) -> { }).accepted());
+            checkEq("超过每分钟上限 -> RATE_LIMITED", TranslationService.SubmitResult.RATE_LIMITED,
+                    serviceLimited.submit("two", Direction.INCOMING, (ok, t, e) -> { }));
+            checkEq("空文本 -> EMPTY", TranslationService.SubmitResult.EMPTY,
+                    serviceLimited.submit("   ", Direction.INCOMING, (ok, t, e) -> { }));
+            serviceLimited.shutdown();
+
+            TranslatorConfig burst = new TranslatorConfig();
+            burst.apiKey = "sk-test";
+            burst.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            burst.requestsPerMinute = 100;
+            burst.maxPendingTranslations = 1;
+            TranslationService serviceBurst = new TranslationService(burst);
+            // 两个工作线程都在忙、队列里还排着 1 条时，下一条应被背压挡下
+            serviceBurst.submit("burst one", Direction.INCOMING, (ok, t, e) -> { });
+            serviceBurst.submit("burst two", Direction.INCOMING, (ok, t, e) -> { });
+            serviceBurst.submit("burst three", Direction.INCOMING, (ok, t, e) -> { });
+            Thread.sleep(120);
+            checkEq("队列积压 -> QUEUE_FULL", TranslationService.SubmitResult.QUEUE_FULL,
+                    serviceBurst.submit("burst four", Direction.INCOMING, (ok, t, e) -> { }));
+            check("pendingTranslations 统计在途请求", serviceBurst.pendingTranslations() >= 1);
+            serviceBurst.shutdown();
+        }
+    }
+
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
     private static void hypixelSamples() {
         System.out.println("== Hypixel 真实聊天样本回归 ==");
@@ -486,6 +548,7 @@ public class VerifyCore {
         final int port;
         volatile int status = 200;
         volatile String response = "{}";
+        volatile long delayMs = 0;
         volatile String lastPath;
         volatile String lastAuth;
         volatile String lastBody;
@@ -498,6 +561,13 @@ public class VerifyCore {
                 lastMethod = exchange.getRequestMethod();
                 lastAuth = exchange.getRequestHeaders().getFirst("Authorization");
                 lastBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                if (delayMs > 0) {
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
                 byte[] payload = response.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
                 exchange.sendResponseHeaders(status, payload.length);

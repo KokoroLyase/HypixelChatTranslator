@@ -43,8 +43,8 @@ public final class ChatTranslator {
     /** 记住最近发出的英文，避免服务器回显时又被翻译回中文。 */
     private static final int RECENT_SENT_LIMIT = 8;
 
-    /** 没配 API Key 时的提示间隔，避免每条消息都刷屏。 */
-    private static final long NO_KEY_WARN_INTERVAL_MS = 60_000L;
+    /** 同一条聊天栏告警的最小间隔，避免接口异常时刷屏。 */
+    private static final long WARN_INTERVAL_MS = 30_000L;
 
     /** 调试输出里原文的截断长度。 */
     private static final int DEBUG_TEXT_LIMIT = 60;
@@ -63,8 +63,8 @@ public final class ChatTranslator {
 
     /** 模组自己调用 sendChat/sendCommand 时要忽略事件，否则会无限递归。 */
     private volatile boolean programmaticSend;
-    private volatile long lastMissingKeyWarning;
-    private volatile long lastRateLimitWarning;
+    private volatile String lastWarning;
+    private volatile long lastWarningAt;
 
     public ChatTranslator(TranslatorConfig config, TranslationService service) {
         this.config = config;
@@ -91,7 +91,21 @@ public final class ChatTranslator {
 
     private void onChatMessage(Component message, PlayerChatMessage signedMessage,
                                GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
+        // 签名玩家聊天这条链路能拿到发送者，是本人就直接跳过（比字符串匹配更可靠）。
+        // Hypixel 等代理服走的是系统聊天，没有发送者信息，那边靠 EchoMatcher 兜底。
+        if (isLocalPlayer(sender)) {
+            return;
+        }
         handleIncoming(message.getString());
+    }
+
+    private boolean isLocalPlayer(GameProfile sender) {
+        if (sender == null) {
+            return false;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        return minecraft != null && minecraft.player != null
+                && minecraft.player.getUUID().equals(sender.id());
     }
 
     public void handleIncoming(String plain) {
@@ -101,7 +115,8 @@ public final class ChatTranslator {
         if (plain == null) {
             return;
         }
-        String text = plain.strip();
+        // 先剔除 §a、§r 这类原版格式代码：它们对翻译没有意义，还可能被模型当成正文
+        String text = LangUtils.stripFormattingCodes(plain).strip();
         if (text.isEmpty()) {
             return;
         }
@@ -119,20 +134,16 @@ public final class ChatTranslator {
                     : decision.reason(), text);
             return;
         }
-        if (!service.isReady()) {
-            skipIncoming("未配置 API Key", text);
-            warnMissingKeyThrottled();
-            return;
-        }
 
-        boolean accepted = service.submit(text, Direction.INCOMING, (ok, translated, error) -> {
+        TranslationService.SubmitResult submitted = service.submit(text, Direction.INCOMING, (ok, translated, error) -> {
             if (!ok) {
                 failedCount.incrementAndGet();
                 if (config.debugLog) {
                     debug("翻译失败: " + error + " §8| " + shorten(text));
                 }
+                // 出错提示做去重节流：接口挂了的时候不能每条消息刷一行红字
                 if (config.showErrorsInChat && config.enabled) {
-                    Feedback.error("翻译失败: " + error);
+                    warnThrottled("翻译失败: " + error);
                 }
                 return;
             }
@@ -146,12 +157,25 @@ public final class ChatTranslator {
             Feedback.info(line);
         });
 
-        if (!accepted) {
-            skipIncoming("超出每分钟限流", text);
-            warnRateLimitThrottled();
-            return;
+        switch (submitted) {
+            case ACCEPTED -> debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s",
+                    decision.hanRatio() * 100, shorten(text)));
+            case NOT_READY -> {
+                skipIncoming("未配置 API Key", text);
+                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
+            }
+            case RATE_LIMITED -> {
+                skipIncoming("超出每分钟限流", text);
+                warnThrottled("翻译请求达到每分钟上限（" + config.requestsPerMinute
+                        + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
+            }
+            case QUEUE_FULL -> {
+                skipIncoming("翻译队列积压", text);
+                warnThrottled("翻译请求积压超过 " + config.maxPendingTranslations
+                        + " 条（接口变慢了），已跳过部分消息。");
+            }
+            case EMPTY -> skipIncoming("空消息", text);
         }
-        debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s", decision.hanRatio() * 100, shorten(text)));
     }
 
     private void skipIncoming(String reason, String text) {
@@ -159,25 +183,20 @@ public final class ChatTranslator {
         debug("跳过（" + reason + "）: " + shorten(text));
     }
 
-    /** 没配 Key 时给一次可见的提示，否则用户只会觉得“模组没反应”。 */
-    private void warnMissingKeyThrottled() {
+    /**
+     * 聊天栏告警去重：同一条提示 {@value #WARN_INTERVAL_MS} 毫秒内只打一次。
+     *
+     * <p>接口挂了、Key 无效、被限流时，如果不节流就会每条消息刷一行红字，
+     * 把聊天栏冲得没法看。
+     */
+    private void warnThrottled(String message) {
         long now = System.currentTimeMillis();
-        if (now - lastMissingKeyWarning < NO_KEY_WARN_INTERVAL_MS) {
+        if (message.equals(lastWarning) && now - lastWarningAt < WARN_INTERVAL_MS) {
             return;
         }
-        lastMissingKeyWarning = now;
-        Feedback.error("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
-    }
-
-    /** 被限流时也要说一声，不然用户只会觉得“有时候不翻译”。 */
-    private void warnRateLimitThrottled() {
-        long now = System.currentTimeMillis();
-        if (now - lastRateLimitWarning < NO_KEY_WARN_INTERVAL_MS) {
-            return;
-        }
-        lastRateLimitWarning = now;
-        Feedback.error("翻译请求达到每分钟上限（" + config.requestsPerMinute
-                + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
+        lastWarning = message;
+        lastWarningAt = now;
+        Feedback.error(message);
     }
 
     private void debug(String message) {
@@ -276,10 +295,15 @@ public final class ChatTranslator {
         if (message == null || message.isBlank() || message.startsWith("/")) {
             return true;
         }
+        // 去掉 § 格式代码后再判断/翻译；但真要原样放行时发的还是原始字符串
+        String translatable = LangUtils.stripFormattingCodes(message);
+        if (translatable.isBlank()) {
+            return true;
+        }
         // 没有中文就原样发送：这是“我输入英文则无视”的实现。
         // 但要把它记下来，否则服务器把这条英文回显回来时会被翻译成中文（多此一举）。
-        if (!LangUtils.containsHan(message)) {
-            rememberSent(message);
+        if (!LangUtils.containsHan(translatable)) {
+            rememberSent(translatable);
             return true;
         }
         if (!service.isReady()) {
@@ -289,7 +313,7 @@ public final class ChatTranslator {
             return true;
         }
 
-        boolean accepted = service.submit(message, Direction.OUTGOING, (ok, translated, error) -> {
+        TranslationService.SubmitResult submitted = service.submit(translatable, Direction.OUTGOING, (ok, translated, error) -> {
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null) {
                 return;
@@ -309,6 +333,7 @@ public final class ChatTranslator {
                     Feedback.info(config.outgoingPrefix + outgoing);
                 } else {
                     failedCount.incrementAndGet();
+                    // 降级：翻译失败也要把用户的原话发出去，不能吞消息
                     sendProgrammatically(connection, message, false);
                     if (config.showErrorsInChat) {
                         Feedback.error("翻译失败，已发送原文: " + error);
@@ -317,14 +342,14 @@ public final class ChatTranslator {
             });
         });
 
-        if (!accepted) {
+        if (!submitted.accepted()) {
             if (config.showErrorsInChat) {
-                Feedback.hint("请求过快（已达每分钟上限），本条未翻译，按原文发送。");
+                Feedback.hint("请求过快或队列积压，本条未翻译，按原文发送。");
             }
             return true;
         }
 
-        Feedback.hint("翻译中… §8" + message);
+        Feedback.hint("翻译中… §8" + translatable);
         return false;
     }
 
@@ -345,7 +370,10 @@ public final class ChatTranslator {
             return true;
         }
         String head = split.head();
-        String message = split.message();
+        String message = LangUtils.stripFormattingCodes(split.message());
+        if (message.isBlank()) {
+            return true;
+        }
         // 命令正文是英文时原样放行，但要记住，避免服务器回显时又被翻成中文
         if (!LangUtils.containsHan(message)) {
             rememberSent(message);
@@ -358,7 +386,7 @@ public final class ChatTranslator {
             return true;
         }
 
-        boolean accepted = service.submit(message, Direction.OUTGOING, (ok, translated, error) -> {
+        TranslationService.SubmitResult submitted = service.submit(message, Direction.OUTGOING, (ok, translated, error) -> {
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null) {
                 return;
@@ -386,9 +414,9 @@ public final class ChatTranslator {
             });
         });
 
-        if (!accepted) {
+        if (!submitted.accepted()) {
             if (config.showErrorsInChat) {
-                Feedback.hint("请求过快（已达每分钟上限），本条命令未翻译。");
+                Feedback.hint("请求过快或队列积压，本条命令未翻译。");
             }
             return true;
         }

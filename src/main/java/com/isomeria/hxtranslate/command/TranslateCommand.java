@@ -143,6 +143,7 @@ public final class TranslateCommand {
                 + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条"));
         source.sendFeedback(Component.literal("§7本分钟请求: §f" + service.usedRequestsThisMinute()
                 + "§7/§f" + config.requestsPerMinute
+                + " §8| §7进行中: §f" + service.pendingTranslations()
                 + " §8| §7中文判定阈值: §f" + config.chineseRatioThreshold));
         source.sendFeedback(Component.literal(translator.counters()));
     }

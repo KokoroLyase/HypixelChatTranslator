@@ -1,5 +1,70 @@
 # 更新日志
 
+## v1.0.4 — 2026-09-15
+
+对照一份外部审计清单（网络异步 / 聊天签名 / 文本解析 / 反死循环 / 成本控制）逐条复核代码：
+**修掉 4 处真问题，确认 6 处已达标，另有 2 条清单建议与 MC 26.2 的实际 API 不符**。
+
+### 修正 1：`§` 格式代码会被当正文送去翻译
+
+Hypixel 会把 `§a`、`§r` 这类原版格式代码直接写在文本里，`Component.getString()` 拿到的字符串带着它们，
+以前会原样丢给模型 —— 既浪费 token，也可能被模型当成内容"翻译"坏。
+
+→ 新增 `LangUtils.stripFormattingCodes()`，入站消息与出站命令正文在翻译前一律先清洗。
+
+### 修正 2：自己发的消息改用发送者 UUID 识别
+
+签名玩家聊天（`ClientboundPlayerChatPacket`）这条链路能拿到发送者 `GameProfile`，
+以前却只靠字符串比对。现在先比 UUID，是本人直接跳过；代理服的系统聊天没有发送者信息，
+继续由 `EchoMatcher` 兜底。
+
+（顺带发现：authlib 9 里 `GameProfile` 已经是 record，得用 `id()` 而不是 `getId()`。）
+
+### 修正 3：接口异常时红字刷屏
+
+Key 失效、接口挂掉、被限流时，以前每条消息都会打一行红字，聊天栏直接被冲烂。
+
+→ 新增 `warnThrottled()`：同一条告警 30 秒内只打一次。
+
+### 修正 4：请求积压没有上限（背压）
+
+接口变慢时消息会堆在工作队列里，越堆越晚、内存也跟着涨。
+
+→ `TranslationService` 换成显式 `ThreadPoolExecutor`，新增 `maxPendingTranslations`（默认 20）：
+积压超过阈值就先跳过新消息，并按原因区分提交结果（`NOT_READY` / `RATE_LIMITED` / `QUEUE_FULL` / `EMPTY`），
+`/hxtranslate status` 也会显示当前在途请求数。
+
+### 顺带修掉：`configPath()` 在非 Fabric 环境会抛 `NoClassDefFoundError`
+
+`TranslatorConfig.configPath()` 直接调 `FabricLoader`，在没有加载器环境时（例如离线自检程序）
+会抛 `NoClassDefFoundError`。它只被日志和读写用到，不该把翻译主流程炸掉 → 加了降级兜底。
+
+### 复核结论：清单里这些点已经达标，无需改动
+
+| 审计要点 | 现状 |
+| --- | --- |
+| **聊天签名**：不能篡改已签名数据包 | 本模组从不改包：在 `ALLOW_CHAT` 里**取消**原发送，翻译完再调原版 `sendChat()`，由客户端为新字符串**重新签名**（`LastSeenMessages` 也只推进一次） |
+| **不能阻塞主线程** | 网络请求全在 2 个守护工作线程上；事件回调里没有任何 HTTP |
+| **回帖必须回主线程** | 所有聊天栏输出都经 `Minecraft.execute()` 调度回主线程 |
+| **不破坏 Hover/Click 富文本** | 从不替换原消息，只在下方追加一条独立 `Component`；只取 `getString()` 做纯文本翻译 |
+| **命令一律放行** | `/` 开头的文本在 `ALLOW_CHAT` 直接放行；`/hxtranslate` 是客户端命令，根本不会发到服务器 |
+| **语种本地判断 + LRU 缓存 + 长度过滤 + 限流** | 汉字检测 / 500 条 LRU / 240 字符上限 / 每分钟 60 次，全部已实现 |
+
+### 清单里与 MC 26.2 不符的两条（未采纳）
+
+1. **"注入 `ChatHud.addMessage` / `ChatScreen.sendMessage`"** —— 26.2 里没有这两个方法
+   （聊天组件是 `ChatComponent`，入口为 `addServerSystemMessage` / `addPlayerMessage` / `addClientSystemMessage`；
+   输入处理是 `ChatScreen.handleChatInput`）。本模组用 Fabric API 的收发聊天事件已经完整覆盖，
+   **零 Mixin** 反而更耐版本更新、更不容易和其它模组冲突。
+2. **"用未签名聊天发送"** —— 在开启 `enforce-secure-profile` 的服务器上，发未签名消息反而会被踢。
+   正确做法就是走原版 `sendChat()` 让客户端重新签名，也就是现在的实现。
+
+### 测试
+
+离线断言由 196 项增加到 **209 项**，新增格式代码清洗、提交结果分类、背压与限流用例。
+
+---
+
 ## v1.0.3 — 2026-09-14
 
 修复玩家反馈的「喊话有时不翻译」「自己发的英文被多此一举翻回中文」，并整体提升翻译质量。
