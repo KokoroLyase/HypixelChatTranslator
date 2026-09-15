@@ -28,7 +28,21 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 5;
+    public static final int CURRENT_CONFIG_VERSION = 6;
+
+    /**
+     * v1.1.1 及之前的默认 {@code ignorePatterns}。
+     *
+     * <p>用来判断用户有没有动过这个列表：一条都没删，说明还是默认值，v6 迁移才会把新的
+     * 横幅规则补进去（见 {@link #applyMigrations()}）。
+     */
+    private static final List<String> LEGACY_DEFAULT_IGNORES = List.of(
+            "^\\+\\d+ .*(XP|Coins|Tokens)",
+            "^(You|A player) (joined|left)",
+            "^Sending you to");
+
+    /** 横幅分隔线（{@code ▬▬▬▬} 这类）开头的消息。 */
+    private static final String BANNER_SEPARATOR_PATTERN = "^[\\u25AC\\u2500\\u2014\\u2550=\\uff1d~*_\\-]{4,}";
 
     /**
      * 当前默认模型名（2026-09 起 DeepSeek 的有效名字）。
@@ -182,11 +196,18 @@ public final class TranslatorConfig {
     /** 翻译缓存条数。 */
     public int cacheSize = 500;
 
-    /** 命中这些正则（不区分大小写）的消息不翻译，例如服务器提示音效。 */
+    /**
+     * 命中这些正则（不区分大小写）的消息不翻译，例如服务器提示音效。
+     *
+     * <p>最后两条是给「服务器横幅」留的：{@code ▬▬▬▬} 分隔线、以及横幅里的游戏名本身
+     * （{@code Bed Wars}）。它们不是给人读的句子，翻了只会多出一行没用的译文、还多花一次请求。
+     */
     public List<String> ignorePatterns = new ArrayList<>(List.of(
             "^\\+\\d+ .*(XP|Coins|Tokens)",
             "^(You|A player) (joined|left)",
-            "^Sending you to"
+            "^Sending you to",
+            BANNER_SEPARATOR_PATTERN,
+            "^Bed\\s*Wars$"
     ));
 
     /**
@@ -610,6 +631,23 @@ public final class TranslatorConfig {
             if (failureFallback == null || failureFallback.isBlank()) {
                 failureFallback = defaults.failureFallback;
                 changed = true;
+            }
+        }
+
+        // ---- v5 -> v6：服务器横幅（分隔线 / 游戏名本身）不再翻译 ----
+        if (from < 6) {
+            if (ignorePatterns == null) {
+                ignorePatterns = new ArrayList<>();
+            }
+            // 只补缺：旧默认值一条都没删过（说明用户没动过这个列表）才补新的两条。
+            // 删过就是有意调整过，硬塞回去等于覆盖他的意图。
+            if (ignorePatterns.containsAll(LEGACY_DEFAULT_IGNORES)) {
+                for (String pattern : defaults.ignorePatterns) {
+                    if (!ignorePatterns.contains(pattern)) {
+                        ignorePatterns.add(pattern);
+                        changed = true;
+                    }
+                }
             }
         }
 

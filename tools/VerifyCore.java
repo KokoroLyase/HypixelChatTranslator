@@ -50,6 +50,7 @@ public class VerifyCore {
         v107Fixes();
         v108Audit();
         v111ScreenshotFixes();
+        v112BannerIgnore();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -727,6 +728,74 @@ public class VerifyCore {
         check("服务器公告不误判成玩家发言",
                 EchoMatcher.speakerOf("You earned 187 Bed Wars XP") == null);
         checkEq("说话人解析", "Steve", EchoMatcher.speakerOf("Party > [MVP+] Steve: hi").name());
+    }
+
+    /**
+     * v1.1.2：服务器横幅不再翻译。
+     *
+     * <p>截图里还出现过一行 {@code [译] 起床战争} —— 那是把游戏名 {@code Bed Wars} 翻成了中文。
+     * 它不是误判（原文确实是英文），但横幅不是给人读的句子：翻译它只会多出一行没用的译文、
+     * 还多花一次请求。这里用默认 {@code ignorePatterns} 挡掉（{@code configVersion} 5 → 6）。
+     */
+    private static void v112BannerIgnore() {
+        System.out.println("== v1.1.2：服务器横幅不再翻译 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        // 截图里的横幅：可能是「分隔线 + 游戏名」整块，也可能是单独一行游戏名
+        check("横幅（分隔线 + 游戏名整块）被忽略",
+                hitsIgnorePattern(config, "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\nBed Wars\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"));
+        check("单独一行游戏名被忽略", hitsIgnorePattern(config, "Bed Wars"));
+        check("大小写与无空格变体也命中", hitsIgnorePattern(config, "bedwars"));
+        check("纯分隔线被忽略", hitsIgnorePattern(config, "▬▬▬▬▬▬▬▬▬▬▬▬"));
+        check("别的分隔符也认（----- / ===== / ═════）",
+                hitsIgnorePattern(config, "----------") && hitsIgnorePattern(config, "==========")
+                        && hitsIgnorePattern(config, "══════════"));
+
+        // 真正的聊天一个字都不能误伤
+        check("u def 不受影响", !hitsIgnorePattern(config, "u def"));
+        check("rush mid 不受影响", !hitsIgnorePattern(config, "rush mid"));
+        check("短句 inc 不受影响", !hitsIgnorePattern(config, "inc"));
+        check("点名单词不受影响", !hitsIgnorePattern(config, "G19sy"));
+        check("玩家喊话不受影响", !hitsIgnorePattern(config, "[MVP+] [红队] Steve: rush mid"));
+        check("Bed Wars 出现在句子里不受影响", !hitsIgnorePattern(config, "we lost bed wars lol"));
+        check("少一个分隔符就不算横幅", !hitsIgnorePattern(config, "--- hi"));
+
+        // ---- v5 -> v6 迁移 ----
+        TranslatorConfig v5 = new TranslatorConfig();
+        v5.configVersion = 5;
+        v5.ignorePatterns = new ArrayList<>(List.of(
+                "^\\+\\d+ .*(XP|Coins|Tokens)", "^(You|A player) (joined|left)", "^Sending you to"));
+        v5.applyMigrations();
+        checkEq("v5 的默认列表补上了横幅规则", 5, v5.ignorePatterns.size());
+        checkEq("迁移后 configVersion", TranslatorConfig.CURRENT_CONFIG_VERSION, v5.configVersion);
+
+        // 用户自己加过规则：旧默认值还在 → 照样补缺，且不删他的
+        TranslatorConfig extended = new TranslatorConfig();
+        extended.configVersion = 5;
+        extended.ignorePatterns = new ArrayList<>(List.of(
+                "^\\+\\d+ .*(XP|Coins|Tokens)", "^(You|A player) (joined|left)", "^Sending you to",
+                "^我的自定义规则"));
+        extended.applyMigrations();
+        check("用户自己加的规则保留", extended.ignorePatterns.contains("^我的自定义规则"));
+        checkEq("补缺后共 6 条", 6, extended.ignorePatterns.size());
+
+        // 用户删过旧默认值：说明有意调整过，不硬塞
+        TranslatorConfig custom = new TranslatorConfig();
+        custom.configVersion = 5;
+        custom.ignorePatterns = new ArrayList<>(List.of("^我的自定义规则"));
+        custom.applyMigrations();
+        checkEq("用户删过默认值就不动它", 1, custom.ignorePatterns.size());
+        checkEq("自定义内容原样保留", "^我的自定义规则", custom.ignorePatterns.get(0));
+    }
+
+    /** 这条消息是否命中默认 ignorePatterns（等价于 ChatTranslator.isIgnored 的判定）。 */
+    private static boolean hitsIgnorePattern(TranslatorConfig config, String text) {
+        for (String regex : config.ignorePatterns) {
+            if (Pattern.compile(regex, Pattern.CASE_INSENSITIVE).matcher(text).find()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
