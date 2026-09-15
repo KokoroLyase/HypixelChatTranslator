@@ -96,7 +96,11 @@ public final class TranslationService {
     /**
      * 提交一条翻译请求。
      *
-     * @return {@link SubmitResult#ACCEPTED} 表示已受理（回调一定会被调用，可能是同步的缓存命中）；
+     * <p>回调<b>一定</b>在 {@code direction} 对应的工作线程里执行，包括缓存命中：
+     * 命中缓存也照样排队，这样发送方向的单线程 FIFO 才真的等于「按你输入的先后发出」。
+     * 因此回调里如果要碰游戏状态，必须自己切回客户端主线程。
+     *
+     * @return {@link SubmitResult#ACCEPTED} 表示已受理（回调一定会被调用）；
      *         其它值表示没受理，调用方按原因决定降级行为。
      */
     public SubmitResult submit(String text, Direction direction, Callback callback) {
