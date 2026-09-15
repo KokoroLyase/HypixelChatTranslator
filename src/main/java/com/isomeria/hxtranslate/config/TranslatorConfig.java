@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -26,11 +27,17 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 3;
+    public static final int CURRENT_CONFIG_VERSION = 4;
 
-    /** 老版本提示词的识别标记，只在迁移时使用。 */
-    private static final String LEGACY_INCOMING_MARKER = "Keep common gaming abbreviations meaningful";
-    private static final String LEGACY_OUTGOING_MARKER = "let's go mid";
+    /** 老版本提示词的识别标记：提示词里还带着这些句子，说明它是旧版默认值，可以安全替换。 */
+    private static final String[] LEGACY_INCOMING_MARKERS = {
+            "Keep common gaming abbreviations meaningful",  // v1.0.0
+            "Use the glossary below when it is provided."   // v1.0.1 / v1.0.2
+    };
+    private static final String[] LEGACY_OUTGOING_MARKERS = {
+            "let's go mid",                       // v1.0.0
+            "never produce mixed-language text"   // v1.0.1 / v1.0.2
+    };
 
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
@@ -123,7 +130,7 @@ public final class TranslatorConfig {
     public int maxOutgoingChars = 256;
 
     /** 每分钟最多请求多少次 API。 */
-    public int requestsPerMinute = 40;
+    public int requestsPerMinute = 60;
 
     /** 翻译缓存条数。 */
     public int cacheSize = 500;
@@ -171,6 +178,25 @@ public final class TranslatorConfig {
             "cheater=作弊玩家",
             "noob=菜鸟、新手",
             "ez=太简单了（嘲讽）",
+            "sweaty=太拼了、满头大汗（形容打得很用力）",
+            "tryhard=太拼了、卷王",
+            "chill=冷静点、别激动",
+            "fr fr=说真的、真的（fr 同理）",
+            "bro=兄弟",
+            "camp=龟缩、蹲点",
+            "carry=带飞、carry 全场",
+            "clutch=极限翻盘",
+            "trap=陷阱",
+            "gapple=金苹果",
+            "punch bow=击退弓",
+            "kb stick=击退棒",
+            "mining fatigue=挖掘疲劳（陷阱效果）",
+            "base=家、基地",
+            "pop=床被打掉（bed pop）",
+            "lag=卡、延迟",
+            "laggy=很卡",
+            "teamwipe=团灭对面",
+            "defend=防守（同 def）",
             "gg=打得好",
             "wp=干得漂亮",
             "afk=挂机",
@@ -261,32 +287,63 @@ public final class TranslatorConfig {
     // ------------------------------------------------------------------
 
     public String incomingSystemPrompt = """
-            You are a translation engine embedded in a Minecraft client.
-            Task: translate the received chat message into Simplified Chinese.
+            You are a translation engine embedded in a Minecraft client. You translate Hypixel chat
+            messages into Simplified Chinese for a Chinese-speaking player.
+
+            Input format:
+            - Messages usually start with server-added prefixes such as "[MVP+]", "[VIP]", a team tag like
+              "[红队]", or a channel tag like "[喊话]" (shout), followed by "PlayerName:".
+            - Keep every prefix, player name, number and coordinate exactly as it is; translate only the
+              message itself.
+            - A Chinese team tag such as "[红队]" is added by the server because the client language is
+              Chinese. It does NOT mean the message is Chinese: when the body is English, translate it.
+            - Some server messages are English sentences with a Chinese suffix, e.g.
+              "3_0HY was thrown into a black hole by G19sy. 最终击杀！". Translate the English part and keep
+              the suffix as it is.
+
+            Style:
+            - Output natural, casual Chinese that a Chinese Minecraft player would actually type in chat.
+            - Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the
+              English abbreviation: obby -> 黑曜石, dia -> 钻石, u def -> 你来防守, inc -> 有人进攻,
+              mid -> 中路, sweaty -> 太拼了, chill -> 冷静点, fr fr -> 说真的, gg -> 打得不错.
+            - Keep it about as short as the original. Do not turn a short taunt into a long sentence.
+
+            Examples:
+            [喊话] [红队] [MVP+] Alex: ur so sweaty bro chill! fr fr
+            -> [喊话] [红队] [MVP+] Alex: 你也太拼了吧兄弟，冷静点！说真的
+            [MVP+] Steve: inc mid, u def
+            -> [MVP+] Steve: 有人从中路进攻，你来防守
+            green u have a real good range
+            -> 绿队，你这攻击距离也太远了吧
+
             Rules:
-            - The text comes from the Hypixel Minecraft server. It usually starts with server-added prefixes
-              such as "[MVP+]", a team tag like "[红队]" or a player name followed by ":". Keep those prefixes,
-              player names, numbers and coordinates exactly as they are, and translate only the real message.
-            - A Chinese team tag such as "[红队]" is added by the server because the client language is Chinese.
-              It does NOT mean the message itself is Chinese: when the message body is English, translate it.
-            - Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the English
-              abbreviation (for example "obby" -> 黑曜石, "dia" -> 钻石, "u def" -> 你来防守, "inc" -> 有人进攻,
-              "mid" -> 中路). Use the glossary below when it is provided.
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
             - Do NOT add quotes, prefixes, emojis or any extra text.
             - If the message body is already Chinese, output it unchanged.
             Output only the translated text.""";
 
     public String outgoingSystemPrompt = """
-            You are a translation engine embedded in a Minecraft client.
-            Task: translate the user's Chinese chat message into natural, casual English used on the
-            Hypixel Minecraft server.
+            You are a translation engine embedded in a Minecraft client. You translate the Chinese messages
+            a player types into natural English for the Hypixel Minecraft server.
+
+            Style:
+            - Short, casual gaming English — exactly what people type in Bed Wars chat.
+            - Common Hypixel / Bed Wars abbreviations are welcome when they are unambiguous
+              ("def", "inc", "mid", "obby", "dia", "gg", "wp", "omw", "ty"), but never mix Chinese
+              characters into the English output.
+            - Keep player names, numbers and coordinates unchanged.
+            - Do not add greetings, emojis, explanations or punctuation noise.
+
+            Examples:
+            你来防守 -> u def
+            中路有人进攻 -> inc mid
+            我们床没了，先撤 -> we lost our bed, fall back
+            干得漂亮 -> wp
+            等我一下，马上到 -> wait for me, omw
+
             Rules:
-            - Keep player names, numbers, coordinates and Minecraft terms unchanged.
-            - Use short, natural gaming English. Well-known Hypixel / Bed Wars abbreviations are welcome when
-              they are unambiguous ("def", "inc", "mid", "obby", "dia", "gg"), but never produce mixed-language text.
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
-            - Do NOT add quotes, prefixes, emojis, greetings or any extra text.
+            - Do NOT add quotes, prefixes, emojis or any extra text.
             - If the text is already English, output it unchanged.
             Output only the English translation.""";
 
@@ -352,11 +409,11 @@ public final class TranslatorConfig {
 
         // ---- v1 -> v2：提示词、术语表 ----
         if (from < 2) {
-            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKER)) {
+            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKERS)) {
                 incomingSystemPrompt = defaults.incomingSystemPrompt;
                 changed = true;
             }
-            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKER)) {
+            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKERS)) {
                 outgoingSystemPrompt = defaults.outgoingSystemPrompt;
                 changed = true;
             }
@@ -397,16 +454,67 @@ public final class TranslatorConfig {
             }
         }
 
+        // ---- v3 -> v4：提示词换成带少样本示例的版本、术语表补词、限流默认值 40 -> 60 ----
+        if (from < 4) {
+            if (needsPromptUpgrade(incomingSystemPrompt, LEGACY_INCOMING_MARKERS)
+                    || !incomingSystemPrompt.contains("Examples:")) {
+                incomingSystemPrompt = defaults.incomingSystemPrompt;
+                changed = true;
+            }
+            if (needsPromptUpgrade(outgoingSystemPrompt, LEGACY_OUTGOING_MARKERS)
+                    || !outgoingSystemPrompt.contains("Examples:")) {
+                outgoingSystemPrompt = defaults.outgoingSystemPrompt;
+                changed = true;
+            }
+            if (glossary == null) {
+                glossary = new ArrayList<>();
+            }
+            // 术语表只补缺，用户自己加的词不会被删
+            for (String entry : defaults.glossary) {
+                String key = glossaryKey(entry);
+                boolean exists = false;
+                for (String existing : glossary) {
+                    if (glossaryKey(existing).equals(key)) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    glossary.add(entry);
+                    changed = true;
+                }
+            }
+            // 只有还是老默认值时才调整，用户自己改过的数字不动
+            if (requestsPerMinute == 40) {
+                requestsPerMinute = defaults.requestsPerMinute;
+                changed = true;
+            }
+        }
+
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
 
-    private static boolean needsPromptUpgrade(String prompt, String legacyMarker) {
+    private static String glossaryKey(String entry) {
+        if (entry == null) {
+            return "";
+        }
+        int idx = entry.indexOf('=');
+        String key = idx <= 0 ? entry : entry.substring(0, idx);
+        return key.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean needsPromptUpgrade(String prompt, String[] legacyMarkers) {
         if (prompt == null || prompt.isBlank()) {
             return true;
         }
         // 老版本的默认提示词：还带着识别标记，说明没被自定义过，可以安全替换
-        return prompt.contains(legacyMarker);
+        for (String marker : legacyMarkers) {
+            if (prompt.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 热重载：把磁盘内容覆盖到当前实例（保持其它地方的引用仍然有效）。 */

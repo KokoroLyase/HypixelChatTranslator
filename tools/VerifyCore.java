@@ -5,6 +5,7 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.util.CommandMessage;
+import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.sun.net.httpserver.HttpServer;
@@ -14,6 +15,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -35,6 +37,7 @@ public class VerifyCore {
         commandSplit();
         hypixelCommands();
         hypixelSamples();
+        v103Regressions();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -189,6 +192,83 @@ public class VerifyCore {
         CommandMessage.Split split = CommandMessage.resolve(command, config);
         check("不应翻译: /" + command + (split == null ? "" : " -> 实际解析出正文 <" + split.message() + ">"),
                 split == null);
+    }
+
+    /** v1.0.3：修「英文播报被中文标点误杀」和「喊话被当成自己回显丢弃」两个 bug。 */
+    private static void v103Regressions() {
+        System.out.println("== v1.0.3 回归：英文播报 + 喊话回显误判 ==");
+        TranslatorConfig config = new TranslatorConfig();
+
+        // bug 1：英文句子 + 服务器追加的中文后缀，以前被「含中文标点就跳过」误杀
+        assertTranslate(config, "3_0HY was thrown into a black hole by G19sy. 最终击杀！");
+        // 玩家反馈的喊话（以前被 ownEcho 子串匹配误判，见下面的 EchoMatcher 用例）
+        assertTranslate(config, "[喊话] [黄队] [MVP+] Maceuser: green u have a real good range");
+        assertTranslate(config, "[喊话] [红队] [MVP+] iFarmUnityPhoneFri: ur so sweaty bro chill! fr fr");
+
+        // 反过来：中文播报（英文玩家名很长、汉字占比很低）不能被误翻
+        assertSkip(config, "bedsyuu被Mlable击杀");
+        assertSkip(config, "9twHest被iFarmUnityPhoneFri践踏。");
+        assertSkip(config, "_Moriarty__受到了ku_jo232的冷淡。");
+        assertSkip(config, "the_Sponger_ 被Maceuser_化作月尘。");
+        assertSkip(config, "Green的床成为了iFarmUnityPhoneFri破坏的第1,569张床！");
+        assertSkip(config, "RiloLess被G19sy塞进了戴维·琼斯的箱子。");
+        assertSkip(config, "Blaineley被G19sy塞进了戴维·琼斯的箱子。");
+        assertSkip(config, "Dzeaimo被bedsyuu挪落深渊。");
+        assertSkip(config, "kallepekka1a被fabian1ooooo击杀。");
+        assertSkip(config, "kerimfx12被Im_Emma307吼了。");
+        assertSkip(config, "床已被破坏 >");
+        assertSkip(config, "队伍已被淘汰 > 蓝队 已被淘汰！");
+        assertSkip(config, "你购买了永久的铁链盔甲");
+        assertSkip(config, "绿宝石不足！还需要绿宝石x6!");
+
+        // ---- EchoMatcher：v1.0.2 的「包含」判断会把别人的话误判成自己的回显 ----
+        String shout1 = "[喊话] [黄队] [MVP+] Maceuser: green u have a real good range";
+        String shout2 = "[喊话] [红队] [MVP+] iFarmUnityPhoneFri: ur so sweaty bro chill! fr fr";
+        check("发过 \"u\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout1, List.of("u")) == null);
+        check("发过 \"so\" 不会把别人的喊话误判成回显", EchoMatcher.findEcho(shout2, List.of("so")) == null);
+        check("发过 \"hi\" 不会把含 hi 的句子误判成回显",
+                EchoMatcher.findEcho("[MVP+] Steve: hi there buddy", List.of("hi")) == null);
+        check("发过 \"go\" 不会把别人的话误判成回显",
+                EchoMatcher.findEcho("[MVP+] Alex: going mid now", List.of("go")) == null);
+
+        // 真正的回显仍然要被认出来
+        check("自己的喊话回显能认出来",
+                EchoMatcher.findEcho("[喊话] [黄队] Isomeria: hello everyone come mid",
+                        List.of("hello everyone come mid")) != null);
+        check("自己的私聊回显能认出来", EchoMatcher.findEcho("To Steve: hi", List.of("hi")) != null);
+        check("自己发的英文回显能认出来（v1.0.3 起英文也会被记住）",
+                EchoMatcher.findEcho("[MVP+] Isomeria: nice bed defense", List.of("nice bed defense")) != null);
+        check("服务器截断的长消息也能认出来",
+                EchoMatcher.findEcho("Steve: this is a very long message that got",
+                        List.of("this is a very long message that got cut off")) != null);
+
+        // ---- LangUtils 新信号 ----
+        checkEq("英文信号词：英文句子", 3, LangUtils.countEnglishHintWords("was thrown into a black hole by G19sy"));
+        checkEq("英文信号词：玩家名不算", 0, LangUtils.countEnglishHintWords("Moriarty ku jo232 G19sy"));
+        checkEq("英文信号词：整词匹配（im 不该命中 time/ime）", 0, LangUtils.countEnglishHintWords("time ime"));
+        checkEq("英文信号词：单字母不算", 0, LangUtils.countEnglishHintWords("kallepekka a i u"));
+        checkEq("最长汉字段：击杀", 2, LangUtils.longestHanRun("bedsyuu被Mlable击杀"));
+        checkEq("最长汉字段：化作月尘", 4, LangUtils.longestHanRun("the_Sponger_ 被Maceuser_化作月尘。"));
+
+        // ---- v3 -> v4 配置迁移 ----
+        TranslatorConfig v3 = new TranslatorConfig();
+        v3.configVersion = 3;
+        v3.requestsPerMinute = 40;
+        v3.glossary = new ArrayList<>(List.of("obby=黑曜石（obsidian）"));
+        v3.applyMigrations();
+        check("v4 迁移补上了新术语（sweaty）",
+                v3.glossary.stream().anyMatch(g -> g.startsWith("sweaty=")));
+        check("v4 迁移保留了用户原有术语",
+                v3.glossary.stream().anyMatch(g -> g.startsWith("obby=")));
+        checkEq("v4 迁移后 obby 没有重复", 1L, v3.glossary.stream().filter(g -> g.startsWith("obby=")).count());
+        checkEq("限流默认值升到 60", 60, v3.requestsPerMinute);
+        check("迁移后提示词带少样本示例", v3.incomingSystemPrompt.contains("Examples:"));
+
+        TranslatorConfig custom = new TranslatorConfig();
+        custom.configVersion = 3;
+        custom.requestsPerMinute = 25;
+        custom.applyMigrations();
+        checkEq("用户自定义的限流值不被覆盖", 25, custom.requestsPerMinute);
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */

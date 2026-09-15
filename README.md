@@ -29,10 +29,12 @@
 1. 安装 **Fabric Loader ≥ 0.19.3**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.0+26.2.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.2)）。
-3. 把本模组 **`hx-chat-translator-<版本>.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
+3. 把本模组 **`hx-chat-translator-<版本>+mc26.2-fabric.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
+
+   文件名里的 `mc26.2` 是游戏版本、`fabric` 是模组加载器，和大多数模组一样。下载后**不需要改名**，直接丢进 `mods` 即可。
 4. 启动游戏，进入 Hypixel。
 
 ## 3. 配置 DeepSeek API Key（必须做一次）
@@ -123,37 +125,42 @@
 | `glossary` | 约 50 条 | Hypixel / Bed Wars 术语表，`缩写=含义`；会追加到提示词里，要求模型按含义翻译而不是保留 `obby`/`dia`/`u def` 这类英文缩写。清空即可关闭 |
 | `maxIncomingChars` | `240` | 超过这个长度不翻译 |
 | `maxOutgoingChars` | `256` | 译文最大长度（原版聊天框上限 256，超长会被服务器拒绝），超出会按词边界截断并加省略号 |
-| `requestsPerMinute` | `40` | 每分钟最多请求次数（防刷屏烧钱） |
+| `requestsPerMinute` | `60` | 每分钟最多请求次数（防刷屏烧钱）；超限时会在聊天栏提醒一次 |
 | `cacheSize` | `500` | 重复消息走缓存，不再花钱 |
 | `httpTimeoutSeconds` | `20` | 请求超时 |
 | `ignorePatterns` | 若干正则 | 命中的消息不翻译（服务器提示音效等） |
-| `skipOwnEcho` | `true` | 自己发出的消息被服务器回显时不再翻回中文 |
+| `skipOwnEcho` | `true` | 自己发出（含直接打英文）的消息被服务器回显时不再翻回中文 |
 | `showErrorsInChat` | `true` | 出错时在聊天栏提示 |
 | `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/hxtranslate debug on`） |
-| `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词，可自行微调语气 |
+| `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词（内含少样本示例），可自行微调语气 |
 | `configVersion` | 当前版本号 | 配置结构版本，请勿手改；升级模组时会自动把老版提示词/术语表升级到新默认值，你自定义过的内容不会被覆盖 |
 
-### 为什么需要 `chineseRatioThreshold`
+### 收到消息要不要翻译，是怎么判断的
 
-你的客户端是中文时，Hypixel 会把队伍名**本地化**后塞进聊天内容，于是英文喊话长这样：
+Hypixel 的聊天内容很"脏"：同一个句子里可能既有中文又有英文。判断逻辑在 `IncomingFilter`，
+按下面的顺序走（每一步都有取自真实截图的离线回归测试）：
 
-```
-[MVP+] [红队] Mguappe: rush        ← 里面有汉字，但这是英文消息，必须翻译
-```
+| 顺序 | 信号 | 例子 |
+| --- | --- | --- |
+| 0 | 命中 `ignorePatterns` 或是自己的回显 → 跳过 | 经验/代币刷屏、自己刚发的消息 |
+| 1 | 只看冒号后正文的**汉字占比** ≥ `chineseRatioThreshold` → 跳过 | `你购买了金苹果`（100%） |
+| 2 | 正文有 **≥2 个英文信号词** → **翻译** | `3_0HY was thrown into a black hole by G19sy. 最终击杀！` |
+| 3 | 正文有**连续 ≥2 个汉字** → 跳过 | `bedsyuu被Mlable击杀`（占比仅 0.2，但确属中文） |
+| 4 | 还带中文/全角标点 → 跳过 | `_Moriarty__受到了ku_jo232的冷淡。` |
+| 5 | 正文拉丁字母太少 → 跳过 | `？？？` |
+| 6 | 其余 → **翻译** | `[喊话] [红队] Maceuser: rush mid` |
 
-而服务器自己发的中文消息长这样：
+两个容易踩的坑（都已修，且写成了回归测试）：
 
-```
-isabellab2012被Venomed击杀。         ← 汉字占比只有 0.15（玩家名很长），但它是中文
-```
+- **不能"含汉字就跳过"**：中文客户端收到的英文喊话带本地化前缀 `[红队]`；
+- **不能"含中文标点就跳过"**：`某某 was killed by 某某。最终击杀！` 这类英文播报带中文后缀。
 
-所以判断逻辑用了三条信号，缺一不可（实现在 `IncomingFilter`，有专门的离线回归测试）：
+### 关于"自己消息的回显"
 
-1. **含中文/全角标点**（。！？；，、」等）→ 判为中文，跳过；
-2. **只看冒号后面的正文**的汉字占比 ≥ `chineseRatioThreshold` → 判为中文，跳过；
-3. 正文里拉丁字母太少 → 不是英文，跳过。
-
-如果遇到误判，可以调这个阈值（调低 = 更容易判成英文去翻译，调高 = 更保守）。
+判断回显用的是**正文完全一致**（`EchoMatcher`），不是"包含"。
+早期版本用"包含"判断，只要你发过含 `u`、`so` 这种短片段的英文，之后别人任何包含该片段的喊话
+都会被误判成"自己的回显"而静默丢掉 —— 这就是"有时喊话不翻译"的原因。
+另外你**直接打英文**的消息也会被记住，所以服务器回显时不会再被翻成中文。
 
 ## 6. 工作原理
 
@@ -201,15 +208,24 @@ isabellab2012被Venomed击杀。         ← 汉字占比只有 0.15（玩家名
 先 `/hxtranslate debug on`，模组会逐条打印是「正在翻译」还是「跳过（原因）」。常见原因：
 
 - 提示「未配置 API Key」→ 去配置 Key；
-- 提示「超出每分钟限流」→ 调大 `requestsPerMinute`；
-- 提示「含中文标点 / 已经是中文」→ 这条本来就是中文（服务器按你的客户端语言本地化过）；
+- 提示「超出每分钟限流」→ 调大 `requestsPerMinute`（同时也会在聊天栏提醒一次）；
+- 提示「已经是中文 / 正文含成段中文 / 含中文标点」→ 这条本来就是中文（服务器按你的客户端语言本地化过）；
+- 提示「自己消息的回显」→ 它认为这条是你刚发过的；提示里会带上匹配到的原文，便于核对；
 - 提示「命中 ignorePatterns」→ 你的忽略正则把它挡了。
 
-> v1.0.0 有个已知 bug：中文客户端收到的英文喊话带着本地化的 `[红队]` 前缀，被误判成中文而整条跳过。**v1.0.1 已修复**，请升级。
+> 历史 bug（均已修复，请确保用最新版）：
+> - v1.0.0：带本地化 `[红队]` 前缀的英文喊话被误判成中文 → **v1.0.1 修复**；
+> - v1.0.1：`/shout` 等命令不在名单里 → **v1.0.2 修复**；
+> - v1.0.2：回显判断用「子串包含」，发过 `u`、`so` 这种短词后别人的喊话会被误当成自己的回显丢弃 → **v1.0.3 修复**；
+> - v1.0.2：英文播报带中文后缀（`... 最终击杀！`）被误判成中文 → **v1.0.3 修复**。
+
+**自己发的英文被翻回中文了**
+v1.0.3 起，你直接打英文（含 `/shout`、`/msg` 正文）也会被记入回显名单，服务器回显时不再翻译。
 
 **`obby` / `dia` / `u def` / `inc` 这类缩写没有被翻译**
-v1.0.1 起内置了约 50 条 Bed Wars 术语表并要求模型按含义翻译。如果还有不认识的缩写，
-直接往配置的 `glossary` 里加一条（例如 `"gapple=金苹果"`），然后 `/hxtranslate reload` 即可生效。
+v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 扩充到约 70 条并加了少样本示例。
+如果还有不认识的缩写，直接往配置的 `glossary` 里加一条（例如 `"gapple=金苹果"`），
+然后 `/hxtranslate reload` 即可生效。
 
 **在 Hypixel 用会被封号吗？**
 本模组只做「读取聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏，属于常见的聊天辅助类客户端模组。但 Hypixel 的模组政策由服务器单方面解释，请自行阅读其 *Allowed Modifications* 并自行承担风险。

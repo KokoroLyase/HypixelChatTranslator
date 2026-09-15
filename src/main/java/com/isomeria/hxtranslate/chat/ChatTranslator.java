@@ -5,6 +5,7 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.CommandMessage;
+import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.mojang.authlib.GameProfile;
@@ -63,6 +64,7 @@ public final class ChatTranslator {
     /** 模组自己调用 sendChat/sendCommand 时要忽略事件，否则会无限递归。 */
     private volatile boolean programmaticSend;
     private volatile long lastMissingKeyWarning;
+    private volatile long lastRateLimitWarning;
 
     public ChatTranslator(TranslatorConfig config, TranslationService service) {
         this.config = config;
@@ -109,10 +111,12 @@ public final class ChatTranslator {
         // 关键：不能「含汉字就跳过」。Hypixel 按客户端语言把队伍名本地化成 [红队]，
         // 于是英文喊话 "[MVP+] [红队] Steve: rush mid" 里也有汉字。
         // 具体判断规则见 IncomingFilter（那里有完整的说明和离线回归测试）。
-        IncomingFilter.Decision decision = IncomingFilter.decide(
-                text, config, isIgnored(text), config.skipOwnEcho && isOwnEcho(text));
+        String ownEcho = config.skipOwnEcho ? findOwnEcho(text) : null;
+        IncomingFilter.Decision decision = IncomingFilter.decide(text, config, isIgnored(text), ownEcho != null);
         if (!decision.translate()) {
-            skipIncoming(decision.reason(), text);
+            skipIncoming(ownEcho != null
+                    ? decision.reason() + "（匹配到自己发过的 \"" + shorten(ownEcho) + "\"）"
+                    : decision.reason(), text);
             return;
         }
         if (!service.isReady()) {
@@ -144,6 +148,7 @@ public final class ChatTranslator {
 
         if (!accepted) {
             skipIncoming("超出每分钟限流", text);
+            warnRateLimitThrottled();
             return;
         }
         debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s", decision.hanRatio() * 100, shorten(text)));
@@ -162,6 +167,17 @@ public final class ChatTranslator {
         }
         lastMissingKeyWarning = now;
         Feedback.error("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
+    }
+
+    /** 被限流时也要说一声，不然用户只会觉得“有时候不翻译”。 */
+    private void warnRateLimitThrottled() {
+        long now = System.currentTimeMillis();
+        if (now - lastRateLimitWarning < NO_KEY_WARN_INTERVAL_MS) {
+            return;
+        }
+        lastRateLimitWarning = now;
+        Feedback.error("翻译请求达到每分钟上限（" + config.requestsPerMinute
+                + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
     }
 
     private void debug(String message) {
@@ -211,17 +227,15 @@ public final class ChatTranslator {
         return compiledPatterns;
     }
 
-    private synchronized boolean isOwnEcho(String plain) {
-        if (recentlySent.isEmpty()) {
-            return false;
-        }
-        String haystack = LangUtils.normalizeKey(plain);
-        for (String sent : recentlySent) {
-            if (haystack.contains(sent)) {
-                return true;
-            }
-        }
-        return false;
+    /**
+     * 判断这条消息是不是自己刚发出去、被服务器回显回来的。
+     *
+     * <p>匹配逻辑抽在 {@link EchoMatcher} 里，那里有离线回归测试。
+     *
+     * @return 命中的那条自己发过的消息；不是自己的回显则返回 null
+     */
+    private synchronized String findOwnEcho(String plain) {
+        return EchoMatcher.findEcho(plain, recentlySent);
     }
 
     private synchronized void rememberSent(String english) {
@@ -262,8 +276,10 @@ public final class ChatTranslator {
         if (message == null || message.isBlank() || message.startsWith("/")) {
             return true;
         }
-        // 没有中文就原样发送：这是“我输入英文则无视”的实现
+        // 没有中文就原样发送：这是“我输入英文则无视”的实现。
+        // 但要把它记下来，否则服务器把这条英文回显回来时会被翻译成中文（多此一举）。
         if (!LangUtils.containsHan(message)) {
+            rememberSent(message);
             return true;
         }
         if (!service.isReady()) {
@@ -330,7 +346,9 @@ public final class ChatTranslator {
         }
         String head = split.head();
         String message = split.message();
+        // 命令正文是英文时原样放行，但要记住，避免服务器回显时又被翻成中文
         if (!LangUtils.containsHan(message)) {
+            rememberSent(message);
             return true;
         }
         if (!service.isReady()) {

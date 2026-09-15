@@ -1,6 +1,7 @@
 package com.isomeria.hxtranslate.util;
 
 import java.util.Locale;
+import java.util.Set;
 
 /**
  * 语言与文本小工具。刻意不依赖任何 Minecraft 类，方便离线单元测试。
@@ -127,6 +128,92 @@ public final class LangUtils {
             return text.substring(idx + 2);
         }
         return text;
+    }
+
+    /**
+     * 正文里最长的一段连续汉字有多少个字。
+     *
+     * <p>用来识别「中文播报里夹着英文玩家名」：{@code bedsyuu被Mlable击杀} 的汉字占比只有 0.2，
+     * 但里面有 {@code 击杀} 这样成段的汉字，说明它本来就是中文，不该翻译。
+     * 反过来 {@code ... by G19sy. 最终击杀！} 虽然有汉字，但先被英文词信号判成英文了。
+     */
+    public static int longestHanRun(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int longest = 0;
+        int current = 0;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (isHan(cp)) {
+                current++;
+                longest = Math.max(longest, current);
+            } else {
+                current = 0;
+            }
+        }
+        return longest;
+    }
+
+    /**
+     * 强烈暗示「这是英文句子」的常见英文词 / 缩写。按整词匹配，不会把 {@code im} 命中到 {@code time} 里。
+     *
+     * <p>只看这些词而不是全部单词，是为了避免把英文玩家名（{@code Moriarty}、{@code G19sy}）当成英文内容。
+     */
+    private static final Set<String> ENGLISH_HINT_WORDS = Set.of(
+            // 虚词（刻意不收 a / i / u 这类单字母：它们太容易出现在玩家名或中文句子里）
+            "an", "the", "is", "are", "was", "were", "be", "been", "am",
+            "do", "does", "did", "have", "has", "had", "will", "would", "can", "could",
+            "should", "shall", "may", "might", "must", "you", "ur", "your",
+            "yours", "my", "me", "we", "our", "us", "he", "him", "his", "she",
+            "her", "it", "its", "they", "them", "their", "this", "that", "these", "those",
+            "to", "of", "in", "on", "at", "for", "with", "by", "from", "and",
+            "or", "but", "not", "no", "yes", "so", "if", "then", "than", "as",
+            "into", "out", "about", "after", "before", "because", "while", "during", "without",
+            "up", "down", "off", "over", "under", "through", "between", "against", "above", "below",
+            "away", "back", "around", "along", "across", "behind", "beyond", "near", "since", "until",
+            "just", "very", "too", "also", "there", "here", "what", "when", "where", "who",
+            "why", "how", "all", "any", "some", "more", "most", "one", "two", "other",
+            "another", "such", "both", "each", "few", "many", "much", "only", "same", "own",
+            "still", "even", "again", "though", "although", "however", "maybe", "perhaps",
+            "get", "got", "go", "going", "gonna", "let", "dont", "cant", "wont", "im",
+            "ive", "ill", "thats", "youre", "youve", "ok", "okay", "yeah", "yep", "nope",
+            "pls", "plz", "thx", "ty", "please", "sorry", "thanks", "thank", "really", "actually",
+            "wanna", "gotta", "kinda", "wtf", "lol", "lmao", "omg", "bruh", "dude", "guys",
+            "nice", "good", "great", "bad", "stop", "wait", "help", "run", "jump", "fast",
+            "kill", "killed", "dead", "died", "lose", "lost", "win", "won", "play", "player",
+            "game", "pro", "skill", "aim", "lag", "laggy", "ping", "team", "base", "island",
+            // 起床战争常用词
+            "gg", "wp", "ez", "inc", "def", "mid", "rush", "rushin", "bed", "range",
+            "reach", "sweaty", "chill", "tryhard", "noob", "hacker", "hack", "cheat", "cheater", "camp",
+            "carry", "clutch", "obby", "dia", "dias", "gen", "pot", "void", "gap", "fb"
+    );
+
+    /** 正文里出现了几个「英文信号词」。≥2 个基本可以断定这是一句英文。 */
+    public static int countEnglishHintWords(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        int i = 0;
+        int length = text.length();
+        StringBuilder token = new StringBuilder();
+        while (i <= length) {
+            char c = i < length ? text.charAt(i) : ' ';
+            if (Character.isLetter(c) && c < 128) {
+                token.append(Character.toLowerCase(c));
+            } else {
+                if (!token.isEmpty()) {
+                    if (ENGLISH_HINT_WORDS.contains(token.toString())) {
+                        count++;
+                    }
+                    token.setLength(0);
+                }
+            }
+            i++;
+        }
+        return count;
     }
 
     /** 缓存用的归一化 key：去掉首尾空白、压缩连续空白、统一小写。 */
