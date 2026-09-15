@@ -44,6 +44,33 @@ java {
 	targetCompatibility = JavaVersion.VERSION_25
 }
 
+// ------------------------------------------------------------------
+// 离线自检（tools/VerifyCore.java）
+//
+// 单独一个源集，并挂到 check 上：`./gradlew build`（本地和 CI 用的是同一条命令）
+// 会顺带跑完全部断言，不需要任何人记得手动敲 javac/java 两行。
+// 自检不依赖 Minecraft 运行时，只用到 gson / slf4j，几秒内跑完。
+// ------------------------------------------------------------------
+sourceSets {
+	verify {
+		java.srcDir 'tools'
+		compileClasspath = sourceSets.main.output + configurations.compileClasspath
+		runtimeClasspath = output + compileClasspath
+	}
+}
+
+tasks.register('verifyCore', JavaExec) {
+	group = 'verification'
+	description = '运行离线自检：语言判断 / 命令解析 / HTTP 与配置迁移'
+	dependsOn tasks.named('verifyClasses')
+	classpath = sourceSets.verify.runtimeClasspath
+	mainClass = 'VerifyCore'
+}
+
+tasks.named('check') {
+	dependsOn tasks.named('verifyCore')
+}
+
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName

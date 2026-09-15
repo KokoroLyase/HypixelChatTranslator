@@ -193,6 +193,8 @@ Hypixel 的聊天内容很"脏"：同一个句子里可能既有中文又有英�
 - **为什么译文另起一行，而不是把原消息替换掉？** 翻译是异步的（几百毫秒到几秒），而聊天栏消息一旦显示就无法就地修改文字；另起一行最稳，也不会破坏服务器原来的颜色/点击事件。
 - **为什么不用 Mixin？** 26.2 的 Fabric API 已经提供了收发聊天的全部事件，模组**零 Mixin**，对游戏版本更新更耐受，也几乎不可能与其它模组冲突。
 - **HTTP 只用 `HttpURLConnection`**（`java.base` 模块），不依赖 `java.net.http`，避免 Mojang 精简版运行时缺少模块导致崩溃。
+- **为什么进来的消息要同时接 `CHAT` 和 `GAME` 两条事件？** 别删掉任何一条。正常服务器的玩家聊天走签名聊天（`CHAT`，能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**（`GAME`）下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。只接一条就会有一半场景失效。
+- **发送方向为什么要「取消原发送 → 异步翻译 → 自己重发」？** Fabric 的发送事件是同步回调，而网络请求要几百毫秒，不能在主线程里等；重发时必须走原版 `ClientPacketListener.sendChat`，让客户端自己重新签名。也因此必须有个 `programmaticSend` 开关把「自己发的」和「玩家发的」区分开，否则会无限递归。
 
 ## 7. 费用 / 限流
 
@@ -288,14 +290,18 @@ export JAVA_HOME=/path/to/jdk-25
 
 ### 离线自检（不需要启动游戏）
 
-`tools/VerifyCore.java` 会用本地 mock HTTP 服务验证语言判断、命令拆解、DeepSeek 请求体与各种错误分支：
+`tools/VerifyCore.java` 会用本地 mock HTTP 服务验证语言判断、命令拆解、DeepSeek 请求体与各种错误分支，
+**并且已经接进 Gradle 构建**：`./gradlew build` 会顺带跑完（本地和 CI 用的是同一条命令），
+失败会直接让构建红掉，所以不存在「忘了跑测试」这回事。
 
 ```bash
-JAVA_HOME=/path/to/jdk-25 ./gradlew build
-LIBS=/path/to/gson.jar:/path/to/slf4j-api.jar:/path/to/fabric-loader.jar
-javac -encoding UTF-8 -cp "build/classes/java/main:$LIBS" -d build/verify tools/VerifyCore.java
-java -cp "build/classes/java/main:build/verify:$LIBS" VerifyCore
+JAVA_HOME=/path/to/jdk-25 ./gradlew build      # 构建 + 自动跑自检
+JAVA_HOME=/path/to/jdk-25 ./gradlew verifyCore # 只跑自检
 ```
+
+自检不依赖 Minecraft 运行时（`ChatTranslator` 里依赖游戏类的部分不在其中），几秒内跑完。
+新增的纯逻辑（`util/` 下的过滤器、匹配器、解析器）都应该在这里补用例。开发环境里改完代码，
+把自检跑绿再提交。
 
 ## 11. 许可
 

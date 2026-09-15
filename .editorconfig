@@ -1,0 +1,31 @@
+# 格式约定，见 https://editorconfig.org
+#
+# 这里写的都是仓库现状（Java 4 空格、Gradle/JSON 制表符、YAML 2 空格、
+# 无行尾空格、文件末尾留空行），目的是让后续改动——无论是编辑器、IDE
+# 还是自动化工具有意无意地重排版——不要引入格式噪音。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.java]
+indent_style = space
+indent_size = 4
+
+[*.{gradle,json}]
+indent_style = tab
+
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown 里行尾两个空格表示换行，不能删
+[*.md]
+trim_trailing_whitespace = false
+
+# Windows 批处理必须 CRLF
+[*.bat]
+end_of_line = crlf

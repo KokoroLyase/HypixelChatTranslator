@@ -36,6 +36,8 @@ public final class DeepSeekClient {
     private static final long RETRY_BACKOFF_MS = 800L;
     /** 发送方向的译文汉字占比达到多少，就判定「模型根本没翻译」。 */
     private static final double CHINESE_OUTPUT_MAX_RATIO = 0.5;
+    /** 对话补全的路径；配置里可能只写了域名，也可能把完整地址写进来。 */
+    private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
 
     /** 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。 */
     public record Result(boolean ok, String text, String error, boolean retryable) {
@@ -126,13 +128,7 @@ public final class DeepSeekClient {
         if (!config.hasApiKey()) {
             return Result.failure("未配置 API Key");
         }
-        String base = config.apiBaseUrl.trim();
-        while (base.endsWith("/")) {
-            base = base.substring(0, base.length() - 1);
-        }
-        if (base.endsWith("/chat/completions")) {
-            base = base.substring(0, base.length() - "/chat/completions".length());
-        }
+        String base = normalizeBaseUrl();
 
         HttpURLConnection connection = null;
         try {
@@ -176,7 +172,7 @@ public final class DeepSeekClient {
     }
 
     private Result attempt(String text, Direction direction) {
-        String endpoint = buildEndpoint(config.apiBaseUrl);
+        String endpoint = buildEndpoint();
         String body = buildRequestBody(text, direction);
 
         HttpURLConnection connection = null;
@@ -217,15 +213,25 @@ public final class DeepSeekClient {
         }
     }
 
-    private String buildEndpoint(String baseUrl) {
-        String base = baseUrl.trim();
+    private String buildEndpoint() {
+        return normalizeBaseUrl() + CHAT_COMPLETIONS_PATH;
+    }
+
+    /**
+     * 把 {@code apiBaseUrl} 归一化成「不带结尾斜杠、不带 /chat/completions 后缀」的基址。
+     *
+     * <p>用户可能填域名，也可能把完整地址粘进来，两种都要能用；
+     * {@code /models} 和 {@code /chat/completions} 都从这个基址拼出来。
+     */
+    private String normalizeBaseUrl() {
+        String base = config.apiBaseUrl == null ? "" : config.apiBaseUrl.trim();
         while (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);
         }
-        if (base.endsWith("/chat/completions")) {
-            return base;
+        if (base.endsWith(CHAT_COMPLETIONS_PATH)) {
+            base = base.substring(0, base.length() - CHAT_COMPLETIONS_PATH.length());
         }
-        return base + "/chat/completions";
+        return base;
     }
 
     private String buildRequestBody(String text, Direction direction) {

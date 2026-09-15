@@ -27,11 +27,8 @@ hx-chat-translator-<mod_version>+mc<minecraft_version>-<loader>.jar
 ## 3. 发布流程
 
 ```bash
-# 1) 改代码 -> 2) 本地构建与自检
+# 1) 改代码 -> 2) 本地构建与自检（build 会自动跑离线断言，失败即构建失败）
 ./gradlew build
-#    离线断言（不需要启动游戏）
-javac -encoding UTF-8 -cp "build/classes/java/main:libs/*" -d build/verify tools/VerifyCore.java
-java  -cp "build/classes/java/main:build/verify:libs/*" VerifyCore   # 必须 0 失败
 
 # 3) 提交并推送 main（叠加新提交，不 force push、不改写历史）
 git add -A && git commit -m "fix: ..."
@@ -66,10 +63,32 @@ git push origin v<mod_version>
 
 - `tools/VerifyCore.java` 是离线自检程序：语言判断、命令解析、DeepSeek 请求/响应、
   过滤器决策、配置迁移，全部不依赖 Minecraft。
+- 它在 `build.gradle` 里是独立的 `verify` 源集，并挂在 `check` 上：
+  **`./gradlew build`（CI 用的也是这条命令）会自动跑，失败即构建失败**；单独跑用 `./gradlew verifyCore`。
+  所以 CI 本身就是质量门禁，不需要额外配步骤。
 - **每次修复真实 bug，都要把玩家反馈里的原始消息加进回归用例**，并在 CHANGELOG 里注明。
 - 断言数只增不减；有新 bug 先补用例复现，再改代码。
+- 修完一轮建议做一次**反向验证**：把修复中和掉再跑一遍，确认对应用例真的会红 ——
+  用例如果「怎么改都绿」，那它就没有在保护任何东西。
+- `ChatTranslator` 依赖 Minecraft 类，不在这套离线自检里。改动它时只能靠代码审查 +
+  保持「同一规则只有一个出口」的结构（例如出站降级全部走 `fallbackToOriginal`），
+  并在 CHANGELOG 里说明「无自动化覆盖」。
 
 ## 7. 提交信息
 
 - 首行：`fix:` / `feat:` / `docs:` / `ci:` + 一句话说明 + `(v1.0.3)`
 - 正文写清**根因**（哪一行、什么条件触发）、**修法**、**兼容性**，中文书写。
+
+## 8. 工程洁净度
+
+这些约定是为了让后续改动不产生额外噪音，改东西时请遵守：
+
+- **格式**：`.editorconfig` 固定了各文件类型的缩进与换行（Java 4 空格、Gradle/JSON 制表符、
+  YAML 2 空格、无行尾空格、文件末尾空行）。编辑器支持 EditorConfig 时会自动生效。
+- **行尾**：`.gitattributes` 把文本统一成 LF、把 `*.jar` 等标记为二进制。
+  Windows 上 clone 也不会产生「只改了行尾」的假 diff。
+- **不要提交生成物**：`build/`、`.gradle/`、`run/`、`logs/`、`config/hxtranslate.json`
+  （含 API Key）都已在 `.gitignore` 里。跑完自检会在根目录生成 `logs/`，那是运行期产物。
+- **依赖**：保持零第三方依赖（只用 Fabric API + JDK 自带的 `HttpURLConnection`）。
+  引入新依赖前先想清楚是否值得 —— 目前整包不到 70 KB。
+- **提交**：一个改动一个提交，提交信息写清根因与修法；纯文档改动不占版本号（见 §1）。

@@ -1,9 +1,19 @@
+# 行尾与文本/二进制判定，见 https://git-scm.com/docs/gitattributes
 #
-# https://help.github.com/articles/dealing-with-line-endings/
-#
+# 默认按文本处理并统一成 LF：这样即使在 Windows 上 clone 也不会变成 CRLF，
+# 避免「只改了行尾」的假 diff 污染历史。
+* text=auto eol=lf
+
+# 二进制文件绝不参与行尾转换 —— gradle-wrapper.jar 一旦被转换过就跑不起来了
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ogg binary
+
 # Linux start script should use lf
 /gradlew        text eol=lf
 
 # These are Windows script files and should use crlf
 *.bat           text eol=crlf
-

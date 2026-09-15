@@ -27,10 +27,11 @@ import java.util.regex.Pattern;
 /**
  * 离线验证：不启动 Minecraft，直接验证翻译核心逻辑（语言判断、命令解析、DeepSeek 请求/响应）。
  *
- * <pre>
- * javac -encoding UTF-8 -cp build/classes/java/main:libs/* -d build/verify tools/VerifyCore.java
- * java  -cp build/classes/java/main:build/verify:libs/* VerifyCore
- * </pre>
+ * <p>已经接进构建：{@code ./gradlew build} 会自动跑到这里，失败即构建失败；
+ * 只想跑自检用 {@code ./gradlew verifyCore}。
+ *
+ * <p>覆盖不到的：{@code ChatTranslator} 依赖 Minecraft 类，不在本程序里 ——
+ * 那部分的改动只能靠代码审查，并保持「同一条规则只有一个出口」的结构。
  */
 public class VerifyCore {
 

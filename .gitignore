@@ -37,6 +37,10 @@ bin/
 
 run/
 
+# 运行期产物：跑离线自检（./gradlew verifyCore）时 slf4j 会在项目根目录写出 logs/
+logs/
+crash-reports/
+
 # 会话衔接提示词（本地草稿，不入库）
 
 *衔接提示词*.txt
