@@ -57,10 +57,17 @@ public final class ChatTranslator {
     private final List<Pattern> compiledPatterns = new ArrayList<>();
     private List<String> compiledFrom;
 
+    // 统计分「收到」「发出」两组，各自独立。
+    // 以前只有一组：translatedCount 仅收到方向自增，而 failedCount 两个方向都自增，
+    // 于是「只发中文、从不翻译收到的消息」的玩家会看到「已翻译 0 | 失败 1」，像是模组坏了。
     private final AtomicInteger receivedCount = new AtomicInteger();
     private final AtomicInteger translatedCount = new AtomicInteger();
     private final AtomicInteger skippedCount = new AtomicInteger();
     private final AtomicInteger failedCount = new AtomicInteger();
+    /** 发出方向：译文成功发出去的条数。 */
+    private final AtomicInteger sentCount = new AtomicInteger();
+    /** 发出方向：没能翻译成的条数（不论最后是取消还是按原文发出）。 */
+    private final AtomicInteger sendFailedCount = new AtomicInteger();
 
     /** 模组自己调用 sendChat/sendCommand 时要忽略事件，否则会无限递归。 */
     private volatile boolean programmaticSend;
@@ -291,10 +298,16 @@ public final class ChatTranslator {
         }
     }
 
-    /** 给 /hxtranslate status 用的统计信息。 */
+    /** 给 /hxtranslate status 用的统计信息（收到方向）。 */
     public String counters() {
-        return "§7收到 §f" + receivedCount.get() + " §7条 §8| §a已翻译 §f" + translatedCount.get()
+        return "§7收到 §f" + receivedCount.get() + " §7条 §8| §a译 §f" + translatedCount.get()
                 + " §8| §e跳过 §f" + skippedCount.get() + " §8| §c失败 §f" + failedCount.get();
+    }
+
+    /** 给 /hxtranslate status 用的统计信息（发出方向）。 */
+    public String sendCounters() {
+        return "§7发出 §a译文 §f" + sentCount.get() + " §7条 §8| §c未能翻译 §f"
+                + sendFailedCount.get() + " §7条";
     }
 
     public void resetCounters() {
@@ -302,6 +315,8 @@ public final class ChatTranslator {
         translatedCount.set(0);
         skippedCount.set(0);
         failedCount.set(0);
+        sentCount.set(0);
+        sendFailedCount.set(0);
     }
 
     // ------------------------------------------------------------------
@@ -331,6 +346,7 @@ public final class ChatTranslator {
         }
         if (!service.isReady()) {
             // 没配 Key 也算「翻译不了」，和 failureFallback 保持一致
+            sendFailedCount.incrementAndGet();
             if (sendOriginalOnFailure()) {
                 if (config.showErrorsInChat) {
                     Feedback.error("未配置 DeepSeek API Key，本条已按原文发送。"
@@ -371,9 +387,10 @@ public final class ChatTranslator {
                     }
                     rememberSent(outgoing);
                     sendProgrammatically(connection, outgoing, false);
+                    sentCount.incrementAndGet();
                     Feedback.info(config.outgoingPrefix + outgoing);
                 } else {
-                    failedCount.incrementAndGet();
+                    sendFailedCount.incrementAndGet();
                     if (sendOriginalOnFailure()) {
                         // 配置成「失败就发原文」时才降级发送
                         sendProgrammatically(connection, message, false);
@@ -391,7 +408,7 @@ public final class ChatTranslator {
             // 被限流 / 背压挡下时同样要遵守 failureFallback。
             // 这里以前是无条件 return true（放行中文原文），等于「翻译请求一忙就把中文漏到英文服里」，
             // 和 v1.0.6 统一过的语义（没配 Key 也走 failureFallback）自相矛盾。
-            failedCount.incrementAndGet();
+            sendFailedCount.incrementAndGet();
             String reason = rejectedReason(submitted);
             if (sendOriginalOnFailure()) {
                 if (config.showErrorsInChat) {
@@ -450,6 +467,7 @@ public final class ChatTranslator {
             return true;
         }
         if (!service.isReady()) {
+            sendFailedCount.incrementAndGet();
             if (sendOriginalOnFailure()) {
                 if (config.showErrorsInChat) {
                     Feedback.error("未配置 DeepSeek API Key，本条命令已按原文发送。");
@@ -490,9 +508,10 @@ public final class ChatTranslator {
                     String payload = head + outgoing;
                     rememberSent(outgoing);
                     sendProgrammatically(connection, payload, true);
+                    sentCount.incrementAndGet();
                     Feedback.info(config.outgoingPrefix + "/" + payload);
                 } else {
-                    failedCount.incrementAndGet();
+                    sendFailedCount.incrementAndGet();
                     if (sendOriginalOnFailure()) {
                         sendProgrammatically(connection, head + message, true);
                         if (config.showErrorsInChat) {
@@ -507,7 +526,7 @@ public final class ChatTranslator {
 
         if (!submitted.accepted()) {
             // 和 onSendChat 一样：没被受理也要看 failureFallback，不能把中文正文跟着命令发出去
-            failedCount.incrementAndGet();
+            sendFailedCount.incrementAndGet();
             String reason = rejectedReason(submitted);
             if (sendOriginalOnFailure()) {
                 if (config.showErrorsInChat) {

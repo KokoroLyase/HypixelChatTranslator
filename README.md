@@ -64,7 +64,7 @@
 ### 游戏内命令
 
 ```
-/hxtranslate                 查看当前状态（含消息统计）
+/hxtranslate                 查看当前状态（含收发两个方向的消息统计）
 /hxtranslate on|off          开关总闸
 /hxtranslate incoming on|off 只控制「收消息翻译」
 /hxtranslate outgoing on|off 只控制「发消息翻译」
