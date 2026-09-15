@@ -47,6 +47,7 @@ public class VerifyCore {
         v105ApiAndSafety();
         v106Review();
         v107Fixes();
+        v108Audit();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -552,6 +553,125 @@ public class VerifyCore {
         }
     }
 
+    /**
+     * v1.0.8：第二轮全面复核。
+     *
+     * <p>本段覆盖 4 项可以离线验证的修复；另外一项（出站被限流/背压挡下时也要遵守
+     * {@code failureFallback}）在 {@code ChatTranslator} 里，那里依赖 Minecraft 类，
+     * 按工程约定不纳入离线自检 —— 它靠「6 个降级调用点全部收口到 sendOriginalOnFailure()」保证。
+     */
+    private static void v108Audit() throws Exception {
+        System.out.println("== v1.0.8 复核：不可信文本 / 代理对截断 / 缓存容量 / 熔断复位 ==");
+
+        // 1) 接口返回的错误正文是「不可信输入」（用户可能配第三方中转站）：
+        //    带 § 会被原版渲染成颜色代码，带换行会把一条提示拆成好几行
+        checkEq("清洗不可信文本：去掉 § 代码", "翻译失败 请稍后重试",
+                LangUtils.sanitizeOneLine("§c翻译失败§r 请稍后重试"));
+        checkEq("清洗不可信文本：换行压成一行", "第一行 第二行",
+                LangUtils.sanitizeOneLine("第一行\n第二行"));
+        checkEq("清洗不可信文本：回车与制表符也压掉", "a b",
+                LangUtils.sanitizeOneLine("a\r\tb"));
+        checkEq("清洗不可信文本：其余控制字符丢弃", "ab",
+                LangUtils.sanitizeOneLine("a\u0000\u0007b"));
+        checkEq("清洗不可信文本：null 安全", "", LangUtils.sanitizeOneLine(null));
+
+        // 2) 截断不能把 emoji 的代理对劈成两半（孤立代理会变乱码，还可能被服务器拒收）
+        check("代理对截断：不产生孤立代理项",
+                !hasLoneSurrogate(LangUtils.truncateForChat("😀😀😀😀", 4)));
+        checkEq("代理对截断：只保留放得下的完整 emoji + 省略号", "😀…",
+                LangUtils.truncateForChat("😀😀😀😀", 4));
+        check("代理对截断：中英混排也不产生孤立代理",
+                !hasLoneSurrogate(LangUtils.truncateForChat("中文测试😀内容abc", 9)));
+        check("代理对截断：长度仍不超上限",
+                LangUtils.truncateForChat("😀😀😀😀", 4).length() <= 4);
+        check("代理对截断：没超长时原样返回",
+                LangUtils.truncateForChat("😀ok", 10).equals("😀ok"));
+
+        // 3) failureFallback 的兜底方向必须是「不发」：配置写错时绝不能反而把中文漏出去
+        TranslatorConfig typo = new TranslatorConfig();
+        typo.failureFallback = "send_original"; // 大小写不同
+        typo.normalize();
+        checkEq("failureFallback 大小写不敏感", "SEND_ORIGINAL", typo.failureFallback);
+        TranslatorConfig hyphen = new TranslatorConfig();
+        hyphen.failureFallback = "send-original"; // 连字符是最常见的写法错误
+        hyphen.normalize();
+        checkEq("failureFallback 连字符也认（写错就静默不发，代价太大）",
+                "SEND_ORIGINAL", hyphen.failureFallback);
+        TranslatorConfig wrong = new TranslatorConfig();
+        wrong.failureFallback = "随便写的值";
+        wrong.normalize();
+        checkEq("failureFallback 写错时按 CANCEL 兜底", "CANCEL", wrong.failureFallback);
+
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.requestsPerMinute = 1000;
+            config.retryOnFailure = false; // 熔断用例不要每次都等 800ms 退避
+
+            // 4) 错误正文里的 § 和换行必须清洗掉再进聊天栏
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.status = 500;
+            server.response = "{\"error\":{\"message\":\"§c网关坏了\\n请稍后重试\"}}";
+            DeepSeekClient.Result dirty = client.translate("hi", Direction.INCOMING);
+            check("接口错误正文里的 § 被清洗", !dirty.ok() && !dirty.error().contains("§"));
+            check("接口错误正文里的换行被清洗", !dirty.ok() && !dirty.error().contains("\n"));
+            server.status = 200;
+
+            // 5) 熔断后复位要能立刻重试（/hxtranslate reload 会调用它）
+            server.status = 500;
+            for (int i = 0; i < 5; i++) {
+                client.translate("trip" + i, Direction.INCOMING);
+            }
+            check("连续失败后进入熔断", client.isCircuitOpen());
+            client.resetCircuit();
+            check("复位后不再熔断", !client.isCircuitOpen());
+            server.status = 200;
+            server.response = ok("ok");
+            check("复位后能立刻正常翻译", client.translate("after reset", Direction.INCOMING).ok());
+
+            // 6) cacheSize 必须每次从配置读：以前在构造时固化，reload 改配置要重启游戏才生效
+            TranslatorConfig sized = new TranslatorConfig();
+            sized.apiKey = "sk-test";
+            sized.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            sized.requestsPerMinute = 1000;
+            sized.cacheSize = 100;                 // 构造时是大容量
+            TranslationService service = new TranslationService(sized);
+            sized.cacheSize = 16;                  // 模拟 /hxtranslate reload 把它改小
+            server.delayMs = 0;
+            server.response = ok("cached value");
+            // 必须用发送方向：它是单线程 FIFO，写入缓存的先后是确定的。
+            // 收方向有 2 个线程，谁先返回谁先入缓存，「哪条被挤掉」会随机。
+            CountDownLatch filled = new CountDownLatch(17);
+            for (int i = 0; i < 17; i++) {
+                service.submit("缓存容量测试 " + i, Direction.OUTGOING, (ok, t, e) -> filled.countDown());
+            }
+            check("17 条不同文本都翻译完成", filled.await(30, TimeUnit.SECONDS));
+            int beforeRefill = server.requestCount.get();
+            CountDownLatch refill = new CountDownLatch(1);
+            service.submit("缓存容量测试 0", Direction.OUTGOING, (ok, t, e) -> refill.countDown());
+            check("改小后的 cacheSize 立刻生效（第一条已被 LRU 挤掉，重新走了网络）",
+                    refill.await(10, TimeUnit.SECONDS) && server.requestCount.get() == beforeRefill + 1);
+            service.shutdown();
+        }
+    }
+
+    /** 字符串里是否存在孤立的代理项（半个 emoji）。 */
+    private static boolean hasLoneSurrogate(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= text.length() || !Character.isLowSurrogate(text.charAt(i + 1))) {
+                    return true;
+                }
+                i++;
+            } else if (Character.isLowSurrogate(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
     private static void hypixelSamples() {        System.out.println("== Hypixel 真实聊天样本回归 ==");
         TranslatorConfig config = new TranslatorConfig();
@@ -801,7 +921,8 @@ public class VerifyCore {
                     }
                 }
                 int effectiveStatus = status;
-                if (failFirst > 0 && requestCount.incrementAndGet() <= failFirst) {
+                int nth = requestCount.incrementAndGet(); // 所有请求都计数，供用例断言真实调用次数
+                if (failFirst > 0 && nth <= failFirst) {
                     effectiveStatus = failStatus;
                 }
                 byte[] payload = response.getBytes(StandardCharsets.UTF_8);

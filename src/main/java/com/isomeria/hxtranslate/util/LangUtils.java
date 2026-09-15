@@ -286,6 +286,45 @@ public final class LangUtils {
         if (lastSpace >= limit / 2) {
             cut = cut.substring(0, lastSpace);
         }
-        return cut.stripTrailing() + "…";
+        cut = cut.stripTrailing();
+        // 别把代理对（emoji 之类）劈成两半：留下孤立的高位代理会变成乱码，
+        // 发到服务器还可能被判定为非法字符直接拒收。
+        if (!cut.isEmpty() && Character.isHighSurrogate(cut.charAt(cut.length() - 1))) {
+            cut = cut.substring(0, cut.length() - 1).stripTrailing();
+        }
+        return cut + "…";
+    }
+
+    /**
+     * 把<b>不可信文本</b>压成一行并去掉格式代码，用于写进聊天栏。
+     *
+     * <p>典型来源是接口返回的错误正文（用户可能配了第三方中转站，内容是对方可控的）。
+     * 直接拼进聊天栏会有两个后果：{@code §} 会被原版渲染成颜色代码，
+     * 换行则会把一条提示拆成好几行刷屏。
+     *
+     * <p>注意与 {@link #stripFormattingCodes} 的区别：那个是「送去翻译前」清洗原文，
+     * 这个是「显示给玩家前」兜底。
+     */
+    public static String sanitizeOneLine(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        String stripped = stripFormattingCodes(text);
+        StringBuilder builder = new StringBuilder(stripped.length());
+        boolean pendingSpace = false;
+        for (int i = 0; i < stripped.length(); i++) {
+            char c = stripped.charAt(i);
+            if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+                pendingSpace = true;
+            } else if (c >= 0x20 && c != 0x7F) {
+                if (pendingSpace && !builder.isEmpty()) {
+                    builder.append(' ');
+                }
+                pendingSpace = false;
+                builder.append(c);
+            }
+            // 其余控制字符直接丢弃
+        }
+        return builder.toString();
     }
 }

@@ -69,10 +69,10 @@
 /hxtranslate incoming on|off 只控制「收消息翻译」
 /hxtranslate outgoing on|off 只控制「发消息翻译」
 /hxtranslate key <Key>       设置 DeepSeek API Key
-/hxtranslate test <文本>      测试翻译一段文本（结果会打印在聊天栏）
+/hxtranslate test <文本>      测试翻译一段文本（方向按内容判断：含中文＝中→英，结果打印在聊天栏）
 /hxtranslate models          查询 DeepSeek 当前可用的模型名（接口改版时自查）
 /hxtranslate debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
-/hxtranslate reload          重新读取配置文件并清空缓存
+/hxtranslate reload          重新读取配置文件，并清空缓存、复位限流与熔断
 ```
 
 ### 快捷指令里的中文也会被翻译
@@ -219,6 +219,9 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 按 `failureFallback` 处理，默认 **`CANCEL`：这条不发送**，聊天栏红字提示失败原因，
 按 `↑` 可以找回刚才输入的内容（避免中文原样发到英文服）。
 想改成"失败就发原文"，把配置里的 `failureFallback` 改成 `SEND_ORIGINAL`。
+
+> 这里说的"失败"包括全部 5 种情况：没配 Key、翻译失败、译文仍是中文、**被限流**、**队列积压**。
+> 早期版本里最后两种会把中文原文直接发出去，v1.0.8 起统一。
 
 **服务器里出现的消息太多，翻译刷屏 / 太费钱**
 把“收到的消息翻译”关掉：`/hxtranslate incoming off`，或调低 `requestsPerMinute`、往 `ignorePatterns` 里加正则。

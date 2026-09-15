@@ -57,7 +57,7 @@ public final class TranslationService {
     public TranslationService(TranslatorConfig config) {
         this.config = config;
         this.client = new DeepSeekClient(config);
-        this.cache = createCache(config.cacheSize);
+        this.cache = createCache();
         this.incomingExecutor = newWorkerPool(2);
         this.outgoingExecutor = newWorkerPool(1);
     }
@@ -71,11 +71,15 @@ public final class TranslationService {
         });
     }
 
-    private static Map<String, String> createCache(int maxSize) {
+    /**
+     * LRU 上限每次都从配置里读，这样 {@code /hxtranslate reload} 改了 {@code cacheSize} 就能立刻生效。
+     * （以前是在构造时把数值固化进闭包，改配置必须重启游戏才生效。）
+     */
+    private Map<String, String> createCache() {
         return new LinkedHashMap<>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
-                return size() > Math.max(16, maxSize);
+                return size() > Math.max(16, config.cacheSize);
             }
         };
     }
@@ -181,6 +185,11 @@ public final class TranslationService {
 
     public long circuitRemainingSeconds() {
         return client.circuitRemainingSeconds();
+    }
+
+    /** 手动复位熔断（配置重载后调用：可能刚换了 Key 或接口地址）。 */
+    public void resetCircuit() {
+        client.resetCircuit();
     }
 
     /** 查询当前账号可用的模型列表（GET /models），接口改版后可自查。 */

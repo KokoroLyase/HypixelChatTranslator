@@ -388,14 +388,34 @@ public final class ChatTranslator {
         });
 
         if (!submitted.accepted()) {
-            if (config.showErrorsInChat) {
-                Feedback.hint("请求过快或队列积压，本条未翻译，按原文发送。");
+            // 被限流 / 背压挡下时同样要遵守 failureFallback。
+            // 这里以前是无条件 return true（放行中文原文），等于「翻译请求一忙就把中文漏到英文服里」，
+            // 和 v1.0.6 统一过的语义（没配 Key 也走 failureFallback）自相矛盾。
+            failedCount.incrementAndGet();
+            String reason = rejectedReason(submitted);
+            if (sendOriginalOnFailure()) {
+                if (config.showErrorsInChat) {
+                    Feedback.hint(reason + "，本条未翻译，按原文发送。");
+                }
+                return true;
             }
-            return true;
+            if (config.showErrorsInChat) {
+                Feedback.error(reason + "，本条未发送（按 ↑ 可找回刚才的内容）。");
+            }
+            return false;
         }
 
         Feedback.actionBar("§e⏳ 翻译中…");
         return false;
+    }
+
+    /** 翻译请求没被受理的原因，写进聊天栏提示。 */
+    private String rejectedReason(TranslationService.SubmitResult result) {
+        return switch (result) {
+            case RATE_LIMITED -> "本分钟翻译请求已达上限（" + config.requestsPerMinute + " 次）";
+            case QUEUE_FULL -> "翻译请求积压超过 " + config.maxPendingTranslations + " 条（接口变慢了）";
+            default -> "翻译请求未被受理";
+        };
     }
 
     /** 翻译失败时是否按原文发出去（配置项 failureFallback）。 */
@@ -486,10 +506,19 @@ public final class ChatTranslator {
         });
 
         if (!submitted.accepted()) {
-            if (config.showErrorsInChat) {
-                Feedback.hint("请求过快或队列积压，本条命令未翻译。");
+            // 和 onSendChat 一样：没被受理也要看 failureFallback，不能把中文正文跟着命令发出去
+            failedCount.incrementAndGet();
+            String reason = rejectedReason(submitted);
+            if (sendOriginalOnFailure()) {
+                if (config.showErrorsInChat) {
+                    Feedback.hint(reason + "，这条命令未翻译，按原文发送。");
+                }
+                return true;
             }
-            return true;
+            if (config.showErrorsInChat) {
+                Feedback.error(reason + "，这条命令未发送（按 ↑ 可找回刚才的内容）。");
+            }
+            return false;
         }
 
         Feedback.actionBar("§e⏳ 翻译中…");

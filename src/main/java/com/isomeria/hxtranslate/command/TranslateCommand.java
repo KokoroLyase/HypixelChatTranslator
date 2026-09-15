@@ -6,6 +6,7 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.core.TranslationService;
+import com.isomeria.hxtranslate.util.LangUtils;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
@@ -57,7 +58,10 @@ public final class TranslateCommand {
                     config.reload();
                     service.invalidateCache();
                     service.resetRateLimit();
-                    context.getSource().sendFeedback(Component.literal("§a配置已重新加载，缓存已清空"));
+                    // 重载往往是因为「刚换了 Key / 接口地址」，这时不该让之前攒下的熔断继续挡着
+                    service.resetCircuit();
+                    context.getSource().sendFeedback(Component.literal(
+                            "§a配置已重新加载：缓存已清空、限流与熔断已复位"));
                     return 1;
                 }))
                 .then(ClientCommands.literal("debug")
@@ -103,6 +107,8 @@ public final class TranslateCommand {
                                     String key = StringArgumentType.getString(context, "value").trim();
                                     config.apiKey = key;
                                     config.save();
+                                    // 刚换了 Key，之前因为网络/限流攒下的熔断不该继续挡着
+                                    service.resetCircuit();
                                     context.getSource().sendFeedback(Component.literal(
                                             "§a已保存 DeepSeek API Key（长度 " + key.length() + "，出于安全不回显内容）"));
                                     return 1;
@@ -133,10 +139,15 @@ public final class TranslateCommand {
 
     /** 测试翻译要发网络请求，必须放到后台线程，否则会卡住游戏。 */
     private static void runTest(TranslationService service, String text) {
+        // 方向按内容自动判断，规则和实际收发时一致：含汉字 = 你想发出去的中文（中→英），
+        // 否则当作收到的英文（英→中）。
+        // 以前这里固定用「英→中」，于是 `/hxtranslate test 你好` 会得到「你好」原样返回，
+        // 看着像模组坏了，其实是根本没测到发送方向 —— 而发送方向才是会影响服务器里别人的那个。
+        Direction direction = LangUtils.containsHan(text) ? Direction.OUTGOING : Direction.INCOMING;
         Thread thread = new Thread(() -> {
-            DeepSeekClient.Result result = service.translateBlocking(text, Direction.INCOMING);
+            DeepSeekClient.Result result = service.translateBlocking(text, direction);
             if (result.ok()) {
-                Feedback.success("测试译文: §f" + result.text());
+                Feedback.success("测试译文（" + direction.label() + "）: §f" + result.text());
             } else {
                 Feedback.error("测试失败: " + result.error());
             }

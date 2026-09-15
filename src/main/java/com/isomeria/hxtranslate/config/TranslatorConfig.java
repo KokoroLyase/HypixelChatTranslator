@@ -679,7 +679,9 @@ public final class TranslatorConfig {
         if (failureFallback == null || failureFallback.isBlank()) {
             failureFallback = "CANCEL";
         }
-        failureFallback = failureFallback.trim().toUpperCase(Locale.ROOT);
+        // 连字符也认：写成 send-original 的不少，而认错的代价是「消息静默不发出去」，
+        // 这个方向的容错比严格更划算。
+        failureFallback = failureFallback.trim().toUpperCase(Locale.ROOT).replace('-', '_');
         if (!failureFallback.equals("SEND_ORIGINAL")) {
             failureFallback = "CANCEL";
         }

@@ -71,6 +71,17 @@ public final class DeepSeekClient {
         return Math.max(0, (breakerOpenUntil - System.currentTimeMillis()) / 1000);
     }
 
+    /**
+     * 手动复位熔断。
+     *
+     * <p>配置重载（很可能刚换了 API Key 或接口地址）之后应该马上能重试，
+     * 而不是干等剩下的几十秒。
+     */
+    public void resetCircuit() {
+        consecutiveFailures.set(0);
+        breakerOpenUntil = 0;
+    }
+
     public Result translate(String text, Direction direction) {
         if (!config.hasApiKey()) {
             return Result.failure("未配置 API Key");
@@ -351,8 +362,11 @@ public final class DeepSeekClient {
             // 不是 JSON 就按原文截断显示
         }
         if (detail.isEmpty() && response != null && !response.isBlank()) {
-            detail = response.length() > 160 ? response.substring(0, 160) + "..." : response;
+            detail = response;
         }
-        return detail;
+        // 这段内容来自接口（不少用户配的是第三方中转站），对模组来说是「不可信输入」：
+        // 先压成一行、去掉 § 代码再截断，免得把颜色代码和换行带进聊天栏。
+        detail = LangUtils.sanitizeOneLine(detail);
+        return detail.length() > 160 ? detail.substring(0, 160) + "..." : detail;
     }
 }
