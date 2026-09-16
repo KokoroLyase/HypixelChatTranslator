@@ -64,17 +64,16 @@ body:
     id: debug-output
     attributes:
       label: 游戏内诊断输出
-      description: 依次执行下面两条命令，把输出贴上来（统计数字与跳过原因基本能定位到具体分支）
-      value: |
-        ```
-        /hxtranslate status
-        /hxtranslate debug on
-        ```
-        `debug on` 之后复现一次，聊天栏会逐条打印「翻译 / 跳过（原因）」，把相关几行贴在下面：
+      description: 依次执行 /hxtranslate status 与 /hxtranslate debug on，把输出贴在这里（统计数字与跳过原因基本能定位到具体分支）
+      value: |-
+        第 1 步 —— 输入 /hxtranslate status，把输出贴到下面：
 
-        ```
+            在这里粘贴 status 的输出
 
-        ```
+        第 2 步 —— 输入 /hxtranslate debug on，复现一次，聊天栏会逐条打印「翻译 / 跳过（原因）」，
+        把相关的几行贴到下面（不用全贴）：
+
+            在这里粘贴 debug 输出
     validations:
       required: true
 
