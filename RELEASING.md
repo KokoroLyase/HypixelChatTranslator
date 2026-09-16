@@ -124,4 +124,42 @@ git push origin v<mod_version>
   （含 API Key）都已在 `.gitignore` 里。跑完自检会在根目录生成 `logs/`，那是运行期产物。
 - **依赖**：保持零第三方依赖（只用 Fabric API + JDK 自带的 `HttpURLConnection`）。
   引入新依赖前先想清楚是否值得 —— 目前整包不到 70 KB。
+- **日志**：一律用 `com.isomeria.hxtranslate.Log.LOGGER`，**不要**用入口类的
+  `HxTranslateClient.LOGGER`。入口类实现 `ClientModInitializer`，引它会连带加载 Fabric
+  加载器 API：万一那个类不可用（或以后挪了包名），打日志就会抛 `NoClassDefFoundError`，
+  而它是 `Error`，`catch (RuntimeException)` 接不住，工作线程直接死、翻译回调不执行、
+  消息静默消失（v2.1.0 修的就是这个，见 CHANGELOG）。自检的类路径已经剔除了游戏库，
+  违反这条会在 `./gradlew build` 里立刻报错。
+- **自检的类路径**：`build.gradle` 里 `sourceSets.verify` 刻意**只放行 gson 与 slf4j**，
+  Minecraft / Fabric / LWJGL / authlib 全部剔除。所以 `tools/VerifyCore.java` 能碰到的
+  只有纯逻辑类；若要在自检里用新库，必须在那个过滤器里显式加白名单，别把
+  `configurations.compileClasspath` 整个塞回去 —— 那会让「纯逻辑类误引用游戏 API」
+  重新变成能悄悄通过的事。
 - **提交**：一个改动一个提交，提交信息写清根因与修法；纯文档改动不占版本号（见 §1）。
+
+## 9. 跨 Minecraft 版本升级（换 `minecraft_version` 时照做）
+
+换 MC 版本属于**不兼容变更**（§1），版本号按首位进位。下面这张清单来自 26.2 → 26.3
+那次升级（v2.0.0），每一步都对应过一个真实的坑：
+
+1. **先查工具链**，不要凭记忆填版本：
+   - Fabric 游戏版本与 loader：`https://meta.fabricmc.net/v2/versions/game`、
+     `.../versions/loader`；
+   - Fabric API 对应版本：Modrinth 的 `game_versions` 过滤；
+   - **Java 要求**：Mojang 版本清单里该版本的 `javaVersion.majorVersion`
+     （26.3 仍是 25，不要想当然跟着年份涨）。
+2. **同步三个文件的版本号**：`gradle.properties`（`minecraft_version` / `loader_version` /
+   `fabric_api_version`）、`src/main/resources/fabric.mod.json` 的 `depends`、README 的环境
+   要求表与产物文件名。**这三处现在由自检的 `versionConsistency()` 盯着**，漏一处构建就红。
+3. **`./gradlew clean build`，逐个修编译错误**，并把每一处 API 变更**记进 CHANGELOG**
+   （写清「26.2 怎么写 / 26.3 怎么改 / 报错原文」）。26.2 → 26.3 的两处是：
+   `org.lwjgl.glfw` 不再直接可见（改用 `InputConstants.KEY_F6`）、
+   `InputConstants.Type.KEYSYM` 合并为 `KEYBOARD`。
+4. **人工核对注册面**（编译不会报错的部分）：`GameClient.register()` 里四条事件
+   （`ALLOW_CHAT` / `ALLOW_COMMAND` / `GAME` / `CHAT`）与 `HxTranslateClient` 里的
+   开关按键 + 生命周期回调，一条都不能少。接收方向的两条链路尤其不能删：签名聊天能给
+   发送者，Hypixel 的系统消息给不了，少一条就有一半场景失效。
+5. **确认自检仍然全绿**，特别是 `v210ChatLogic()` 那一组 —— 它覆盖的正是编译期看不出来的
+   发送/接收行为（降级五条路径、切服保护、单线程顺序、缓存命中、告警节流）。
+6. 打 tag 前确认产物文件名里的 `mc<版本>` 已变（`archiveFileName` 用的是
+   `project.minecraft_version`，所以只要第 2 步改对就会对）。
