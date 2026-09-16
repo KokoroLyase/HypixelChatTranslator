@@ -1,6 +1,9 @@
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.isomeria.hxtranslate.chat.ChatClientPort;
+import com.isomeria.hxtranslate.chat.ChatTranslator;
+import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
@@ -24,8 +27,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 /**
@@ -59,6 +64,9 @@ public class VerifyCore {
         v113ApiTextAndRequest();
         v113OwnMessageAndRules();
         v114GlossaryBothDirections();
+        v210ChatLogic();
+        versionConsistency();
+
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -1281,6 +1289,623 @@ public class VerifyCore {
             entries.add("word" + i + "=词" + i);
         }
         return entries;
+    }
+
+    // ------------------------------------------------------------------
+    // v2.1.0：把「只有结构保证」的发送/接收行为变成可断言的用例
+    //
+    // 这些路径以前只能靠代码审查（ChatTranslator 直接依赖 Minecraft 类，离线自检碰不到），
+    // 而历史上真实出过的 bug 全在这一段：v1.0.5 连打两条中文乱序、v1.0.7 命中缓存的第二条插队、
+    // v1.0.8 限流时把中文原文发到英文服、v1.1.3 发送失败仍计入统计。
+    // 重构后 ChatTranslator 只依赖 ChatClientPort / FeedbackPort，于是这里可以拿假实现
+    // 确定性地驱动整条链路（包含「提交时在 A 服、回调回来时已切到 B 服」这种难复现场景）。
+    // ------------------------------------------------------------------
+
+    /** 交给发送方向的假回应：纯英文，免得触发「译文仍是中文」这道校验。 */
+    private static final String FAKE_EN = "rush mid";
+
+    private static void v210ChatLogic() throws Exception {
+        System.out.println("== v2.1.0：收发行为（不再只靠结构保证）==");
+        incomingDecisions();
+        silentLossGuards();
+        outgoingFallback();
+        outgoingSuccessAndOrdering();
+        outgoingConnectionGuard();
+        outgoingCommands();
+        warningThrottle();
+        portsAreSwappable();
+    }
+
+    /** 收到消息：该翻的翻、该跳的跳，且两条事件链路（签名聊天 / 系统消息）都对。 */
+    private static void incomingDecisions() throws Exception {
+        System.out.println("-- 收到消息 --");
+        try (MockServer server = new MockServer()) {
+            server.response = ok("你们好");
+
+            // 1) 英文系统消息（Hypixel 走这条，拿不到发送者）→ 翻译后**显示在聊天栏**
+            //    （接收方向绝不往服务器发东西，这是本模组的基本承诺）
+            Harness h = Harness.incoming(server);
+            h.translator.onIncoming("[MVP+] [红队] Steve: hello", false, false, null, null);
+            check("英文系统消息被翻译并显示", h.feedback.awaitInfo() && h.feedback.hasInfo("你们好"));
+            check("接收方向不会往服务器发消息", h.client.sentChats.isEmpty());
+            check("译文带 [译] 前缀", h.feedback.hasInfo("[译]") || h.feedback.hasInfo("译"));
+
+            // 2) 中文消息 → 跳过，且**不该**产生任何请求（省钱的保证）
+            Harness skip = Harness.incoming(server);
+            skip.translator.onIncoming("你购买了金苹果", false, false, null, null);
+            check("中文消息不翻译", !skip.client.hasChat(600) && !skip.hasPendingTasks());
+            check("跳过的消息计入「跳过」", skip.translator.counters().contains("跳过 §f1"));
+
+            // 3) overlay（物品栏上方那行）完全不处理
+            Harness overlay = Harness.incoming(server);
+            overlay.translator.onIncoming("+15 Bed Wars XP (Time Played)", true, false, null, null);
+            check("overlay 消息不处理", !overlay.client.hasChat(300));
+
+            // 4) 签名聊天：发送者就是自己 → 直接跳过，连正文都不看
+            Harness selfSigned = Harness.incoming(server);
+            selfSigned.client.isLocalPlayer = true;
+            selfSigned.translator.onIncoming("[MVP+] Isomeria: hello", false, true, SELF_UUID, "Isomeria");
+            check("自己发的签名聊天不翻译", !selfSigned.client.hasChat(300));
+
+            // 5) 黑名单玩家：签名链路按名字直接跳过
+            Harness blacklisted = Harness.incoming(server);
+            blacklisted.config.blacklistedPlayers = new ArrayList<>(List.of("Steve"));
+            blacklisted.client.localPlayerName = "Isomeria";
+            blacklisted.translator.onIncoming("[MVP+] Steve: hello", false, true, UUID.randomUUID(), "Steve");
+            check("黑名单玩家（签名链路）不翻译", !blacklisted.client.hasChat(300));
+
+            // 6) 黑名单玩家：系统消息（Hypixel）只能从正文里认说话人，也要能挡住
+            Harness blacklistedText = Harness.incoming(server);
+            blacklistedText.config.blacklistedPlayers = new ArrayList<>(List.of("Steve"));
+            blacklistedText.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
+            check("黑名单玩家（系统消息按名字认）不翻译", !blacklistedText.client.hasChat(300));
+
+            // 7) 自己的回显：直接打过的英文被服务器回显回来时，靠 EchoMatcher 认领
+            Harness echo = Harness.incoming(server);
+            echo.client.localPlayerName = "Isomeria";
+            echo.translator.onSendChat("gg ez");
+            echo.translator.onIncoming("[MVP+] Isomeria: gg ez", false, false, null, null);
+            check("自己回显的英文不翻译", !echo.client.hasChat(600));
+        }
+    }
+
+    /**
+     * v2.1.0 修掉的一个「静默丢消息」真问题，以及它的两道防线。
+     *
+     * <p>背景：{@code TranslationService} 的 debug 分支引用 {@code HxTranslateClient.LOGGER}，
+     * 而入口类实现 {@code ClientModInitializer}，于是「打一行日志」会连带加载 Fabric 加载器 API。
+     * 在拿不到那个类的环境里抛的是 {@link NoClassDefFoundError} —— 它是 {@link Error} 不是
+     * {@link Exception}，{@code catch (IOException|RuntimeException)} 全都接不住：
+     * 工作线程直接死、**回调永远不执行**，玩家看到「⏳ 翻译中…」之后什么都没发生。
+     *
+     * <p>这道防线是「写用例时撞出来的」：写 v2.1.0 的收发行为用例时，第一条「英文系统消息
+     * 被翻译」一直红，查下去才发现回调根本没回来。所以这里把它固化成三条断言。
+     */
+    private static void silentLossGuards() throws Exception {
+        System.out.println("-- 静默丢消息的防线 --");
+
+        // 1) 打开 debug（也就是打开那些「顺手打一行日志」的分支）后，翻译仍然必须送达。
+        //    这条在把日志改回「引用入口类」时会变红：debug 分支抛 NoClassDefFoundError，
+        //    译文再也到不了聊天栏。
+        try (MockServer server = new MockServer()) {
+            server.response = ok("你们好");
+            Harness debugOn = Harness.incoming(server);
+            debugOn.config.debugLog = true;
+            debugOn.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
+            check("debug 模式下译文仍然送达", debugOn.feedback.awaitInfo() && debugOn.feedback.hasInfo("你们好"));
+        }
+
+        // 2) 日志出口自己抛错时：事件回调不能崩、译文仍然必须送达（走网络与走缓存两条路径都要）。
+        try (MockServer server = new MockServer()) {
+            server.response = ok("你们好");
+            Harness brokenLog = Harness.incoming(server);
+            brokenLog.config.debugLog = true;
+            brokenLog.breakLogger();
+            brokenLog.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
+            check("日志器抛错时译文依然送达（不会静默丢消息）",
+                    brokenLog.feedback.awaitInfo(2000, 1) && brokenLog.feedback.hasInfo("你们好"));
+            // 第二条同样的消息命中缓存：另一条回调路径，同样不能被日志故障影响
+            brokenLog.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
+            check("日志器抛错时缓存命中路径也送达", brokenLog.feedback.awaitInfo(2000, 2));
+        }
+    }
+
+    /** 发送方向的 5 条降级路径必须给出同一个答案（v1.0.8 的教训：限流那条曾把中文发出去）。 */
+    private static void outgoingFallback() throws Exception {
+        System.out.println("-- 发送失败时的降级（5 条路径统一看 failureFallback）--");
+        try (MockServer server = new MockServer()) {
+            server.response = ok(FAKE_EN);
+
+            // CANCEL（默认）：取消发送 + 红字提示 + 计入「未能翻译」，且**绝不**把中文发出去
+            Harness noKey = Harness.outgoing(server);
+            noKey.config.apiKey = "";
+            check("没 Key：取消发送", !noKey.translator.onSendChat("你们好"));
+            check("没 Key：没有发出任何内容", !noKey.client.hasChat(300));
+            check("没 Key：给了聊天栏提示", noKey.feedback.hasError("未配置 DeepSeek API Key"));
+            check("没 Key：不计入「已发出」", noKey.translator.sendCounters().contains("未能翻译 §f1"));
+
+            Harness limited = Harness.outgoing(server);
+            limited.config.requestsPerMinute = 0; // 保证拿不到配额
+            check("被限流：取消发送", !limited.translator.onSendChat("你们好"));
+            check("被限流：没有发出任何内容", !limited.client.hasChat(300));
+            check("被限流：提示了原因", limited.feedback.hasError("已达上限"));
+
+            // 译文仍是中文 → DeepSeekClient 判失败（这是「中文漏进英文服」的最后一道闸）
+            try (MockServer chinese = new MockServer()) {
+                chinese.response = ok("你们好");
+                Harness stillChinese = Harness.outgoing(chinese);
+                check("译文仍是中文：取消发送", !stillChinese.translator.onSendChat("你们好"));
+                stillChinese.client.awaitChat(600);
+                check("译文仍是中文：没有把中文发出去", stillChinese.client.sentChats.isEmpty());
+                check("译文仍是中文：计入未能翻译", stillChinese.translator.sendCounters().contains("未能翻译 §f1"));
+            }
+
+            // SEND_ORIGINAL：上面 3 条都要改成「按原文发出」
+            Harness sendOriginal = Harness.outgoing(server);
+            sendOriginal.config.apiKey = "";
+            sendOriginal.config.failureFallback = "SEND_ORIGINAL";
+            check("没 Key + SEND_ORIGINAL：放行原消息", sendOriginal.translator.onSendChat("你们好"));
+            check("没 Key + SEND_ORIGINAL：仍然给红字提示（中文可能已进英文服）",
+                    sendOriginal.feedback.hasError("仍按原文发送"));
+
+            Harness limitedOriginal = Harness.outgoing(server);
+            limitedOriginal.config.requestsPerMinute = 0;
+            limitedOriginal.config.failureFallback = "SEND_ORIGINAL";
+            check("被限流 + SEND_ORIGINAL：放行原消息（v1.0.8 修的就是这条）",
+                    limitedOriginal.translator.onSendChat("你们好"));
+            check("被限流 + SEND_ORIGINAL：没有走我们自己的发送通道",
+                    !limitedOriginal.client.hasChat(300));
+        }
+    }
+
+    /** 成功路径：取消原发送 → 异步翻译 → 用**译文**重发；顺序、截断、统计都要对。 */
+    private static void outgoingSuccessAndOrdering() throws Exception {
+        System.out.println("-- 发送成功路径 --");
+        try (MockServer server = new MockServer()) {
+            server.response = ok(FAKE_EN);
+
+            // 纯英文不干预，但要记下来（否则服务器回显时会被翻成中文）
+            Harness english = Harness.outgoing(server);
+            check("纯英文原样放行", english.translator.onSendChat("rush mid"));
+            check("纯英文不产生请求", !english.client.hasChat(300));
+
+            // 含中文：取消原发送，翻译后由模组发出
+            Harness h = Harness.outgoing(server);
+            check("含中文取消原发送", !h.translator.onSendChat("我们冲中路"));
+            check("译文被发出去", h.client.awaitChat() && h.client.sentChats.contains(FAKE_EN));
+            check("发出后打了 [→EN] 回显", h.feedback.hasInfo("→EN"));
+            check("成功计入「已发出」", h.translator.sendCounters().contains("发出 §a译文 §f1"));
+            check("没有计入「未能翻译」", h.translator.sendCounters().contains("未能翻译 §f0"));
+
+            // 请求体里带的是中文原文（确认我们没把别的东西发去翻译）
+            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            checkEq("翻译的是玩家输入的原文", "我们冲中路",
+                    body.getAsJsonArray("messages").get(1).getAsJsonObject().get("content").getAsString());
+
+            // 超长译文按预算截断，并说明原因
+            // （FAKE_EN 是 "rush mid"，所以预算要小于它才会真的截断）
+            Harness longOne = Harness.outgoing(server);
+            longOne.config.maxOutgoingChars = 5;
+            longOne.translator.onSendChat("我们冲中路");
+            check("超长译文被截断后发送", longOne.client.awaitChat()
+                    && longOne.client.sentChats.get(0).length() <= 5);
+            check("截断有提示", longOne.feedback.hasHint("已截断"));
+
+            // 连打两条中文：后一条必须等前一条发完（sendChats 是按发出顺序记的）
+            Harness ordered = Harness.outgoing(server);
+            ordered.translator.onSendChat("第一条中文");
+            ordered.translator.onSendChat("第二条中文");
+            check("两条中文都在发出通道里", ordered.client.awaitChat(4000, 2));
+            checkEq("先输入的先发出（单线程 FIFO）", "rush mid",
+                    ordered.client.sentChats.get(0));
+            checkEq("两条不会互相插队", 2, ordered.client.sentChats.size());
+        }
+    }
+
+    /** 提交时在 A 服、回调回来时已切到 B 服 —— 绝不能把消息发到别的服务器去。 */
+    private static void outgoingConnectionGuard() throws Exception {
+        System.out.println("-- 切服保护 --");
+        try (MockServer server = new MockServer()) {
+            server.response = ok(FAKE_EN);
+
+            Harness switched = Harness.outgoing(server);
+            switched.translator.onSendChat("你们好");
+            switched.client.connection = new Object(); // 翻译期间切服
+            switched.client.awaitChat(800);
+            check("切服后不发消息", switched.client.sentChats.isEmpty());
+            check("切服给了提示", switched.feedback.hasError("切换了服务器"));
+            check("切服不计入「已发出」", switched.translator.sendCounters().contains("发出 §a译文 §f0"));
+
+            Harness disconnected = Harness.outgoing(server);
+            disconnected.translator.onSendChat("你们好");
+            disconnected.client.connection = null; // 翻译期间退回主菜单
+            disconnected.client.awaitChat(800);
+            check("断线后静默放弃、不发消息", disconnected.client.sentChats.isEmpty());
+            check("断线不刷屏（玩家已在主菜单）", !disconnected.feedback.hasError("切换了服务器"));
+        }
+    }
+
+    /** 命令正文：只翻译正文、命令头原样保留，且按命令重发。 */
+    private static void outgoingCommands() throws Exception {
+        System.out.println("-- 命令正文 --");
+        try (MockServer server = new MockServer()) {
+            server.response = ok(FAKE_EN);
+
+            Harness h = Harness.outgoing(server);
+            check("命令正文含中文则取消原发送", !h.translator.onSendCommand("shout 我们冲中路"));
+            check("命令按命令重发（带 head）", h.client.awaitChat()
+                    && h.client.sentCommands.contains("shout " + FAKE_EN));
+            check("命令译文不会被当成聊天发出去", h.client.sentChats.isEmpty());
+            check("发出后打了回显", h.feedback.hasInfo("→EN") && h.feedback.hasInfo("shout"));
+
+            Harness english = Harness.outgoing(server);
+            check("命令正文是英文则放行", english.translator.onSendCommand("shout rush mid"));
+            check("英文命令不产生请求", !english.client.hasChat(300));
+
+            Harness notAList = Harness.outgoing(server);
+            check("不在名单里的命令放行", notAList.translator.onSendCommand("tp Steve"));
+            check("管理子命令放行", notAList.translator.onSendCommand("party invite Steve"));
+        }
+    }
+
+    /** 告警节流：接口挂了的时候，同一句话不能每条消息刷一行红字。 */
+    private static void warningThrottle() {
+        System.out.println("-- 告警节流 --");
+        Harness h = Harness.incoming(null);
+        h.config.apiKey = "";
+        h.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
+        h.translator.onIncoming("[MVP+] Steve: hello again", false, false, null, null);
+        h.translator.onIncoming("[MVP+] Steve: hello once more", false, false, null, null);
+        checkEq("同一条告警 30 秒内只出现一次", 1L,
+                h.feedback.errors.stream().filter(e -> e.contains("未配置 DeepSeek API Key")).count());
+
+        h.clock.advance(31_000);
+        h.translator.onIncoming("[MVP+] Steve: hello after cooldown", false, false, null, null);
+        checkEq("过了时间窗可以再提醒一次", 2L,
+                h.feedback.errors.stream().filter(e -> e.contains("未配置 DeepSeek API Key")).count());
+    }
+
+    /** 回调切主线程：任务还没执行时不该发送，执行后才发送（保证「碰游戏状态都在主线程」）。 */
+    private static void portsAreSwappable() throws Exception {
+        System.out.println("-- 回调切主线程 --");
+        try (MockServer server = new MockServer()) {
+            server.response = ok(FAKE_EN);
+            Harness h = Harness.outgoing(server);
+            h.client.runTasksInline = false;
+
+            h.translator.onSendChat("你们好");
+            h.client.awaitChat(800);
+            check("回调进了主线程队列、尚未发送", h.client.sentChats.isEmpty() && h.client.tasks.size() == 1);
+
+            h.client.flushTasks();
+            check("切回主线程后才真正发送", h.client.sentChats.contains(FAKE_EN));
+
+            check("统计会清零（/hxtranslate debug on 用它）", true);
+            h.translator.resetCounters();
+            check("resetCounters 之后计数归零",
+                    h.translator.counters().contains("收到 §f0") && h.translator.sendCounters().contains("发出 §a译文 §f0"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 测试替身：离线自检用的假端口。放在这里而不是 src 里，避免测试代码进产物。
+    // ------------------------------------------------------------------
+
+    /** 组装一台「被自检完全控制」的翻译器：假客户端 + 假反馈 + 假时钟 + 真的 TranslationService。 */
+    private static final class Harness {
+        final TranslatorConfig config;
+        final FakeChatClient client;
+        final FakeFeedback feedback;
+        final FakeClock clock;
+        final ChatTranslator translator;
+        final List<String> logs = new ArrayList<>();
+        /** 日志出口；默认记进 {@link #logs}，{@link #breakLogger()} 会把它换成抛错的实现。 */
+        private java.util.function.Consumer<String> logger = logs::add;
+
+        private Harness(TranslatorConfig config, MockServer server) {
+            this.config = config;
+            this.client = new FakeChatClient();
+            this.feedback = new FakeFeedback();
+            this.clock = new FakeClock();
+            TranslationService service = server == null
+                    ? new TranslationService(config)
+                    : new TranslationService(configWithEndpoint(config, server));
+            this.translator = new ChatTranslator(config, service, client, feedback,
+                    message -> logger.accept(message), clock);
+        }
+
+        /** 让日志出口开始抛错，用来验证「日志坏了也不能影响翻译，更不能崩事件回调」。 */
+        void breakLogger() {
+            logger = message -> {
+                throw new IllegalStateException("模拟日志出口故障");
+            };
+        }
+
+        /** 接收方向的默认配置（已配 Key，指向 mock 服务）。 */
+        static Harness incoming(MockServer server) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.skipOwnEcho = false; // 回显判定由专门的用例控制，默认关掉避免干扰
+            return new Harness(config, server);
+        }
+
+        /** 发送方向的默认配置。 */
+        static Harness outgoing(MockServer server) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            return new Harness(config, server);
+        }
+
+        boolean hasPendingTasks() {
+            return !client.tasks.isEmpty();
+        }
+    }
+
+    /** 把配置里的接口地址指向 mock 服务。 */
+    private static TranslatorConfig configWithEndpoint(TranslatorConfig config, MockServer server) {
+        config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+        config.httpTimeoutSeconds = 5;
+        return config;
+    }
+
+    /** 假的客户端端口：记录「发出去了什么」，并让自检能控制连接与线程切换。 */
+    private static final class FakeChatClient implements ChatClientPort {
+        final List<String> sentChats = Collections.synchronizedList(new ArrayList<>());
+        final List<String> sentCommands = Collections.synchronizedList(new ArrayList<>());
+        final List<Runnable> tasks = Collections.synchronizedList(new ArrayList<>());
+        volatile String localPlayerName = "Isomeria";
+        volatile boolean isLocalPlayer;
+        volatile Object connection = new Object();
+        volatile boolean runTasksInline = true;
+
+        @Override
+        public String localPlayerName() {
+            return localPlayerName;
+        }
+
+        @Override
+        public boolean isLocalPlayer(UUID senderId) {
+            return isLocalPlayer;
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            if (runTasksInline) {
+                task.run();
+            } else {
+                tasks.add(task);
+            }
+        }
+
+        @Override
+        public Object currentConnection() {
+            return connection;
+        }
+
+        @Override
+        public boolean isSameConnection(Object origin) {
+            return connection != null && connection == origin;
+        }
+
+        @Override
+        public boolean sendChat(String payload) {
+            sentChats.add(payload);
+            return true;
+        }
+
+        @Override
+        public boolean sendCommand(String command) {
+            sentCommands.add(command);
+            return true;
+        }
+
+        /** 等一次发送发生（最多 2 秒）。超时也是用例要断言的「没发送」，所以不抛异常。 */
+        boolean awaitChat() {
+            return awaitChat(2000, 1);
+        }
+
+        boolean awaitChat(long millis) {
+            return awaitChat(millis, 1);
+        }
+
+        boolean awaitChat(long millis, int count) {
+            long deadline = System.currentTimeMillis() + millis;
+            while (System.currentTimeMillis() < deadline) {
+                if (sentChats.size() + sentCommands.size() >= count) {
+                    return true;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return sentChats.size() + sentCommands.size() >= count;
+        }
+
+        /** 「这段时间内不该有发送」用的：等一小会儿再断言。 */
+        boolean hasChat(long millis) {
+            try {
+                Thread.sleep(millis);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return !sentChats.isEmpty() || !sentCommands.isEmpty();
+        }
+
+        void flushTasks() {
+            List<Runnable> snapshot;
+            synchronized (tasks) {
+                snapshot = new ArrayList<>(tasks);
+                tasks.clear();
+            }
+            snapshot.forEach(Runnable::run);
+        }
+    }
+
+    /** 假反馈：把「玩家看到的每一行」记下来，供用例断言。 */
+    private static final class FakeFeedback implements FeedbackPort {
+        final List<String> infos = new ArrayList<>();
+        final List<String> hints = new ArrayList<>();
+        final List<String> errors = new ArrayList<>();
+        final List<String> successes = new ArrayList<>();
+        final List<String> actionBars = new ArrayList<>();
+
+        @Override
+        public void info(String text) {
+            infos.add(text);
+        }
+
+        @Override
+        public void hint(String text) {
+            hints.add(text);
+        }
+
+        @Override
+        public void error(String text) {
+            errors.add(text);
+        }
+
+        @Override
+        public void success(String text) {
+            successes.add(text);
+        }
+
+        @Override
+        public void actionBar(String text) {
+            actionBars.add(text);
+        }
+
+        boolean hasInfo(String part) {
+            return infos.stream().anyMatch(line -> line.contains(part));
+        }
+
+        boolean hasHint(String part) {
+            return hints.stream().anyMatch(line -> line.contains(part));
+        }
+
+        boolean hasError(String part) {
+            return errors.stream().anyMatch(line -> line.contains(part));
+        }
+
+        /** 等一条 info 出现（接收方向的译文只走聊天栏，不发服务器）。 */
+        boolean awaitInfo() {
+            return awaitInfo(2000, 1);
+        }
+
+        boolean awaitInfo(long millis, int count) {
+            long deadline = System.currentTimeMillis() + millis;
+            while (System.currentTimeMillis() < deadline) {
+                if (infos.size() >= count) {
+                    return true;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return infos.size() >= count;
+        }
+    }
+
+    /** 假时钟：用来确定性地测节流，不用 sleep。 */
+    private static final class FakeClock implements java.util.function.LongSupplier {
+        private long now = 1_000_000L;
+
+        void advance(long millis) {
+            now += millis;
+        }
+
+        @Override
+        public long getAsLong() {
+            return now;
+        }
+    }
+
+    private static final UUID SELF_UUID = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+
+
+    /**
+     * 版本一致性：换 MC 版本时最容易漏的不是代码，而是**散在三个文件里的版本号**。
+     *
+     * <p>v2.0.0 从 26.2 升 26.3 时就是这样：改完 {@code gradle.properties} 还要同步改
+     * {@code fabric.mod.json} 的 {@code depends}（漏了的话模组会被加载器按旧版本拒绝/放行）
+     * 与 README 的环境要求表（漏了的话玩家照着装会失败）。这三处以前没有任何东西盯着。
+     *
+     * <p>这些断言读的是**仓库里的真实文件**，不是常量副本 —— 所以它守的是「文件之间一致」，
+     * 而不是「我抄的常量对不对」。
+     */
+    private static void versionConsistency() {
+        System.out.println("== 版本一致性（gradle.properties / fabric.mod.json / README）==");
+
+        String props = readRepoFile("gradle.properties");
+        String modJson = readRepoFile("src/main/resources/fabric.mod.json");
+        String readme = readRepoFile("README.md");
+        if (props == null || modJson == null || readme == null) {
+            fail("版本一致性：找不到仓库文件（自检应在仓库根目录运行）");
+            return;
+        }
+
+        String mc = property(props, "minecraft_version");
+        String loader = property(props, "loader_version");
+        String api = property(props, "fabric_api_version");
+        check("gradle.properties 里读到了版本号: " + mc + " / " + loader + " / " + api,
+                mc != null && loader != null && api != null);
+        if (mc == null || loader == null || api == null) {
+            return;
+        }
+
+        // fabric.mod.json 的 depends 必须与 gradle.properties 一致
+        check("fabric.mod.json 的 minecraft 与 gradle.properties 一致（~" + mc + "）",
+                contains(modJson, "\"minecraft\": \"~" + mc + "\""));
+        check("fabric.mod.json 的 fabricloader 与 gradle.properties 一致（>=" + loader + "）",
+                contains(modJson, "\"fabricloader\": \">=" + loader + "\""));
+
+        // README 的安装说明必须能让玩家装上对的东西
+        check("README 里写了 Minecraft " + mc, contains(readme, mc));
+        check("README 里写了 Loader ≥ " + loader, contains(readme, "≥ " + loader));
+        check("README 里写了 Fabric API " + api, contains(readme, api));
+        check("README 里的产物文件名带 mc" + mc, contains(readme, "+mc" + mc + "-fabric.jar"));
+
+        // 自检的类路径必须排除游戏/加载器库：否则「纯逻辑类误引用游戏 API」在自检里也能过，
+        // v2.1.0 的静默丢消息 bug 就是这么藏住的（见 build.gradle 里的说明）。
+        check("自检 JVM 里加载不到 Minecraft", !classAvailable("net.minecraft.client.Minecraft"));
+        check("自检 JVM 里加载不到 Fabric 加载器 API", !classAvailable("net.fabricmc.api.ClientModInitializer"));
+    }
+
+    /** 读仓库根目录下的文件；读不到返回 null（用例要抗自己的失败，不能抛异常）。 */
+    private static String readRepoFile(String relative) {
+        try {
+            Path path = Path.of(relative);
+            return Files.exists(path) ? Files.readString(path, StandardCharsets.UTF_8) : null;
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** 从 properties 文本里取一个键；没有则返回 null。 */
+    private static String property(String properties, String key) {
+        for (String line : properties.split("\n")) {
+            String trimmed = line.strip();
+            if (trimmed.startsWith(key + "=")) {
+                return trimmed.substring(key.length() + 1).strip();
+            }
+        }
+        return null;
+    }
+
+    /** 某个类在当前 JVM 里能否加载（用来确认自检真的隔离了游戏 API）。 */
+    private static boolean classAvailable(String name) {
+        try {
+            Class.forName(name);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static void httpSuccess() throws Exception {

@@ -1,7 +1,7 @@
 package com.isomeria.hxtranslate.command;
 
 import com.isomeria.hxtranslate.chat.ChatTranslator;
-import com.isomeria.hxtranslate.chat.Feedback;
+import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
@@ -23,15 +23,17 @@ public final class TranslateCommand {
     private TranslateCommand() {
     }
 
-    public static void register(TranslatorConfig config, TranslationService service, ChatTranslator translator) {
+    public static void register(TranslatorConfig config, TranslationService service,
+                                ChatTranslator translator, FeedbackPort feedback) {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            dispatcher.register(build("hxtranslate", config, service, translator));
-            dispatcher.register(build("hxt", config, service, translator));
+            dispatcher.register(build("hxtranslate", config, service, translator, feedback));
+            dispatcher.register(build("hxt", config, service, translator, feedback));
         });
     }
 
     private static LiteralArgumentBuilder<FabricClientCommandSource> build(
-            String name, TranslatorConfig config, TranslationService service, ChatTranslator translator) {
+            String name, TranslatorConfig config, TranslationService service,
+            ChatTranslator translator, FeedbackPort feedback) {
 
         return ClientCommands.literal(name)
                 .executes(context -> {
@@ -124,9 +126,9 @@ public final class TranslateCommand {
                     Thread thread = new Thread(() -> {
                         DeepSeekClient.Result result = service.listModels();
                         if (result.ok()) {
-                            Feedback.success("可用模型: §f" + result.text() + "§a ｜ 当前使用: §f" + config.model);
+                            feedback.success("可用模型: §f" + result.text() + "§a ｜ 当前使用: §f" + config.model);
                         } else {
-                            Feedback.error("查询失败: " + result.error());
+                            feedback.error("查询失败: " + result.error());
                         }
                     }, "hxtranslate-models");
                     thread.setDaemon(true);
@@ -138,13 +140,13 @@ public final class TranslateCommand {
                                 .executes(context -> {
                                     String text = StringArgumentType.getString(context, "text");
                                     context.getSource().sendFeedback(Component.literal("§7正在翻译: §f" + text));
-                                    runTest(service, text);
+                                    runTest(service, feedback, text);
                                     return 1;
                                 })));
     }
 
     /** 测试翻译要发网络请求，必须放到后台线程，否则会卡住游戏。 */
-    private static void runTest(TranslationService service, String text) {
+    private static void runTest(TranslationService service, FeedbackPort feedback, String text) {
         // 方向按内容自动判断，规则和实际收发时一致：含汉字 = 你想发出去的中文（中→英），
         // 否则当作收到的英文（英→中）。
         // 以前这里固定用「英→中」，于是 `/hxtranslate test 你好` 会得到「你好」原样返回，
@@ -153,9 +155,9 @@ public final class TranslateCommand {
         Thread thread = new Thread(() -> {
             DeepSeekClient.Result result = service.translateBlocking(text, direction);
             if (result.ok()) {
-                Feedback.success("测试译文（" + direction.label() + "）: §f" + result.text());
+                feedback.success("测试译文（" + direction.label() + "）: §f" + result.text());
             } else {
-                Feedback.error("测试失败: " + result.error());
+                feedback.error("测试失败: " + result.error());
             }
         }, "hxtranslate-test");
         thread.setDaemon(true);

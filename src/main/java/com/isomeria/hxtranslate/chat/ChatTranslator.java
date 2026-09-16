@@ -1,6 +1,6 @@
 package com.isomeria.hxtranslate.chat;
 
-import com.isomeria.hxtranslate.HxTranslateClient;
+import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.Direction;
 import com.isomeria.hxtranslate.core.TranslationService;
@@ -9,16 +9,7 @@ import com.isomeria.hxtranslate.util.EchoMatcher;
 import com.isomeria.hxtranslate.util.IncomingFilter;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.isomeria.hxtranslate.util.PlayerBlacklist;
-import com.mojang.authlib.GameProfile;
-import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
-import net.fabricmc.fabric.api.client.message.v1.ClientSendMessageEvents;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ClientPacketListener;
-import net.minecraft.network.chat.ChatType;
-import net.minecraft.network.chat.Component;
-import net.minecraft.network.chat.PlayerChatMessage;
 
-import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -38,6 +29,12 @@ import java.util.regex.Pattern;
  *
  * <p>“取消原发送 + 异步翻译 + 自己发一遍”是必须的：Fabric 的发送事件是同步回调，
  * 而网络请求要几百毫秒，不能在主线程里等。
+ *
+ * <p><b>这个类刻意不 import 任何 Minecraft 类</b>：与游戏打交道的部分收在
+ * {@link ChatClientPort} 与 {@link FeedbackPort} 两个接口后面（生产实现分别是
+ * {@link GameClient}、{@link GameFeedback}）。所以离线自检可以拿假实现驱动整条链路，
+ * 断言「该翻的翻了 / 不该翻的没翻 / 翻译失败时中文没有漏到英文服 / 统计没有谎报」——
+ * 这些正是历史上反复出 bug 的地方，见 {@link ChatClientPort} 的说明。
  */
 public final class ChatTranslator {
 
@@ -59,6 +56,12 @@ public final class ChatTranslator {
 
     private final TranslatorConfig config;
     private final TranslationService service;
+    private final ChatClientPort client;
+    private final FeedbackPort feedback;
+    /** 日志出口：离线自检里换成记录器，不再依赖 slf4j 的静态 LOGGER。 */
+    private final Consumer<String> logger;
+    /** 单调时钟（毫秒），给告警节流用；测试里可以自己控制。 */
+    private final java.util.function.LongSupplier clock;
 
     private final Deque<EchoMatcher.Sent> recentlySent = new ArrayDeque<>();
     private final List<Pattern> compiledPatterns = new ArrayList<>();
@@ -76,67 +79,63 @@ public final class ChatTranslator {
     /** 发出方向：没能翻译成的条数（不论最后是取消还是按原文发出）。 */
     private final AtomicInteger sendFailedCount = new AtomicInteger();
 
-    /** 模组自己调用 sendChat/sendCommand 时要忽略事件，否则会无限递归。 */
-    private volatile boolean programmaticSend;
     private volatile String lastWarning;
     private volatile long lastWarningAt;
 
-    public ChatTranslator(TranslatorConfig config, TranslationService service) {
-        this.config = config;
-        this.service = service;
-    }
-
-    public void register() {
-        ClientSendMessageEvents.ALLOW_CHAT.register(this::onSendChat);
-        ClientSendMessageEvents.ALLOW_COMMAND.register(this::onSendCommand);
-        ClientReceiveMessageEvents.GAME.register(this::onGameMessage);
-        ClientReceiveMessageEvents.CHAT.register(this::onChatMessage);
-    }
-
-    // ------------------------------------------------------------------
-    // 收到消息
-    // ------------------------------------------------------------------
-
-    private void onGameMessage(Component message, boolean overlay) {
-        if (overlay) {
-            return;
-        }
-        handleIncoming(message.getString());
-    }
-
-    private void onChatMessage(Component message, PlayerChatMessage signedMessage,
-                               GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
-        // 签名玩家聊天这条链路能拿到发送者，是本人就直接跳过（比字符串匹配更可靠）。
-        // Hypixel 等代理服走的是系统聊天，没有发送者信息，那边靠 EchoMatcher 兜底。
-        if (isLocalPlayer(sender)) {
-            return;
-        }
-        if (sender != null && isBlacklisted(sender.name())) {
-            return;
-        }
-        handleIncoming(message.getString());
-    }
-
-    private boolean isLocalPlayer(GameProfile sender) {
-        if (sender == null) {
-            return false;
-        }
-        Minecraft minecraft = Minecraft.getInstance();
-        return minecraft != null && minecraft.player != null
-                && minecraft.player.getUUID().equals(sender.id());
-    }
-
-    /** 名字是否在「永不翻译」黑名单里（朋友是中国人时很有用）。 */
-    private boolean isBlacklisted(String name) {
-        return PlayerBlacklist.matchesName(name, config.blacklistedPlayers);
+    /** 生产环境用的构造器：日志走 slf4j，时钟走系统时间。 */
+    public ChatTranslator(TranslatorConfig config, TranslationService service,
+                          ChatClientPort client, FeedbackPort feedback) {
+        this(config, service, client, feedback,
+                message -> com.isomeria.hxtranslate.Log.LOGGER.info("[debug] {}", message),
+                System::currentTimeMillis);
     }
 
     /**
-     * 系统聊天里拿不到发送者，只能在文本里找「名字:」/「名字 &gt;」这样的模式。
-     * 判断细节见 {@link PlayerBlacklist}。
+     * 供离线自检使用的构造器：日志与时钟都可替换。
+     *
+     * <p>时钟可替换是为了确定性地测「告警节流」：同一分钟内该只报一次，
+     * 靠 sleep 去测既慢又不稳。
      */
-    private boolean isBlacklistedSpeaker(String text) {
-        return PlayerBlacklist.speaksIn(text, config.blacklistedPlayers);
+    public ChatTranslator(TranslatorConfig config, TranslationService service,
+                          ChatClientPort client, FeedbackPort feedback,
+                          Consumer<String> logger, java.util.function.LongSupplier clock) {
+        this.config = config;
+        this.service = service;
+        this.client = client;
+        this.feedback = feedback;
+        this.logger = logger;
+        this.clock = clock;
+    }
+
+    // ------------------------------------------------------------------
+    // 事件入口（由 GameClient 注册到 Fabric 事件上）
+    // ------------------------------------------------------------------
+
+    /**
+     * 收到服务器下发的消息。
+     *
+     * <p>{@code senderId} 是签名聊天的发送者 UUID，代理服（Hypixel）的系统聊天给不出，
+     * 传 {@code null}；{@code senderName} 是文本里能认出的说话人名字，用于黑名单与会话判断。
+     *
+     * <p>为什么要同时接「签名聊天」和「系统消息」两条链路：正常服务器的玩家聊天走签名聊天
+     * （能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**
+     * 下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。少接一条就会有一半场景失效。
+     */
+    public void onIncoming(String rawText, boolean overlay, boolean hasSignedSender,
+                           java.util.UUID senderId, String senderName) {
+        if (overlay) {
+            return;
+        }
+        // 签名玩家聊天这条链路能拿到发送者，是本人就直接跳过（比字符串匹配更可靠）。
+        if (hasSignedSender && senderId != null && client.isLocalPlayer(senderId)) {
+            return;
+        }
+        // 黑名单玩家：签名链路直接按 UUID 对应的名字判断最可靠；
+        // 拿不到发送者时（系统聊天）退回到「文本里认说话人」，见 PlayerBlacklist。
+        if (senderName != null && isBlacklisted(senderName)) {
+            return;
+        }
+        handleIncoming(rawText);
     }
 
     public void handleIncoming(String plain) {
@@ -191,7 +190,7 @@ public final class ChatTranslator {
             String line = config.includeOriginalInIncoming
                     ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + config.incomingPrefix + translated
                     : config.incomingPrefix + translated;
-            Feedback.info(line);
+            feedback.info(line);
         });
 
         switch (submitted) {
@@ -227,21 +226,27 @@ public final class ChatTranslator {
      * 把聊天栏冲得没法看。
      */
     private void warnThrottled(String message) {
-        long now = System.currentTimeMillis();
+        long now = clock.getAsLong();
         if (message.equals(lastWarning) && now - lastWarningAt < WARN_INTERVAL_MS) {
             return;
         }
         lastWarning = message;
         lastWarningAt = now;
-        Feedback.error(message);
+        feedback.error(message);
     }
 
     private void debug(String message) {
         if (!config.debugLog) {
             return;
         }
-        HxTranslateClient.LOGGER.info("[debug] {}", message);
-        Feedback.hint(message);
+        // 日志出口必须「只增信息、不加风险」：这个方法会在事件回调里（主线程）被同步调用，
+        // 日志实现一旦抛错就直接穿到 Fabric 的事件链上。日志写不出来是小事，崩游戏是大事。
+        try {
+            logger.accept(message);
+        } catch (Throwable ignored) {
+            // 刻意吞掉：debug 日志永远不该成为故障源
+        }
+        feedback.hint(message);
     }
 
     private static String shorten(String text) {
@@ -275,9 +280,22 @@ public final class ChatTranslator {
         }
         compiledPatterns.clear();
         compiledPatterns.addAll(LangUtils.compilePatterns(source,
-                regex -> HxTranslateClient.LOGGER.warn("忽略无效的 ignorePatterns 正则: {}", regex)));
+                regex -> logger.accept("忽略无效的 ignorePatterns 正则: " + regex)));
         compiledFrom = source;
         return compiledPatterns;
+    }
+
+    /** 名字是否在「永不翻译」黑名单里（朋友是中国人时很有用）。 */
+    private boolean isBlacklisted(String name) {
+        return PlayerBlacklist.matchesName(name, config.blacklistedPlayers);
+    }
+
+    /**
+     * 系统聊天里拿不到发送者，只能在文本里找「名字:」/「名字 &gt;」这样的模式。
+     * 判断细节见 {@link PlayerBlacklist}。
+     */
+    private boolean isBlacklistedSpeaker(String text) {
+        return PlayerBlacklist.speaksIn(text, config.blacklistedPlayers);
     }
 
     /**
@@ -307,23 +325,13 @@ public final class ChatTranslator {
         if (!config.skipOwnEcho) {
             return null;
         }
-        Boolean own = EchoMatcher.isOwnMessage(text, localPlayerName());
+        Boolean own = EchoMatcher.isOwnMessage(text, client.localPlayerName());
         if (own != null) {
             return own ? "自己发的消息" : null;
         }
         // 认不出说话人（格式没见过）：退回正文比对，那一步带 15 秒时间窗
         String matched = findOwnEcho(text);
         return matched == null ? null : "匹配到自己发过的 \"" + shorten(matched) + "\"";
-    }
-
-    /** 本地玩家的名字；还没进入世界时返回 null（那时也不会有聊天可处理）。 */
-    private String localPlayerName() {
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft == null || minecraft.player == null) {
-            return null;
-        }
-        GameProfile profile = minecraft.player.getGameProfile();
-        return profile == null ? null : profile.name();
     }
 
     private synchronized void rememberSent(String english) {
@@ -365,8 +373,8 @@ public final class ChatTranslator {
     /**
      * @return true 表示放行原消息；false 表示取消本次发送（我们会在翻译完成后自己发）。
      */
-    private boolean onSendChat(String message) {
-        if (programmaticSend || !config.enabled || !config.translateOutgoing) {
+    public boolean onSendChat(String message) {
+        if (!config.enabled || !config.translateOutgoing) {
             return true;
         }
         if (message == null || message.isBlank() || message.startsWith("/")) {
@@ -390,37 +398,39 @@ public final class ChatTranslator {
 
         // 记下发起翻译时所在的连接：翻译回来时如果已经不是同一个连接，
         // 说明中途切了服务器/退了世界，绝不能把这条消息发到别的服务器去。
-        Minecraft minecraft = Minecraft.getInstance();
-        ClientPacketListener originConnection = minecraft == null ? null : minecraft.getConnection();
+        Object originConnection = client.currentConnection();
 
         TranslationService.SubmitResult submitted = service.submit(translatable, Direction.OUTGOING,
-                (ok, translated, error) -> runOnClientThread(client -> {
-                    ClientPacketListener connection = connectionOrWarn(client, originConnection, "这条翻译");
-                    if (connection == null) {
+                (ok, translated, error) -> client.execute(() -> {
+                    if (!client.isSameConnection(originConnection)) {
+                        // 连接已断开就静默放弃（玩家已经在主菜单）；换过服才提示
+                        if (client.currentConnection() != null) {
+                            feedback.error("期间切换了服务器，这条翻译已取消，没有发出去。");
+                        }
                         return;
                     }
                     if (!ok) {
                         // 配置成「失败就发原文」时才降级发送
                         if (fallbackToOriginal("翻译失败: " + error, "本条")) {
-                            sendProgrammatically(connection, message, false);
+                            sendProgrammatically(message, false);
                         }
                         return;
                     }
                     String outgoing = truncateTranslated(translated, config.maxOutgoingChars, "");
                     rememberSent(outgoing);
-                    if (!sendProgrammatically(connection, outgoing, false)) {
+                    if (!sendProgrammatically(outgoing, false)) {
                         // 发送本身失败：sendProgrammatically 已经在聊天栏报错，这里不再谎报成功
                         return;
                     }
                     sentCount.incrementAndGet();
-                    Feedback.info(config.outgoingPrefix + outgoing);
+                    feedback.info(config.outgoingPrefix + outgoing);
                 }));
 
         if (!submitted.accepted()) {
             return fallbackToOriginal(rejectedReason(submitted), "本条");
         }
 
-        Feedback.actionBar("§e⏳ 翻译中…");
+        feedback.actionBar("§e⏳ 翻译中…");
         return false;
     }
 
@@ -456,61 +466,28 @@ public final class ChatTranslator {
         // 这是玩家最该注意到的情况，不能只给一条灰色提示。
         if (sendOriginalOnFailure()) {
             if (config.showErrorsInChat) {
-                Feedback.error(reason + "，" + subject + "未翻译，仍按原文发送。");
+                feedback.error(reason + "，" + subject + "未翻译，仍按原文发送。");
             }
             return true;
         }
         if (config.showErrorsInChat) {
-            Feedback.error(reason + "，" + subject + "未发送（按 ↑ 可找回刚才的内容）。");
+            feedback.error(reason + "，" + subject + "未发送（按 ↑ 可找回刚才的内容）。");
         }
         return false;
-    }
-
-    /**
-     * 回调来自工作线程：切回客户端主线程再碰游戏状态（工程约定，见 {@link Feedback}）。
-     *
-     * <p>抽出来是因为每个翻译回调都要先做这件事，散在各处迟早会漏。
-     */
-    private void runOnClientThread(Consumer<Minecraft> action) {
-        Minecraft client = Minecraft.getInstance();
-        if (client == null) {
-            return;
-        }
-        client.execute(() -> action.accept(client));
-    }
-
-    /**
-     * 回到主线程后重新取连接。
-     *
-     * <p>发起翻译时记下了当时的连接，回来时必须还是同一个：中途切了服务器/退了世界，
-     * 就绝不能把这条消息发到别的服务器去；连接已经断开则静默放弃（玩家已经在主菜单了）。
-     *
-     * @return 可以安全发送的连接；不一致或已断开时返回 null（不一致会给出提示）
-     */
-    private ClientPacketListener connectionOrWarn(Minecraft client, ClientPacketListener origin, String subject) {
-        ClientPacketListener connection = client.getConnection();
-        if (connection == null) {
-            return null;
-        }
-        if (connection != origin) {
-            Feedback.error("期间切换了服务器，" + subject + "已取消，没有发出去。");
-            return null;
-        }
-        return connection;
     }
 
     /** 按预算截断译文；真截断了就在聊天栏说明原因（预算的来源两个方向不同）。 */
     private String truncateTranslated(String translated, int budget, String note) {
         String outgoing = LangUtils.truncateForChat(translated, budget);
         if (!outgoing.equals(translated) && config.showErrorsInChat) {
-            Feedback.hint("译文超过 " + budget + " 字符" + note + "，已截断。");
+            feedback.hint("译文超过 " + budget + " 字符" + note + "，已截断。");
         }
         return outgoing;
     }
 
     /** 命令字符串没有前导斜杠，这是原版 ChatScreen 的行为。 */
-    private boolean onSendCommand(String command) {
-        if (programmaticSend || !config.enabled || !config.translateCommandMessages) {
+    public boolean onSendCommand(String command) {
+        if (!config.enabled || !config.translateCommandMessages) {
             return true;
         }
         if (command == null || command.isBlank()) {
@@ -538,18 +515,19 @@ public final class ChatTranslator {
             return fallbackToOriginal(NO_KEY_HINT, "这条命令");
         }
 
-        Minecraft originClient = Minecraft.getInstance();
-        ClientPacketListener originConnection = originClient == null ? null : originClient.getConnection();
+        Object originConnection = client.currentConnection();
 
         TranslationService.SubmitResult submitted = service.submit(message, Direction.OUTGOING,
-                (ok, translated, error) -> runOnClientThread(client -> {
-                    ClientPacketListener connection = connectionOrWarn(client, originConnection, "这条命令");
-                    if (connection == null) {
+                (ok, translated, error) -> client.execute(() -> {
+                    if (!client.isSameConnection(originConnection)) {
+                        if (client.currentConnection() != null) {
+                            feedback.error("期间切换了服务器，这条命令已取消，没有发出去。");
+                        }
                         return;
                     }
                     if (!ok) {
                         if (fallbackToOriginal("命令内容翻译失败: " + error, "这条命令")) {
-                            sendProgrammatically(connection, head + message, true);
+                            sendProgrammatically(head + message, true);
                         }
                         return;
                     }
@@ -560,19 +538,19 @@ public final class ChatTranslator {
                             "（要给命令本身留位置）");
                     String payload = head + outgoing;
                     rememberSent(outgoing);
-                    if (!sendProgrammatically(connection, payload, true)) {
+                    if (!sendProgrammatically(payload, true)) {
                         // 同上：没发出去就不算发出
                         return;
                     }
                     sentCount.incrementAndGet();
-                    Feedback.info(config.outgoingPrefix + "/" + payload);
+                    feedback.info(config.outgoingPrefix + "/" + payload);
                 }));
 
         if (!submitted.accepted()) {
             return fallbackToOriginal(rejectedReason(submitted), "这条命令");
         }
 
-        Feedback.actionBar("§e⏳ 翻译中…");
+        feedback.actionBar("§e⏳ 翻译中…");
         return false;
     }
 
@@ -582,23 +560,12 @@ public final class ChatTranslator {
      * <p>返回 {@code false} 表示这次发送失败了：调用方**不能**再记一条「发出译文」，
      * 也不能打一行「[→EN] …」的回显 —— 否则聊天栏和统计都会声称一条根本没发出去的消息已经发出。
      */
-    private boolean sendProgrammatically(ClientPacketListener connection, String payload, boolean asCommand) {
-        programmaticSend = true;
-        try {
-            if (asCommand) {
-                connection.sendCommand(payload.startsWith("/") ? payload.substring(1) : payload);
-            } else {
-                connection.sendChat(payload);
-            }
-            return true;
-        } catch (RuntimeException e) {
-            HxTranslateClient.LOGGER.error("发送翻译结果失败: {}", e.toString());
-            if (config.showErrorsInChat) {
-                Feedback.error("发送失败: " + e.getMessage());
-            }
-            return false;
-        } finally {
-            programmaticSend = false;
+    private boolean sendProgrammatically(String payload, boolean asCommand) {
+        boolean sent = asCommand ? client.sendCommand(payload) : client.sendChat(payload);
+        if (!sent && config.showErrorsInChat) {
+            // 具体失败原因（异常类型/消息）由实现打在日志里，这里只告诉玩家「没发出去」
+            feedback.error("发送失败，这条内容没有发出去。");
         }
+        return sent;
     }
 }

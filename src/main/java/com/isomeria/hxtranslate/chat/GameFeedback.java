@@ -4,28 +4,30 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
 /**
- * 往聊天栏输出本模组自己的提示。所有输出都切回客户端主线程，
- * 因此可以安全地在翻译线程里调用。
+ * {@link FeedbackPort} 的生产实现：往聊天栏 / 物品栏上方输出本模组自己的提示。
+ *
+ * <p>所有输出都切回客户端主线程（{@code Minecraft.execute}），因此可以在翻译线程里调用。
+ * 这是模组里**唯一**接触 Minecraft 聊天渲染的地方；翻译逻辑只用 {@link FeedbackPort}。
  */
-public final class Feedback {
+public final class GameFeedback implements FeedbackPort {
 
-    private Feedback() {
-    }
-
-    public static void info(String text) {
+    @Override
+    public void info(String text) {
         send(Component.literal(text));
     }
 
-    /** 灰色提示，用于“翻译中”之类的过程信息。 */
-    public static void hint(String text) {
+    @Override
+    public void hint(String text) {
         send(Component.literal("§8[hx] §7" + text));
     }
 
-    public static void error(String text) {
+    @Override
+    public void error(String text) {
         send(Component.literal("§8[hx] §c" + text));
     }
 
-    public static void success(String text) {
+    @Override
+    public void success(String text) {
         send(Component.literal("§8[hx] §a" + text));
     }
 
@@ -34,7 +36,8 @@ public final class Feedback {
      *
      * <p>「翻译中…」这类过程提示用它，避免把聊天内容顶上去。
      */
-    public static void actionBar(String text) {
+    @Override
+    public void actionBar(String text) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft == null) {
             return;

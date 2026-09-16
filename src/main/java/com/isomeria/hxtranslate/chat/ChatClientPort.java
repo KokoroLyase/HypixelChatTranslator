@@ -1,0 +1,72 @@
+package com.isomeria.hxtranslate.chat;
+
+import java.util.UUID;
+
+/**
+ * 客户端（Minecraft / Fabric）与翻译逻辑之间的唯一接缝。
+ *
+ * <p>存在的理由：{@link ChatTranslator} 里真正容易出错的不是「怎么跟游戏打交道」，
+ * 而是「收到这条消息该不该翻、翻完发不发、发不出去算不算失败、两条中文谁先发」这类
+ * **决策与顺序**。这些逻辑以前和 Minecraft 直接耦合在一起，于是离线自检碰不到它们 ——
+ * 历史上 v1.0.5（连打两条中文乱序）、v1.0.7（命中缓存的第二条插队）、
+ * v1.0.8（限流时把中文原文发到英文服）、v1.1.3（发送失败仍计入统计）全都是这一类 bug，
+ * 而它们一条自动化用例都没有。
+ *
+ * <p>把这些能力收成这个接口后：
+ * <ul>
+ *   <li>生产实现是 {@link GameClient}（薄适配层，唯一 import Minecraft 的地方）；</li>
+ *   <li>离线自检用假的实现，就能确定性地驱动整条发送/接收链路，
+ *       包括「提交时在 A 服务器、回调回来时已在 B 服务器」这种真实但难复现的场景。</li>
+ * </ul>
+ *
+ * <p><b>约定</b>：实现里的 {@link #execute(Runnable)} 必须把任务放到客户端主线程执行
+ * （回调来自翻译线程，碰游戏状态必须切线程）。因此 {@link #sendChat} 等发送方法
+ * <b>只能在主线程调用</b>；{@link #localPlayerName()} / {@link #isLocalPlayer} 不限制线程。
+ */
+public interface ChatClientPort {
+
+    /**
+     * 本地玩家的游戏名；还没进入世界时为 {@code null}。
+     *
+     * <p>用于「这条消息是不是我自己发的」判断（比正文比对可靠，见 {@code EchoMatcher}）。
+     */
+    String localPlayerName();
+
+    /**
+     * 这条签名聊天是不是本地玩家自己发的。
+     *
+     * <p>能给出发送者 UUID 的链路（签名聊天）用它，比字符串比对可靠；
+     * 代理服（Hypixel）走系统聊天拿不到发送者，那边靠 {@code EchoMatcher} 兜底。
+     */
+    boolean isLocalPlayer(UUID senderId);
+
+    /** 把任务切到客户端主线程执行；客户端已经关闭时静默忽略。 */
+    void execute(Runnable task);
+
+    /**
+     * 这条消息是不是仍然连着「发起翻译时的那条连接」。
+     *
+     * <p>发送方向必须检查：翻译要几百毫秒，期间玩家可能切服/退世界，
+     * 那样绝不能把结果发到别的服务器去。连接已断开也返回 false（玩家已经在主菜单了）。
+     */
+    boolean isSameConnection(Object connection);
+
+    /** 当前连接的身份标记；还没进入世界时为 {@code null}。只用于传给 {@link #isSameConnection}。 */
+    Object currentConnection();
+
+    /**
+     * 真正把内容发到服务器。
+     *
+     * <p>必须屏蔽自身重入：模组自己调用 sendChat/sendCommand 时，游戏会再次触发
+     * 「玩家发送消息」事件，不屏蔽就会无限递归。这件事由实现负责
+     * （生产实现用 {@code ClientPacketListener.sendChat}，那条链路会再次触发事件）。
+     *
+     * @return {@code false} 表示没发出去（例如底层抛异常）。调用方**不能**再记一条
+     *         「发出译文」，也不能打一行「[→EN] …」的回显 —— 否则聊天栏和统计都会
+     *         声称一条根本没发出去的消息已经发出。
+     */
+    boolean sendChat(String payload);
+
+    /** 同 {@link #sendChat}，但作为命令发送（payload 不含前导斜杠）。 */
+    boolean sendCommand(String command);
+}

@@ -1,7 +1,9 @@
 package com.isomeria.hxtranslate;
 
 import com.isomeria.hxtranslate.chat.ChatTranslator;
-import com.isomeria.hxtranslate.chat.Feedback;
+import com.isomeria.hxtranslate.chat.FeedbackPort;
+import com.isomeria.hxtranslate.chat.GameClient;
+import com.isomeria.hxtranslate.chat.GameFeedback;
 import com.isomeria.hxtranslate.command.TranslateCommand;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.TranslationService;
@@ -16,6 +18,17 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Hypixel 聊天翻译模组入口（纯客户端）。
+ *
+ * <p>这里只做「装配」：造出翻译逻辑需要的几个实现（{@code GameClient} / {@code GameFeedback}
+ * / {@code TranslationService}），把事件挂上，把开关按键接好。
+ * 决策逻辑在 {@code ChatTranslator} 里，那部分不依赖 Minecraft，由离线自检覆盖
+ * （见 {@code tools/VerifyCore.java}）。改动本类时请留意：**它不在自检覆盖范围内**，
+ * 所以尽量只往这里加装配代码，不要加判断逻辑。
+ *
+ * <p>{@code GameClient} 需要 {@code ChatTranslator}，而 {@code ChatTranslator} 又需要
+ * {@code GameClient}（作为端口）。解法是先建 client、再建 translator、最后调
+ * {@link GameClient#bind(ChatTranslator)} 补上引用 —— 避免用 setter 暴露一个
+ * 「随时可以被改」的字段。
  */
 public final class HxTranslateClient implements ClientModInitializer {
 
@@ -41,6 +54,7 @@ public final class HxTranslateClient implements ClientModInitializer {
     private TranslatorConfig config;
     private TranslationService service;
     private ChatTranslator translator;
+    private FeedbackPort feedback;
 
     private boolean startupNoticeShown;
 
@@ -48,49 +62,59 @@ public final class HxTranslateClient implements ClientModInitializer {
     public void onInitializeClient() {
         config = TranslatorConfig.load();
         service = new TranslationService(config);
-        translator = new ChatTranslator(config, service);
-        translator.register();
+        feedback = new GameFeedback();
 
+        GameClient client = new GameClient();
+        translator = new ChatTranslator(config, service, client, feedback);
+        client.bind(translator);
+
+        // 事件注册与开关按键都在 client 里，入口只负责把 KeyMapping 做出来交给它
         KeyMapping toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.hxtranslate.toggle",
                 InputConstants.Type.KEYBOARD,
                 DEFAULT_TOGGLE_KEY,
                 KeyMapping.Category.MULTIPLAYER));
+        // 事件注册在这里；开关按键的 press 轮询在 registerToggleTick 里
+        client.register();
+        registerToggleTick(toggleKey);
 
+        ClientLifecycleEvents.CLIENT_STOPPING.register(minecraft -> service.shutdown());
+
+        TranslateCommand.register(config, service, translator, feedback);
+
+        if (!config.hasApiKey()) {
+            LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}", TranslatorConfig.configPath());
+        }
+        LOGGER.info("Hypixel 聊天翻译已加载 (MC 26.3 / DeepSeek {})", config.model);
+    }
+
+    /** 开关按键的轮询与启动提示。 */
+    private void registerToggleTick(KeyMapping toggleKey) {
         ClientTickEvents.END_CLIENT_TICK.register(minecraft -> {
             while (toggleKey.consumeClick()) {
                 config.enabled = !config.enabled;
                 config.save();
-                Feedback.info(config.enabled ? "§a聊天翻译已开启" : "§c聊天翻译已关闭");
+                feedback.info(config.enabled ? "§a聊天翻译已开启" : "§c聊天翻译已关闭");
             }
             if (!startupNoticeShown && minecraft.player != null) {
                 startupNoticeShown = true;
                 showStartupNotice();
             }
         });
-
-        ClientLifecycleEvents.CLIENT_STOPPING.register(minecraft -> service.shutdown());
-
-        TranslateCommand.register(config, service, translator);
-
-        if (!config.hasApiKey()) {
-            LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}", TranslatorConfig.configPath());
-        }
-        LOGGER.info("Hypixel 聊天翻译已加载 (MC 26.2 / DeepSeek {})", config.model);
     }
 
     private void showStartupNotice() {
-        Feedback.info("§8[§bhx§8] §7Hypixel 聊天翻译已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        feedback.info("§8[§bhx§8] §7Hypixel 聊天翻译已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
         // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了，
         // 甚至重新输入一遍 Key 把原件覆盖掉（原文件已经备份过，但先说清楚能省掉这一步）。
         if (config.loadWarning() != null) {
-            Feedback.error(config.loadWarning());
+            feedback.error(config.loadWarning());
         }
         if (!config.hasApiKey()) {
-            Feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
-            Feedback.hint("配置文件: " + TranslatorConfig.configPath());
+            feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
+            feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
-            Feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
+            feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
         }
     }
 }
