@@ -65,8 +65,10 @@ public class VerifyCore {
         v113OwnMessageAndRules();
         v114GlossaryBothDirections();
         v210ChatLogic();
+        v214GlossaryMigration();
         v214AuditFixes();
         versionConsistency();
+        docConsistency();
 
         httpSuccess();
         httpBaseUrls();
@@ -1685,9 +1687,7 @@ public class VerifyCore {
         }
 
         // ---- 3) 单字母术语条目（u / r / y / n）会污染玩家名与普通英文 ----
-        // 这一段随术语表清理一起来（见下一条提交）。
         TranslatorConfig defaults = new TranslatorConfig();
-        if (false) {
         check("默认术语表里没有单字母条目 u=",
                 defaults.glossary.stream().noneMatch(e -> e.startsWith("u=")));
         check("默认术语表里没有单字母条目 r=",
@@ -1716,7 +1716,6 @@ public class VerifyCore {
                 englishFor(table, "防守").size() == 1);
         check("反查表里 谢谢 只有一个英文写法: " + englishFor(table, "谢谢"),
                 englishFor(table, "谢谢").size() == 1);
-        }
         // 用户自己写的条目照旧要能反查（这条不能被去重顺手改坏）
         String userTable = PromptGlossary.render(
                 List.of("obby=黑曜石（obsidian）", "我的词=我的意思"), Direction.OUTGOING);
@@ -1744,6 +1743,60 @@ public class VerifyCore {
         }
     }
 
+    /**
+     * v7 -> v8 配置迁移：删掉会污染玩家名的单字母术语条目、去掉英文写法里的引号。
+     *
+     * <p>RELEASING §5：迁移只认「整条仍是旧版默认值」，用户改过一个字就一个字都不动。
+     */
+    private static void v214GlossaryMigration() {
+        System.out.println("== v2.1.4：术语表迁移（v7 -> v8）==");
+
+        // 旧配置：v7 的默认术语表。它比 v8 默认表多出「单字母 + 带引号」那几条 ——
+        // 直接拿 new TranslatorConfig() 当 v7 是错的（那已经是 v8 的名单了，没有可删的条目，
+        // 迁移返回 false 会让「确实改动了」这条用例误报）。
+        TranslatorConfig legacy = new TranslatorConfig();
+        legacy.configVersion = 7;
+        legacy.glossary.removeIf(e -> e.equals("def=防守（defend）") || e.equals("you def=你来防守"));
+        legacy.glossary.add("def=防守（defend）；\"u def\"=你来防守");
+        legacy.glossary.add("u=你");
+        legacy.glossary.add("ur=你的、你是");
+        legacy.glossary.add("r=are（例如 \"r u ok\" = 你还好吗）");
+        legacy.glossary.add("y=是");
+        legacy.glossary.add("n=不");
+        boolean changed = legacy.applyMigrations();
+        check("v7 -> v8 迁移确实改动了配置", changed);
+        check("迁移后 configVersion = " + TranslatorConfig.CURRENT_CONFIG_VERSION,
+                legacy.configVersion == TranslatorConfig.CURRENT_CONFIG_VERSION);
+        check("迁移后不再有 u=你",
+                legacy.glossary.stream().noneMatch(e -> e.equals("u=你")));
+        check("迁移后不再有 r=are（带引号那条）",
+                legacy.glossary.stream().noneMatch(e -> e.startsWith("r=")));
+        check("迁移后不再有带引号的条目",
+                legacy.glossary.stream().noneMatch(e -> e != null && e.contains("\"")));
+        check("迁移后补上了 you def=你来防守",
+                legacy.glossary.stream().anyMatch(e -> e.equals("you def=你来防守")));
+        check("迁移后 obby 等正常条目仍在",
+                legacy.glossary.stream().anyMatch(e -> e.startsWith("obby=")));
+
+        // 用户改过的那一条必须原样保留：改成 u=您 之后，迁移不能把它删掉
+        TranslatorConfig customized = new TranslatorConfig();
+        customized.configVersion = 7;
+        customized.glossary.remove("u=你");
+        customized.glossary.add("u=您");
+        customized.glossary.remove("def=防守（defend）；\"u def\"=你来防守");
+        customized.glossary.add("def=防守（defend）；\"u def\"=我来防守");
+        customized.applyMigrations();
+        check("用户改过的 u=您 被保留", customized.glossary.stream().anyMatch(e -> e.equals("u=您")));
+        check("用户改过的 def 条目被保留（只去掉引号，不删条目）",
+                customized.glossary.stream().anyMatch(e -> e.contains("我来防守"))
+                        && customized.glossary.stream().noneMatch(e -> e != null && e.contains("\"")));
+
+        // 已经是最新版时不该再动任何东西
+        TranslatorConfig fresh = new TranslatorConfig();
+        boolean again = fresh.applyMigrations();
+        check("已是最新版时迁移不做任何改动", !again);
+    }
+
     /** 取出反查表里某个中文说法对应的全部英文写法。 */
     private static List<String> englishFor(String table, String chinese) {
         List<String> result = new ArrayList<>();
@@ -1760,6 +1813,43 @@ public class VerifyCore {
             }
         }
         return result;
+    }
+
+    /**
+     * 文档与代码的一致性。
+     *
+     * <p>README 里的「N 条」这类数字、以及命令表里的子命令，以前没有任何东西盯着 ——
+     * 它们和代码不在一处，改代码时最容易漏。这里只守「能机械核对」的那几条，
+     * 措辞是否通顺仍然靠人。
+     */
+    private static void docConsistency() {
+        System.out.println("== 文档与代码一致性（README）==");
+        String readme = readRepoFile("README.md");
+        if (readme == null) {
+            fail("文档一致性：读不到 README.md");
+            return;
+        }
+        TranslatorConfig defaults = new TranslatorConfig();
+
+        // README 的配置表写了条目数，代码改了数字没改就是错的
+        check("README 的 commandManagementKeywords 条数与代码一致（"
+                        + defaults.commandManagementKeywords.size() + " 条）",
+                contains(readme, "| `commandManagementKeywords` | "
+                        + defaults.commandManagementKeywords.size() + " 条"));
+        check("README 的 translateCommandArgs 条数与代码一致（"
+                        + defaults.translateCommandArgs.size() + " 条）",
+                contains(readme, "| `translateCommandArgs` | " + defaults.translateCommandArgs.size() + " 条"));
+
+        // 命令表必须列出真实存在的子命令，否则玩家不知道有这个命令
+        check("README 的命令表里有 /hxtranslate status", contains(readme, "/hxtranslate status"));
+        check("README 的命令表里有 incoming", contains(readme, "/hxtranslate incoming on|off"));
+        check("README 的命令表里有 outgoing", contains(readme, "/hxtranslate outgoing on|off"));
+
+        // ignorePatterns 那一行的说明不能承诺代码里没有的效果
+        check("README 不再声称默认 ignorePatterns 挡「服务器提示音效」",
+                !contains(readme, "服务器提示音效"));
+        check("README 不再有指向不存在小节的死链「为什么需要这个阈值」",
+                !contains(readme, "为什么需要这个阈值"));
     }
 
     // ------------------------------------------------------------------

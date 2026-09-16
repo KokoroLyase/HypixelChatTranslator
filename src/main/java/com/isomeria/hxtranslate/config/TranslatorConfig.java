@@ -33,7 +33,7 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 7;
+    public static final int CURRENT_CONFIG_VERSION = 8;
 
     /**
      * v1.0.0 的配置文件里<b>没有</b> {@code configVersion} 这个字段（v1.0.1 起才写），
@@ -62,6 +62,29 @@ public final class TranslatorConfig {
             "^\\+\\d+ .*(XP|Coins|Tokens)",
             "^(You|A player) (joined|left)",
             "^Sending you to");
+
+    /**
+     * v7 及之前的默认术语表里那些「单字母 + 带引号」的条目（v2.1.4 删掉了它们）。
+     *
+     * <p>判断方式与 {@link #LEGACY_DEFAULT_IGNORES} 同一套思路：**整条完全一致**才算「用户没动过」，
+     * 才会删。用户只要改过一个字（例如把 {@code u=你} 改成 {@code u=您}），那一条就留着不动 ——
+     * 术语表是用户资产（RELEASING §5），我们不能替他判断哪个词该丢。
+     */
+    private static final List<String> LEGACY_DEFAULT_GLOSSARY_ENTRIES = List.of(
+            "u=你",
+            "ur=你的、你是",
+            "r=are（例如 \"r u ok\" = 你还好吗）",
+            "y=是",
+            "n=不",
+            "def=防守（defend）；\"u def\"=你来防守");
+
+    /**
+     * v7 默认术语表里那条带引号的写法，v8 换成不带引号的 {@code you def=你来防守}。
+     *
+     * <p>术语表的格式是 {@code 英文=中文}，英文侧的字面引号没有任何意义，
+     * 却会被反查成 {@code 你来防守 -> "u def"} 进提示词，和「不要加引号」的规则打架。
+     */
+    private static final String LEGACY_QUOTED_DEF_ENTRY = "def=防守（defend）；\"u def\"=你来防守";
 
     /** 横幅分隔线（{@code ▬▬▬▬} 这类）开头的消息。 */
     private static final String BANNER_SEPARATOR_PATTERN = "^[\\u25AC\\u2500\\u2014\\u2550=\\uff1d~*_\\-]{4,}";
@@ -276,7 +299,8 @@ public final class TranslatorConfig {
             "obby=黑曜石（obsidian）",
             "dia=钻石（diamond）",
             "dias=钻石",
-            "def=防守（defend）；\"u def\"=你来防守",
+            "def=防守（defend）",
+            "you def=你来防守",
             "inc=有人进攻（incoming）",
             "mid=中路、中间的资源点",
             "gen=资源点、刷资源机（generator）",
@@ -352,11 +376,10 @@ public final class TranslatorConfig {
             "np=不客气",
             "sry=抱歉",
             "pls=请",
-            "u=你",
-            "ur=你的、你是",
-            "r=are（例如 \"r u ok\" = 你还好吗）",
-            "y=是",
-            "n=不",
+            // v2.1.4：删掉了 u / r / y / n 这几个单字母条目。
+            // 它们会和玩家名、普通英文撞车（过滤器 LangUtils 自己也刻意不收单字母，理由相同），
+            // 而且实测确实会改变输出：去掉后「你打得好」不再被套成 gg wp。
+            // 单个字母能省下的字符数远不值得这个风险。
             "nvm=没事了、算了（never mind）",
             "jk=开玩笑的（just kidding）",
             "ik=我知道（I know）",
@@ -853,6 +876,29 @@ public final class TranslatorConfig {
                         OUTGOING_PROMPT_V6_TAIL, OUTGOING_PROMPT_V7_TAIL);
                 changed = true;
             }
+        }
+
+        // ---- v7 -> v8：术语表删掉会污染玩家名的单字母条目、去掉写法里的引号 ----
+        if (from < 8) {
+            if (glossary == null) {
+                glossary = new ArrayList<>();
+            }
+            // 只删「整条仍是 v7 默认值」的那些：用户改过一个字就留着他的写法。
+            if (glossary.removeIf(LEGACY_DEFAULT_GLOSSARY_ENTRIES::contains)) {
+                changed = true;
+            }
+            // 带引号的那条已经整条被上面删掉了，这里再兜一次「只改过后半段」的情况：
+            // 形如 def=防守（defend）；"u def"=我的叫法 的条目，把引号去掉即可。
+            for (int i = 0; i < glossary.size(); i++) {
+                String entry = glossary.get(i);
+                if (entry != null && entry.contains("\"")
+                        && entry.startsWith("def=防守（defend）")) {
+                    glossary.set(i, entry.replace("\"u def\"", "you def"));
+                    changed = true;
+                }
+            }
+            // 补上新写法（如果用户没写过同名的 you def 条目）
+            changed |= backfillGlossary(defaults);
         }
 
         configVersion = CURRENT_CONFIG_VERSION;

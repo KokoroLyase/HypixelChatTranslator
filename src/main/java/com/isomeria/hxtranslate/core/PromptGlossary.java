@@ -3,7 +3,9 @@ package com.isomeria.hxtranslate.core;
 import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.util.LangUtils;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 把配置里的术语表拼成系统提示词里的那一段。
@@ -76,6 +78,13 @@ public final class PromptGlossary {
      */
     private static String renderChineseToEnglish(List<String> glossary) {
         StringBuilder table = new StringBuilder();
+        // 同一中文说法只保留第一个英文写法（v2.1.4）。
+        //
+        // 之前是「来一条写一条」，于是默认表里 钻石 -> dia 与 钻石 -> dias 会同时出现在
+        // 对照表里（金苹果更夸张：gap / gaps / gapple 三条），而提示词并没有优先级规则，
+        // 模型只能自己挑 —— 真实 API 实测同一句话重复 6 次会给出 3 种不同译文。
+        // 用户自己写的条目也一样：先写的优先，符合「配置从上往下读」的直觉。
+        Set<String> seen = new HashSet<>();
         int pairs = 0;
         for (String entry : glossary) {
             if (entry == null) {
@@ -88,6 +97,9 @@ public final class PromptGlossary {
                 }
                 String pair = renderPair(part);
                 if (pair == null) {
+                    continue;
+                }
+                if (!seen.add(chineseKeyOf(pair))) {
                     continue;
                 }
                 if (!table.isEmpty()) {
@@ -117,12 +129,61 @@ public final class PromptGlossary {
         if (separator <= 0) {
             return null;
         }
-        String english = part.substring(0, separator).trim();
+        // 英文侧可能被用户加上引号（v2.1.4 前的默认表里就有一条 "u def"）。
+        // 引号在这里没有任何意义，却会原样进提示词，和「不要加引号」的规则打架，所以剥掉。
+        String english = stripQuotes(part.substring(0, separator).trim());
         String chinese = chineseGloss(part.substring(separator + 1));
         if (english.isEmpty() || chinese.isEmpty()) {
             return null;
         }
         return chinese + " -> " + english;
+    }
+
+    /** 去掉包裹英文写法的成对引号（直引号、弯引号、书名号都算）。 */
+    private static String stripQuotes(String text) {
+        if (text.length() >= 2) {
+            char first = text.charAt(0);
+            char last = text.charAt(text.length() - 1);
+            boolean paired = (first == '"' && last == '"')
+                    || (first == '\'' && last == '\'')
+                    || (first == '“' && last == '”')
+                    || (first == '「' && last == '」');
+            if (paired) {
+                return text.substring(1, text.length() - 1).trim();
+            }
+        }
+        return text;
+    }
+
+    /** 取对照行里的中文说法（{@code " -> "} 左侧），用于去重。 */
+    private static String chineseKeyOf(String pair) {
+        int arrow = pair.indexOf(" -> ");
+        return arrow <= 0 ? pair : pair.substring(0, arrow);
+    }
+
+    /**
+     * 反查表里实际有多少组对照（已去重、已被 {@link #MAX_OUTGOING_PAIRS} 截断）。
+     *
+     * <p>公开给离线自检用：v2.1.4 起同一中文说法只保留一个英文写法，所以
+     * 「组数」不再等于「术语表条目数」（默认表 95 条 → 90 组）。用例要断言
+     * 「默认表整份装得下、没被上限静默截掉」，就必须读这个真实数字，
+     * 而不是自己假设「一组条目等于一组对照」。
+     *
+     * @return 组数；没有可用条目时返回 0
+     */
+    public static int outgoingPairCount(List<String> glossary) {
+        String table = render(glossary, Direction.OUTGOING);
+        if (table == null) {
+            return 0;
+        }
+        int count = 0;
+        for (String line : table.split("\n")) {
+            if (line.contains(" -> ")) {
+                count++;
+            }
+        }
+        // 表头也含 " -> "（"Chinese phrasing -> the English wording..."），减掉它
+        return Math.max(0, count - 1);
     }
 
     /**
