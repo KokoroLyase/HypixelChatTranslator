@@ -76,7 +76,7 @@
 /hxtranslate outgoing on|off 只控制「发消息翻译」
 /hxtranslate key <Key>       设置 DeepSeek API Key
 /hxtranslate test <文本>      测试翻译一段文本（方向按内容判断：含中文＝中→英，结果打印在聊天栏）
-/hxtranslate models          查询 DeepSeek 当前可用的模型名（接口改版时自查）
+/hxtranslate models          查询 DeepSeek 当前可用的模型名（最多列 12 条；接口改版时自查）
 /hxtranslate debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
 /hxtranslate reload          重新读取配置文件，并清空缓存、复位限流与熔断
 ```
@@ -281,6 +281,10 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 - 提示「自己消息的回显」→ 它认为这条是你刚发过的；提示里会带上匹配到的原文，便于核对；
 - 提示「命中 ignorePatterns」→ 你的忽略正则把它挡了。
 
+> 想确认自己的配置真的生效，用 `/hxtranslate status`：它会显示超时、失败策略、命令正文翻译、
+> 缓存条数等关键项，以及**被停用的忽略正则**（正则写错导致匹配卡住时会被自动停用，改好后
+> `/hxtranslate reload` 恢复）。
+
 > 历史 bug（均已修复，请确保用最新版）：
 > - v2.1.3：**发送方向的汉字闸门只按「占比 ≥ 50%」**，于是 `打他 mid` 这类半中半英的译文
 >   会被原样发到英文服；另外「发送失败的内容」会被记进回显名单，导致别人 15 秒内说的同一句
@@ -353,7 +357,8 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 - **聊天内容会发到 DeepSeek 的服务器**：开启的「收到翻译」会把**其他玩家**在游戏里说的话发送给 DeepSeek API 才能翻译 —— 这是本模组的工作原理，不是可选项。介意的话用 `/hxtranslate incoming off` 关掉接收方向，只保留你自己发消息时的翻译。
 - **不会上传**账号、密码、坐标、背包等游戏数据；模组只读取聊天栏文本，并且只把需要翻译的那一条发出去。
 - **API Key** 只存在你本机的 `.minecraft/config/hxtranslate.json`，只用于直连 DeepSeek。本模组没有任何自建服务器，不会把 Key 或聊天内容转发到别处。
-- **不要**把配置文件或日志发给别人（里面有 Key）；仓库的 `.gitignore` 已排除本地配置。
+- **不要**把配置文件或日志发给别人：配置里有你的 API Key（明文）；打开 `/hxtranslate debug on`
+  之后，`logs/latest.log` 里还会有**聊天正文与译文**。仓库的 `.gitignore` 已排除本地配置。
 - **服务器规则**：本模组只做「读聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏。但个别服务器把「自动代发」视为宏，请自行查阅所在服务器规则（Hypixel 见 *Allowed Modifications*）。
 - **DeepSeek 服务条款**：使用即表示你同意 <https://api-docs.deepseek.com/zh-cn/> 的条款与计费方式。
 
