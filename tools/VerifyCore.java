@@ -66,6 +66,7 @@ public class VerifyCore {
         v114GlossaryBothDirections();
         v210ChatLogic();
         v214GlossaryMigration();
+        v221TimeoutDefault();
         v214AuditFixes();
         versionConsistency();
         docConsistency();
@@ -376,7 +377,7 @@ public class VerifyCore {
         legacy.applyMigrations();
         checkEq("deepseek-chat 自动换成 deepseek-flash", "deepseek-flash", legacy.model);
         checkEq("温度跟随新版默认值", 0.7, legacy.temperature);
-        checkEq("读取超时跟随新版默认值", 15, legacy.httpTimeoutSeconds);
+        checkEq("读取超时跟随新版默认值", 30, legacy.httpTimeoutSeconds);
         checkEq("失败兜底默认不发送", "CANCEL", legacy.failureFallback);
 
         TranslatorConfig keep = new TranslatorConfig();
@@ -871,7 +872,7 @@ public class VerifyCore {
             checkEq("没有 configVersion 的旧配置：版本号升到当前", TranslatorConfig.CURRENT_CONFIG_VERSION,
                     legacy.configVersion);
             checkEq("旧配置的每分钟上限跟随新默认值", 60, legacy.requestsPerMinute);
-            checkEq("旧配置的读取超时跟随新默认值", 15, legacy.httpTimeoutSeconds);
+            checkEq("旧配置的读取超时跟随新默认值", 30, legacy.httpTimeoutSeconds);
             check("旧配置的术语表被补齐", legacy.glossary.size() > 10);
             checkEq("旧配置补上了横幅规则", 5, legacy.ignorePatterns.size());
             check("旧配置的老提示词被换成了新默认值", legacy.incomingSystemPrompt.contains("Examples:"));
@@ -1741,6 +1742,25 @@ public class VerifyCore {
             check("静默模式 + SEND_ORIGINAL：仍然提示「中文可能已进英文服」",
                     h.feedback.hasError("仍按原文发送") || h.feedback.hasHint("仍按原文发送"));
         }
+
+        // ---- 6) 网络失败时玩家看到的那一行不能是 Java 异常类名 ----
+        // 玩家截图里的原文：「翻译失败: 网络错误: SocketTimeoutException」。
+        // 这里走完整的接收链路（超时 -> 回调 -> warnThrottled -> 聊天栏），
+        // 断言的是「玩家最终看到什么」，而不是中间某个函数的返回值。
+        try (MockServer slow = new MockServer()) {
+            slow.delayMs = 3000;
+            Harness h = Harness.incoming(slow);
+            h.config.httpTimeoutSeconds = 1;
+            h.config.connectTimeoutSeconds = 1;
+            h.config.retryOnFailure = false;
+            h.translator.onIncoming("[MVP+] Naslen: I have really enjoyed playing with you!",
+                    false, false, null, "Naslen");
+            check("接收方向超时后会给玩家一条提示", h.feedback.awaitError());
+            String shown = h.feedback.errors.isEmpty() ? "" : h.feedback.errors.get(0);
+            check("给玩家看到的提示是中文说明: " + shown, shown.contains("超时"));
+            check("给玩家看到的提示不含 Java 异常类名: " + shown,
+                    !shown.contains("SocketTimeoutException") && !shown.contains("Exception"));
+        }
     }
 
     /**
@@ -1795,6 +1815,48 @@ public class VerifyCore {
         TranslatorConfig fresh = new TranslatorConfig();
         boolean again = fresh.applyMigrations();
         check("已是最新版时迁移不做任何改动", !again);
+    }
+
+    /**
+     * v2.2.1：读超时默认值 15 -> 30 秒。
+     *
+     * <p>配置结构没变（configVersion 仍是 8），所以判据是「值等于旧默认值」——
+     * 与 v4 调 requestsPerMinute / httpTimeoutSeconds 同一套做法。
+     * 起因是玩家截图里满屏 {@code SocketTimeoutException}：15 秒对跨国访问 DeepSeek 偏紧。
+     */
+    private static void v221TimeoutDefault() {
+        System.out.println("== v2.2.1：读超时默认值 15 -> 30 秒 ==");
+        TranslatorConfig defaults = new TranslatorConfig();
+        checkEq("新默认读超时是 30 秒", 30, defaults.httpTimeoutSeconds);
+
+        // 旧默认值（15）要跟着升级。注意走的是 refreshChangedDefaults()：
+        // 这项调整不改配置结构，所以不需要新版本号，而 applyMigrations() 在
+        // configVersion 已是最新时会直接返回 —— 只写在那里等于对 v2.2.0 用户不生效。
+        TranslatorConfig legacy = new TranslatorConfig();
+        legacy.httpTimeoutSeconds = 15;
+        boolean changed = legacy.refreshChangedDefaults();
+        check("旧默认值 15 秒会升级（且不需要新的 configVersion）", changed && legacy.httpTimeoutSeconds == 30);
+
+        // 已经是新默认值时不该反复改、反复写盘
+        TranslatorConfig upToDate = new TranslatorConfig();
+        check("已是 30 秒时不再改动", !upToDate.refreshChangedDefaults());
+
+        // 用户自己调过的值一个字都不动：调小（想快点失败）和调大（网络特别差）都不能碰
+        TranslatorConfig smaller = new TranslatorConfig();
+        smaller.httpTimeoutSeconds = 8;
+        smaller.refreshChangedDefaults();
+        checkEq("用户调小的 8 秒被保留", 8, smaller.httpTimeoutSeconds);
+
+        TranslatorConfig bigger = new TranslatorConfig();
+        bigger.httpTimeoutSeconds = 120;
+        bigger.refreshChangedDefaults();
+        checkEq("用户调大的 120 秒被保留", 120, bigger.httpTimeoutSeconds);
+
+        // 下限仍然生效（normalize 里夹到 3 秒），避免有人手改成 0 导致必然超时
+        TranslatorConfig tiny = new TranslatorConfig();
+        tiny.httpTimeoutSeconds = 0;
+        tiny.normalize();
+        check("读超时有下限保护（>= 3 秒）", tiny.httpTimeoutSeconds >= 3);
     }
 
     /** 取出反查表里某个中文说法对应的全部英文写法。 */
@@ -2067,6 +2129,33 @@ public class VerifyCore {
             return awaitInfo(2000, 1);
         }
 
+        /**
+         * 等一条 error 出现。
+         *
+         * <p>失败提示是在**工作线程**的回调里发出来的（接收方向没有主线程切换），
+         * 所以用例不能「调完方法立刻断言」—— 那条断言在慢机器上会随机变红。
+         * 默认给 5 秒：超时用例本身要走完 read timeout + 800ms 退避。
+         */
+        boolean awaitError() {
+            return awaitError(5000, 1);
+        }
+
+        boolean awaitError(long millis, int count) {
+            long deadline = System.currentTimeMillis() + millis;
+            while (System.currentTimeMillis() < deadline) {
+                if (errors.size() >= count) {
+                    return true;
+                }
+                try {
+                    Thread.sleep(10);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return errors.size() >= count;
+        }
+
         boolean awaitInfo(long millis, int count) {
             long deadline = System.currentTimeMillis() + millis;
             while (System.currentTimeMillis() < deadline) {
@@ -2330,7 +2419,61 @@ public class VerifyCore {
         config.httpTimeoutSeconds = 3;
         DeepSeekClient.Result refused = new DeepSeekClient(config).translate("hi", Direction.INCOMING);
         check("连接失败不抛异常", !refused.ok());
-        check("连接失败提示网络错误: " + refused.error(), refused.error().contains("网络错误"));
+        // v2.2.1：文案改成「发生了什么 + 该检查什么」，不再是「网络错误: ConnectException」
+        check("连接失败给的是可读提示: " + refused.error(), refused.error().contains("连不上"));
+        check("连接失败的提示提到该检查什么: " + refused.error(), refused.error().contains("apiBaseUrl"));
+
+        // ---- v2.2.1：网络失败给玩家的提示不能是 Java 异常类名 ----
+        // 玩家反馈的截图里聊天栏原文就是「翻译失败: 网络错误: SocketTimeoutException」——
+        // 既看不懂，也不知道该怎么办（该调超时？该换网络？该检查中转站？）。
+        try (MockServer slow = new MockServer()) {
+            slow.delayMs = 3000; // 比下面的读超时长，必然触发 SocketTimeoutException
+            TranslatorConfig slowConfig = new TranslatorConfig();
+            slowConfig.apiKey = "sk-test";
+            slowConfig.apiBaseUrl = "http://127.0.0.1:" + slow.port;
+            slowConfig.httpTimeoutSeconds = 1;
+            slowConfig.connectTimeoutSeconds = 1;
+            slowConfig.retryOnFailure = false; // 只验文案，不重复等两轮
+            DeepSeekClient.Result timeout =
+                    new DeepSeekClient(slowConfig).translate("hi", Direction.INCOMING);
+            check("读超时判为失败", !timeout.ok());
+            check("读超时的提示是中文说明: " + timeout.error(),
+                    timeout.error().contains("超时"));
+            check("读超时的提示给出可操作建议: " + timeout.error(),
+                    timeout.error().contains("httpTimeoutSeconds"));
+            check("读超时的提示不含 Java 异常类名: " + timeout.error(),
+                    !timeout.error().contains("SocketTimeoutException"));
+            check("读超时的提示不含 Exception 字样", !timeout.error().contains("Exception"));
+        }
+        check("连接被拒的提示不含 Java 异常类名: " + refused.error(),
+                !refused.error().contains("ConnectException")
+                        && !refused.error().contains("Exception"));
+
+        // 各类网络异常的文案映射：用一个统一的出口，避免只改了其中一条 catch 分支
+        check("DNS 解析失败给的是可读提示",
+                !DeepSeekClient.describeNetworkError(new java.net.UnknownHostException("api.deepseek.com"))
+                        .contains("UnknownHostException"));
+        check("DNS 解析失败的提示提到域名: " + DeepSeekClient
+                        .describeNetworkError(new java.net.UnknownHostException("api.deepseek.com")),
+                DeepSeekClient.describeNetworkError(new java.net.UnknownHostException("api.deepseek.com"))
+                        .contains("域名"));
+        check("SSL 握手失败给的是可读提示",
+                !DeepSeekClient.describeNetworkError(new javax.net.ssl.SSLHandshakeException("boom"))
+                        .contains("SSLHandshakeException"));
+        check("连接被拒的提示提到连不上",
+                DeepSeekClient.describeNetworkError(new java.net.ConnectException("refused"))
+                        .contains("连不上"));
+        check("未知 IOException 也能给出兜底提示（不带类名，且说明该检查什么）",
+                !DeepSeekClient.describeNetworkError(new java.io.IOException("weird"))
+                        .contains("IOException")
+                        && DeepSeekClient.describeNetworkError(new java.io.IOException("weird"))
+                                .contains("检查网络"));
+        // SocketException 是现实里最常见的一类（代理拦截、连接被中断）：实测这个环境里
+        // 「域名不存在」与「连接超时」都会被包装成它，所以兜底文案必须同样可读、可操作。
+        check("SocketException（代理/连接中断）也是可读提示: "
+                        + DeepSeekClient.describeNetworkError(new java.net.SocketException("boom")),
+                !DeepSeekClient.describeNetworkError(new java.net.SocketException("boom"))
+                        .contains("SocketException"));
 
         System.out.println("== 没有 Key ==");
         TranslatorConfig noKey = new TranslatorConfig();

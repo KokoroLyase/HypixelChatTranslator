@@ -45,6 +45,14 @@ public final class TranslatorConfig {
     public static final int MIN_CACHE_SIZE = 16;
 
     /**
+     * v2.2.0 及更早的默认读取超时（秒）。
+     *
+     * <p>用来判断用户有没有动过这个值：等于它就说明还是默认值，v2.2.1 才会把默认值调到 30
+     * （见 {@link #refreshChangedDefaults()}）。用户自己调过的值不能被覆盖。
+     */
+    private static final int LEGACY_DEFAULT_HTTP_TIMEOUT_SECONDS = 15;
+
+    /**
      * {@code maxOutgoingChars} 的硬上限 = 原版聊天输入框的长度上限。
      *
      * <p>超过它的聊天包会被服务端拒收（原版实现直接断连），所以这个值只能调小、不能调大，
@@ -177,8 +185,15 @@ public final class TranslatorConfig {
     /** 建立连接超时（秒）。 */
     public int connectTimeoutSeconds = 5;
 
-    /** 读取响应超时（秒）。 */
-    public int httpTimeoutSeconds = 15;
+    /**
+     * 读取响应超时（秒）。
+     *
+     * <p>v2.2.1 从 15 调到 30：玩家反馈的截图里聊天栏一直是
+     * {@code 翻译失败: 网络错误: SocketTimeoutException} —— 15 秒对跨国访问 DeepSeek
+     * 偏紧，网络一有波动就全军覆没（每条消息还要重试一次，等于白等两轮）。
+     * 调大只影响「真出问题时多等一会儿」，正常请求仍然是几百毫秒返回。
+     */
+    public int httpTimeoutSeconds = 30;
 
     /** 请求失败（429/5xx/网络错误）时是否自动重试一次。 */
     public boolean retryOnFailure = true;
@@ -723,11 +738,39 @@ public final class TranslatorConfig {
     private void migrate(Path path) {
         int before = configVersion;
         boolean changed = applyMigrations();
+        // 「结构没变、只调默认值」的升级走这里：applyMigrations 在 configVersion 已是最新时
+        // 会直接返回 false，所以版本号比对不能作为「要不要写盘」的唯一判据 ——
+        // 否则 v15/v30 这种默认值调整对已升级到该版本号的用户永远不会落盘（v2.2.1 修的就是这个）。
+        changed |= refreshChangedDefaults();
         if (configVersion != before) {
             Log.LOGGER.info("配置已从 v{} 升级到 v{}（{}）", before, configVersion,
                     changed ? "新增默认值已补齐，自定义内容保留" : "无需改动");
             save(path);
+        } else if (changed) {
+            Log.LOGGER.info("配置里的默认值已跟随新版本更新（用户自定义内容保留）");
+            save(path);
         }
+    }
+
+    /**
+     * 刷新「配置结构没变、只是默认值改了」的字段。
+     *
+     * <p>与 {@link #applyMigrations()} 分开的原因：那个方法在 {@code configVersion} 已经等于
+     * {@link #CURRENT_CONFIG_VERSION} 时会直接返回，而默认值调整**不需要**新版本号
+     * （判据是「字段值仍等于旧默认值」，不会误伤用户自定义），所以必须每次加载都检查一遍。
+     *
+     * <p>目前只有一项：读取超时 15 -> 30 秒（v2.2.0 -> v2.2.1）。
+     *
+     * @return 是否真的改动了字段（改了就要写回磁盘）
+     */
+    public boolean refreshChangedDefaults() {
+        if (httpTimeoutSeconds == LEGACY_DEFAULT_HTTP_TIMEOUT_SECONDS) {
+            // 15 是 v2.2.0 及更早的默认值：玩家反馈满屏 SocketTimeoutException 就是它造成的，
+            // 跨国访问 DeepSeek 偏紧。用户自己调过的值（8 / 120 / …）一个字都不动。
+            httpTimeoutSeconds = 30;
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -900,6 +943,11 @@ public final class TranslatorConfig {
             // 补上新写法（如果用户没写过同名的 you def 条目）
             changed |= backfillGlossary(defaults);
         }
+
+        // ---- v8（v2.2.0）-> v8（v2.2.1）：读超时默认值 15 -> 30 秒 ----
+        //
+        // 实际逻辑放在 refreshChangedDefaults() 里，因为这里在 configVersion 已是最新时不会执行，
+        // 而这项调整不需要新版本号（见那个方法的注释）。
 
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;

@@ -176,7 +176,7 @@ public final class DeepSeekClient {
             }
             return Result.success(names.toString());
         } catch (IOException e) {
-            return Result.failure("网络错误: " + e.getClass().getSimpleName());
+            return Result.failure(describeNetworkError(e));
         } catch (RuntimeException e) {
             return Result.failure("解析失败: " + e.getMessage());
         } finally {
@@ -184,6 +184,35 @@ public final class DeepSeekClient {
                 connection.disconnect();
             }
         }
+    }
+
+    /**
+     * 把网络异常转成「玩家看得懂、而且知道该怎么办」的一句话。
+     *
+     * <p>v2.2.1 之前这里直接把 Java 异常类名拼进聊天栏：玩家反馈的截图里原文就是
+     * {@code 翻译失败: 网络错误: SocketTimeoutException} —— 既看不懂，也不知道该调超时、
+     * 换网络还是检查中转站。异常类名对玩家零信息量，所以按「发生了什么 + 建议怎么做」重写。
+     *
+     * <p>公开出来是给离线自检断言文案用的（同一个出口，避免只改了其中一条 catch 分支）。
+     *
+     * @param e 请求过程中抛出的 {@link IOException}
+     * @return 可直接显示在聊天栏的原因文本（不含 Java 类名）
+     */
+    public static String describeNetworkError(IOException e) {
+        if (e instanceof java.net.SocketTimeoutException) {
+            return "连接 DeepSeek 超时（网络太慢或接口太拥挤，可调大 httpTimeoutSeconds 后 /hxtranslate reload）";
+        }
+        if (e instanceof java.net.UnknownHostException) {
+            return "找不到接口域名（检查网络与 apiBaseUrl）";
+        }
+        if (e instanceof javax.net.ssl.SSLException) {
+            return "与接口的加密连接失败（检查网络环境或 apiBaseUrl）";
+        }
+        if (e instanceof java.net.ConnectException) {
+            return "连不上接口服务器（检查网络与 apiBaseUrl）";
+        }
+        // 兜底：代理拦截、连接被中断等都会落到这里，同样要给「该检查什么」而不是异常类名
+        return "网络错误（连接接口失败，检查网络后 /hxtranslate reload 重试）";
     }
 
     private Result attempt(String text, Direction direction) {
@@ -222,7 +251,7 @@ public final class DeepSeekClient {
             return parseResponse(response, text, direction);
         } catch (IOException e) {
             Log.LOGGER.warn("翻译请求失败: {}", e.toString());
-            return Result.retryableFailure("网络错误: " + e.getClass().getSimpleName());
+            return Result.retryableFailure(describeNetworkError(e));
         } catch (RuntimeException e) {
             Log.LOGGER.warn("翻译请求异常: {}", e.toString());
             return Result.failure("请求异常: " + e.getMessage());
