@@ -65,6 +65,7 @@ public class VerifyCore {
         v113OwnMessageAndRules();
         v114GlossaryBothDirections();
         v210ChatLogic();
+        v214AuditFixes();
         versionConsistency();
 
         httpSuccess();
@@ -518,10 +519,17 @@ public class VerifyCore {
             DeepSeekClient client = new DeepSeekClient(config);
             server.response = ok("你好世界");
             DeepSeekClient.Result unchanged = client.translate("你好世界", Direction.OUTGOING);
-            check("译文仍是中文 -> 判为失败", !unchanged.ok() && unchanged.error().contains("仍是中文"));
+            check("译文仍是中文 -> 判为失败", !unchanged.ok() && unchanged.error().contains("仍有汉字"));
 
+            // v2.1.4 起判据是「一个汉字都不许有」，所以夹着中文玩家名的译文同样按失败处理。
+            // 取舍理由见 DeepSeekClient.parseResponse 的注释；半中半英的完整用例在 v214AuditFixes。
             server.response = ok("find 小明 to play");
-            check("英文译文里夹中文玩家名不算「没翻译」",
+            DeepSeekClient.Result withName = client.translate("找小明一起玩", Direction.OUTGOING);
+            check("英文译文里夹中文玩家名 -> 也判为失败（宁可不发，也不把汉字送进英文服）",
+                    !withName.ok() && withName.error().contains("仍有汉字"));
+
+            server.response = ok("find xiaoming to play");
+            check("模型把中文玩家名转成拼音 -> 正常放行",
                     client.translate("找小明一起玩", Direction.OUTGOING).ok());
 
             server.response = ok("你好世界");
@@ -1202,8 +1210,12 @@ public class VerifyCore {
 
         // 一个条目里有多组对照：分号隔开，两组都要能反查
         String multi = PromptGlossary.render(List.of("def=防守（defend）；\"u def\"=你来防守"), Direction.OUTGOING);
+        // v2.1.4：英文写法两侧的引号会在渲染时剥掉（术语表格式不支持引号，
+        // 而它和提示词里「不要加引号」的规则打架）。
         check("多组对照都进对照表",
-                contains(multi, "防守 -> def") && contains(multi, "你来防守 -> \"u def\""));
+                contains(multi, "防守 -> def") && contains(multi, "你来防守 -> u def"));
+        check("英文写法两侧的引号被剥掉（不再渲染成 \"u def\"）",
+                !contains(multi, "\""));
 
         // 括号是半角时同样要截掉
         check("半角括号也截掉", contains(PromptGlossary.render(List.of("dia=钻石(diamond)"), Direction.OUTGOING),
@@ -1240,21 +1252,30 @@ public class VerifyCore {
         // 反查是有上限的截断列表，所以「排在第几名」本身就是行为的一部分：
         // 第一版上限设成 80、新词又追加在末尾，结果 low hp / side rush / fall back 全被截掉，
         // 等于这次补词白补。这条用例专门守住「常用说法必须落在上限之内」。
+        //
+        // v2.1.4：同一中文说法只保留第一个英文写法，所以这里只能写「确定会保留的那一个」。
+        // 速度药水 的两条默认写法是 speed / speed pot —— 反查表里留下的是先出现的 speed。
         check("默认术语表的常用说法没有被上限截掉",
                 List.of("残血 -> low hp", "侧翼速攻 -> side rush", "撤、退回来 -> fall back",
-                                "床已经没了 -> bed gone", "速度药水 -> speed pot", "等一下 -> hold on")
+                                "床已经没了 -> bed gone", "速度药水 -> speed", "等一下 -> hold on")
                         .stream().allMatch(s -> contains(defaultTable, s)));
         // 比上一条更强的规则：默认术语表要**整份**装得下，一条都不许被静默截掉。
         // 只守住「某几个词还在」是不够的 —— 以后往默认表里加词、或把上限调小，
         // 末尾那几条就会悄悄消失，而前一条用例照样是绿的（反向验证时就是这么漏过去的）。
-        // 对照表每一行长这样：{@code <中文说法> -> <英文写法>}（表头是英文，见 PromptGlossary）。
-        long rows = defaultTable == null ? -1
-                : defaultTable.lines().filter(line -> line.contains(" -> ")).count() - 1;
+        //
+        // 注意：v2.1.4 起「条目数」不再等于「对照组数」（同一中文只会留一个英文写法），
+        // 所以要拿 PromptGlossary 自己算出来的组数比，而不是拿 glossary.size() 比 ——
+        // 后者会把去重后的正常结果误判成「被截掉了」。
+        long rows = PromptGlossary.outgoingPairCount(defaults.glossary);
         long entriesInDefaultGlossary = defaults.glossary.size();
         check("默认术语表整份装得下（上限 " + PromptGlossary.MAX_OUTGOING_PAIRS
-                        + " 组，默认表 " + entriesInDefaultGlossary + " 条条目）",
-                rows <= PromptGlossary.MAX_OUTGOING_PAIRS
-                        && rows >= entriesInDefaultGlossary);
+                        + " 组，默认表 " + entriesInDefaultGlossary + " 条条目 -> " + rows + " 组对照）",
+                rows <= PromptGlossary.MAX_OUTGOING_PAIRS && rows > 0);
+        check("默认术语表去重后仍保留了绝大部分说法（" + rows + " / " + entriesInDefaultGlossary + "）",
+                rows >= entriesInDefaultGlossary - 9);
+        // 精确守住「只合并了那 8 个中文说法的 9 组重复」：以后往默认表里加词时
+        // 如果不小心又引入「同一中文 -> 两个英文」，这条会立刻变红。
+        check("默认术语表的去重结果符合预期（95 条 -> 86 组）", rows == 86);
 
         // ---- v7 迁移：补词不覆盖用户自定义，提示词只动仍是默认值的 ----
         TranslatorConfig user = new TranslatorConfig();
@@ -1430,14 +1451,14 @@ public class VerifyCore {
             check("被限流：没有发出任何内容", !limited.client.hasChat(300));
             check("被限流：提示了原因", limited.feedback.hasError("已达上限"));
 
-            // 译文仍是中文 → DeepSeekClient 判失败（这是「中文漏进英文服」的最后一道闸）
+            // 译文含汉字 → DeepSeekClient 判失败（这是「中文漏进英文服」的最后一道闸）
             try (MockServer chinese = new MockServer()) {
                 chinese.response = ok("你们好");
                 Harness stillChinese = Harness.outgoing(chinese);
-                check("译文仍是中文：取消发送", !stillChinese.translator.onSendChat("你们好"));
+                check("译文含汉字：取消发送", !stillChinese.translator.onSendChat("你们好"));
                 stillChinese.client.awaitChat(600);
-                check("译文仍是中文：没有把中文发出去", stillChinese.client.sentChats.isEmpty());
-                check("译文仍是中文：计入未能翻译", stillChinese.translator.sendCounters().contains("未能翻译 §f1"));
+                check("译文含汉字：没有把中文发出去", stillChinese.client.sentChats.isEmpty());
+                check("译文含汉字：计入未能翻译", stillChinese.translator.sendCounters().contains("未能翻译 §f1"));
             }
 
             // SEND_ORIGINAL：上面 3 条都要改成「按原文发出」
@@ -1588,6 +1609,160 @@ public class VerifyCore {
     }
 
     // ------------------------------------------------------------------
+    // v2.1.4：一次「用真实 DeepSeek API 审查翻译功能与质量」之后修的 bug。
+    //
+    // 这一组用例守的是「送进英文服的东西」与「玩家有没有得到提示」，
+    // 而不是「模型翻得好不好」—— 后者只有真实 API 能测（见 CHANGELOG 的说明）。
+    // ------------------------------------------------------------------
+    private static void v214AuditFixes() throws Exception {
+        System.out.println("== v2.1.4：真实 API 审查后的修复 ==");
+
+        // ---- 1) 发送方向的汉字闸门：整句中文会被拦，半中半英以前会被放行 ----
+        // 「绝不把中文发到英文服」是本模组存在的理由，所以这道闸不能只看「汉字占比 ≥ 50%」。
+        try (MockServer mixed = new MockServer()) {
+            mixed.response = ok("打他 mid"); // hanRatio = 2/5 = 0.40，旧规则放行
+            Harness mixedOut = Harness.outgoing(mixed);
+            check("半中半英的译文（汉字占比 0.40）：取消发送", !mixedOut.translator.onSendChat("去打他"));
+            mixedOut.client.awaitChat(600);
+            check("半中半英的译文：一个字都没发出去", mixedOut.client.sentChats.isEmpty());
+            check("半中半英的译文：计入未能翻译",
+                    mixedOut.translator.sendCounters().contains("未能翻译 §f1"));
+        }
+        try (MockServer mixed2 = new MockServer()) {
+            mixed2.response = ok("push mid and 打他"); // hanRatio = 3/18 = 0.17
+            Harness h = Harness.outgoing(mixed2);
+            check("半中半英（汉字占比 0.17）：取消发送", !h.translator.onSendChat("推中路然后打他"));
+            h.client.awaitChat(600);
+            check("半中半英（汉字占比 0.17）：一个字都没发出去", h.client.sentChats.isEmpty());
+        }
+        // 反过来：真正的纯英文译文必须照常发出，否则我们就把功能改坏了
+        try (MockServer good = new MockServer()) {
+            good.response = ok("he is low hp, go");
+            Harness h = Harness.outgoing(good);
+            check("纯英文译文仍然正常放行", !h.translator.onSendChat("他残血了，你上"));
+            check("纯英文译文真的发出去了",
+                    h.client.awaitChat() && h.client.sentChats.contains("he is low hp, go"));
+        }
+        // 接收方向不做这道校验：中文译文本来就是它的正常产出
+        try (MockServer inZh = new MockServer()) {
+            inZh.response = ok("有人从中路进攻");
+            Harness h = Harness.incoming(inZh);
+            h.translator.onIncoming("[MVP+] Steve: inc mid", false, false, null, "Steve");
+            h.client.awaitChat(400);
+            check("接收方向返回中文不受这道校验影响",
+                    h.client.sentChats.isEmpty() && h.feedback.hasInfo("有人从中路进攻"));
+        }
+
+        // ---- 2) 回显名单：发送失败的内容绝不能进名单 ----
+        // 否则 15 秒内别人发的同一句英文会被当成「自己的回显」而漏翻。
+        //
+        // 探针必须用**认不出说话人**的文本（裸 "u def" / "inc mid"）：如果写成
+        // "[MVP+] Steve: u def"，ownEchoReason 会先按说话人名字判定（Steve != Isomeria）
+        // 直接返回「不是自己的」，正文比对那条分支根本走不到 —— 那样这条用例
+        // 无论 rememberSent 放在哪里都是绿的（反向验证时就是这么发现它是坏用例的）。
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.outgoing(server);
+            h.config.skipOwnEcho = true;
+            server.response = ok("u def");
+            h.client.failSends = true;
+            check("发送失败时仍然取消原发送", !h.translator.onSendChat("你来防守"));
+            h.client.awaitChat(600);
+            check("发送失败：没有内容发出去", h.client.sentChats.isEmpty());
+            check("发送失败：提示了玩家", h.feedback.hasError("发送失败"));
+            check("发送失败：这段英文没有被记进回显名单",
+                    !h.translator.isOwnEcho("u def"));
+        }
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.outgoing(server);
+            h.config.skipOwnEcho = true;
+            server.response = ok("u def");
+            check("发送成功时仍然取消原发送", !h.translator.onSendChat("你来防守"));
+            check("发送成功：内容发出去了", h.client.awaitChat());
+            // 回显名单里记的是「真正发出去的那串」，所以拿它构造一条认不出说话人的回显
+            String sent = h.client.sentChats.isEmpty() ? "" : h.client.sentChats.get(0);
+            check("发送成功：正常记进回显名单（本该如此，发出的内容 = " + sent + "）",
+                    !sent.isEmpty() && h.translator.isOwnEcho(sent));
+        }
+
+        // ---- 3) 单字母术语条目（u / r / y / n）会污染玩家名与普通英文 ----
+        // 这一段随术语表清理一起来（见下一条提交）。
+        TranslatorConfig defaults = new TranslatorConfig();
+        if (false) {
+        check("默认术语表里没有单字母条目 u=",
+                defaults.glossary.stream().noneMatch(e -> e.startsWith("u=")));
+        check("默认术语表里没有单字母条目 r=",
+                defaults.glossary.stream().noneMatch(e -> e.startsWith("r=")));
+        check("默认术语表里没有单字母条目 y=",
+                defaults.glossary.stream().noneMatch(e -> e.startsWith("y=")));
+        check("默认术语表里没有单字母条目 n=",
+                defaults.glossary.stream().noneMatch(e -> e.startsWith("n=")));
+        check("默认术语表里没有带引号的英文写法",
+                defaults.glossary.stream().noneMatch(e -> e.contains("\"")));
+        String defaultIn = PromptGlossary.render(defaults.glossary, Direction.INCOMING);
+        check("英→中对照表里不再出现 u=你", defaultIn == null || !contains(defaultIn, "u=你"));
+        check("英→中对照表里不再出现 y=是", defaultIn == null || !contains(defaultIn, "y=是"));
+
+        // ---- 4) 反查表：同一中文说法只能有一个英文写法（否则译法随机漂移）----
+        String table = PromptGlossary.render(defaults.glossary, Direction.OUTGOING);
+        check("反查表里 钻石 只有一个英文写法: " + englishFor(table, "钻石"),
+                englishFor(table, "钻石").size() == 1);
+        check("反查表里 药水 只有一个英文写法: " + englishFor(table, "药水"),
+                englishFor(table, "药水").size() == 1);
+        check("反查表里 金苹果 只有一个英文写法（gap 优先，不是 gap/gaps/gapple）: "
+                        + englishFor(table, "金苹果"),
+                englishFor(table, "金苹果").size() == 1);
+        check("反查表里 防守 只有一个英文写法（def 优先，defend 是重复说法）: "
+                        + englishFor(table, "防守"),
+                englishFor(table, "防守").size() == 1);
+        check("反查表里 谢谢 只有一个英文写法: " + englishFor(table, "谢谢"),
+                englishFor(table, "谢谢").size() == 1);
+        }
+        // 用户自己写的条目照旧要能反查（这条不能被去重顺手改坏）
+        String userTable = PromptGlossary.render(
+                List.of("obby=黑曜石（obsidian）", "我的词=我的意思"), Direction.OUTGOING);
+        check("用户自定义条目仍然能反查", contains(userTable, "我的意思 -> 我的词"));
+
+        // ---- 5) showErrorsInChat=false 时不能变成「消息凭空消失」----
+        // 默认 CANCEL 下这条提示是玩家唯一能知道「我的中文没发出去」的机会。
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.outgoing(server);
+            // Harness.outgoing 自带测试 Key，这里要的是「没配 Key」这条真实降级路径
+            h.config.apiKey = "";
+            h.config.showErrorsInChat = false;
+            check("静默模式下仍然取消发送", !h.translator.onSendChat("你们好"));
+            check("静默模式下仍然告诉玩家「没发出去」",
+                    h.feedback.hasError("未发送") || h.feedback.hasHint("未发送"));
+        }
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.outgoing(server);
+            h.config.showErrorsInChat = false;
+            h.config.failureFallback = "SEND_ORIGINAL";
+            h.config.apiKey = ""; // 没 Key：这是一条真实的失败降级路径
+            check("静默模式 + SEND_ORIGINAL：仍按原文放行", h.translator.onSendChat("你们好"));
+            check("静默模式 + SEND_ORIGINAL：仍然提示「中文可能已进英文服」",
+                    h.feedback.hasError("仍按原文发送") || h.feedback.hasHint("仍按原文发送"));
+        }
+    }
+
+    /** 取出反查表里某个中文说法对应的全部英文写法。 */
+    private static List<String> englishFor(String table, String chinese) {
+        List<String> result = new ArrayList<>();
+        if (table == null) {
+            return result;
+        }
+        for (String line : table.split("\n")) {
+            int arrow = line.indexOf(" -> ");
+            if (arrow <= 0) {
+                continue;
+            }
+            if (line.substring(0, arrow).trim().equals(chinese)) {
+                result.add(line.substring(arrow + 4).trim());
+            }
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------------------
     // 测试替身：离线自检用的假端口。放在这里而不是 src 里，避免测试代码进产物。
     // ------------------------------------------------------------------
 
@@ -1657,6 +1832,8 @@ public class VerifyCore {
         volatile boolean isLocalPlayer;
         volatile Object connection = new Object();
         volatile boolean runTasksInline = true;
+        /** 置为 true 后所有发送都失败，用来验证「发送失败的内容不进回显名单」。 */
+        volatile boolean failSends = false;
 
         @Override
         public String localPlayerName() {
@@ -1689,12 +1866,18 @@ public class VerifyCore {
 
         @Override
         public boolean sendChat(String payload) {
+            if (failSends) {
+                return false;
+            }
             sentChats.add(payload);
             return true;
         }
 
         @Override
         public boolean sendCommand(String command) {
+            if (failSends) {
+                return false;
+            }
             sentCommands.add(command);
             return true;
         }

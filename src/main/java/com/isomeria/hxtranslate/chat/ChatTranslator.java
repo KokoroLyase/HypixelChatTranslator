@@ -334,6 +334,17 @@ public final class ChatTranslator {
         return matched == null ? null : "匹配到自己发过的 \"" + shorten(matched) + "\"";
     }
 
+    /**
+     * 这条收到的消息会不会被当成「自己的回显」而跳过翻译。
+     *
+     * <p>公开出来是给离线自检用的：发送失败时那段英文**不该**进回显名单，
+     * 否则 15 秒内别人说的同一句会被误判成回显而漏翻。判据必须与生产路径同一份实现
+     * （{@link #ownEchoReason}），不能在自检里另抄一遍。
+     */
+    public boolean isOwnEcho(String incomingText) {
+        return ownEchoReason(incomingText) != null;
+    }
+
     private synchronized void rememberSent(String english) {
         EchoMatcher.Sent sent = EchoMatcher.Sent.now(english);
         if (sent.text().isEmpty()) {
@@ -417,11 +428,13 @@ public final class ChatTranslator {
                         return;
                     }
                     String outgoing = truncateTranslated(translated, config.maxOutgoingChars, "");
-                    rememberSent(outgoing);
                     if (!sendProgrammatically(outgoing, false)) {
-                        // 发送本身失败：sendProgrammatically 已经在聊天栏报错，这里不再谎报成功
+                        // 发送本身失败：sendProgrammatically 已经在聊天栏报错，这里不再谎报成功。
+                        // 也**不能**把它记进回显名单（v2.1.4）：这段英文从未出现在服务器上，
+                        // 记进去会让 15 秒内别人说的同一句被误判成「自己的回显」而漏翻。
                         return;
                     }
+                    rememberSent(outgoing);
                     sentCount.incrementAndGet();
                     feedback.info(config.outgoingPrefix + outgoing);
                 }));
@@ -462,18 +475,27 @@ public final class ChatTranslator {
      */
     private boolean fallbackToOriginal(String reason, String subject) {
         sendFailedCount.incrementAndGet();
-        // 两种降级都用红字：即使按原文发出去了，也意味着「中文可能已经出现在英文服里」，
+        // 两种降级默认都用红字：即使按原文发出去了，也意味着「中文可能已经出现在英文服里」，
         // 这是玩家最该注意到的情况，不能只给一条灰色提示。
+        //
+        // 但 v2.1.4 起 `showErrorsInChat=false` **不再让这里彻底静默**：玩家侧的表现原本是
+        // 「看到 ⏳ 翻译中…，然后消息凭空消失」，既不知道发没发出去、也不知道内容还在不在。
+        // 关掉这个开关的意图是「别刷屏」，不是「别告诉我」，所以降级为一条灰色提示。
         if (sendOriginalOnFailure()) {
-            if (config.showErrorsInChat) {
-                feedback.error(reason + "，" + subject + "未翻译，仍按原文发送。");
-            }
+            notifyFallback(reason + "，" + subject + "未翻译，仍按原文发送。");
             return true;
         }
-        if (config.showErrorsInChat) {
-            feedback.error(reason + "，" + subject + "未发送（按 ↑ 可找回刚才的内容）。");
-        }
+        notifyFallback(reason + "，" + subject + "未发送（按 ↑ 可找回刚才的内容）。");
         return false;
+    }
+
+    /** 降级提示的出口：默认红字，关掉 {@code showErrorsInChat} 时降为灰色提示，但绝不静默。 */
+    private void notifyFallback(String message) {
+        if (config.showErrorsInChat) {
+            feedback.error(message);
+        } else {
+            feedback.hint(message);
+        }
     }
 
     /** 按预算截断译文；真截断了就在聊天栏说明原因（预算的来源两个方向不同）。 */
@@ -537,11 +559,11 @@ public final class ChatTranslator {
                             Math.max(16, config.maxOutgoingChars - head.length()),
                             "（要给命令本身留位置）");
                     String payload = head + outgoing;
-                    rememberSent(outgoing);
                     if (!sendProgrammatically(payload, true)) {
-                        // 同上：没发出去就不算发出
+                        // 同上：没发出去就不算发出，也不记进回显名单（v2.1.4）
                         return;
                     }
+                    rememberSent(outgoing);
                     sentCount.incrementAndGet();
                     feedback.info(config.outgoingPrefix + "/" + payload);
                 }));
@@ -562,9 +584,10 @@ public final class ChatTranslator {
      */
     private boolean sendProgrammatically(String payload, boolean asCommand) {
         boolean sent = asCommand ? client.sendCommand(payload) : client.sendChat(payload);
-        if (!sent && config.showErrorsInChat) {
-            // 具体失败原因（异常类型/消息）由实现打在日志里，这里只告诉玩家「没发出去」
-            feedback.error("发送失败，这条内容没有发出去。");
+        if (!sent) {
+            // 具体失败原因（异常类型/消息）由实现打在日志里，这里只告诉玩家「没发出去」。
+            // 同 fallbackToOriginal：这条也绝不静默，否则玩家会以为已经发出去了。
+            notifyFallback("发送失败，这条内容没有发出去。");
         }
         return sent;
     }
