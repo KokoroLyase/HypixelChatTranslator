@@ -3,6 +3,7 @@ package com.isomeria.hxtranslate.core;
 import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.util.LangUtils;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -91,7 +92,7 @@ public final class PromptGlossary {
                 continue;
             }
             // 一个条目里可能有多组对照：def=防守（defend）；"u def"=你来防守
-            for (String part : entry.split(ENTRY_SEPARATOR)) {
+            for (String part : splitParts(entry)) {
                 if (pairs >= MAX_OUTGOING_PAIRS) {
                     break;
                 }
@@ -120,23 +121,81 @@ public final class PromptGlossary {
                 + "do not force an entry that does not fit.";
     }
 
-    /** 把一组 {@code 英文=中文} 渲染成 {@code 中文 -> 英文}；无法解析时返回 null。 */
-    private static String renderPair(String part) {
+    /**
+     * 把一条配置按分号拆成若干组对照（{@code def=防守；you def=你来防守}）。
+     *
+     * <p>和渲染共用同一套规则：术语表体检（{@link GlossaryAudit}）也用这个拆法，
+     * 否则「体检说没问题、渲染却把这条丢了」这种分叉会永远查不出来。
+     *
+     * @param entry 一条配置；为 {@code null} 时返回空列表
+     */
+    static List<String> splitParts(String entry) {
+        if (entry == null) {
+            return List.of();
+        }
+        return Arrays.asList(entry.split(ENTRY_SEPARATOR));
+    }
+
+    /** 一组对照解析失败的原因，供术语表体检给出「哪里错、怎么改」的提示。 */
+    enum Problem {
+        /** 解析成功。 */
+        NONE,
+        /** 没有等号（也包含全角等号这种写法）。 */
+        NO_SEPARATOR,
+        /** 等号左边是空的，缺英文写法。 */
+        EMPTY_ENGLISH,
+        /** 等号右边是空的，或缺中文含义（括号内容会被当注释去掉，只剩括号也算空）。 */
+        EMPTY_CHINESE
+    }
+
+    /**
+     * 一组对照的解析结果。
+     *
+     * <p>{@code english} 已去掉包裹引号，{@code chinese} 已去掉括号说明并压成一行 ——
+     * 也就是**真正会被渲染进提示词的那两个值**。
+     */
+    record Parsed(String english, String chinese, Problem problem) {
+
+        /** 这一组是否可用（不可用的会被渲染直接跳过）。 */
+        boolean ok() {
+            return problem == Problem.NONE;
+        }
+    }
+
+    /**
+     * 解析一组对照（形如 {@code obby=黑曜石（obsidian）}）。
+     *
+     * <p>这是渲染与术语表体检**共用的唯一解析入口**：渲染用它决定「这一组能不能进提示词」，
+     * 体检用它判断「为什么进不去」。两边分家的话，体检报告就会和实际行为不一致。
+     */
+    static Parsed parse(String part) {
         if (part == null) {
-            return null;
+            return new Parsed("", "", Problem.NO_SEPARATOR);
         }
         int separator = part.indexOf(KEY_SEPARATOR);
-        if (separator <= 0) {
-            return null;
+        if (separator < 0) {
+            return new Parsed("", "", Problem.NO_SEPARATOR);
         }
         // 英文侧可能被用户加上引号（v2.1.4 前的默认表里就有一条 "u def"）。
         // 引号在这里没有任何意义，却会原样进提示词，和「不要加引号」的规则打架，所以剥掉。
         String english = stripQuotes(part.substring(0, separator).trim());
+        if (english.isEmpty()) {
+            return new Parsed("", "", Problem.EMPTY_ENGLISH);
+        }
         String chinese = chineseGloss(part.substring(separator + 1));
-        if (english.isEmpty() || chinese.isEmpty()) {
+        if (chinese.isEmpty()) {
+            return new Parsed(english, "", Problem.EMPTY_CHINESE);
+        }
+        return new Parsed(english, chinese, Problem.NONE);
+    }
+
+    /** 把一组 {@code 英文=中文} 渲染成 {@code 中文 -> 英文}；无法解析时返回 null。 */
+    private static String renderPair(String part) {
+        Parsed parsed = parse(part);
+        if (!parsed.ok()) {
             return null;
         }
-        return chinese + " -> " + english;
+        return parsed.chinese() + " -> " + parsed.english();
     }
 
     /** 去掉包裹英文写法的成对引号（直引号、弯引号、书名号都算）。 */

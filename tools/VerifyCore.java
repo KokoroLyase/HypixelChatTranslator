@@ -7,6 +7,7 @@ import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
+import com.isomeria.hxtranslate.core.GlossaryAudit;
 import com.isomeria.hxtranslate.core.PromptGlossary;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.CommandMessage;
@@ -73,6 +74,7 @@ public class VerifyCore {
         v223PromptClarity();
         v222SecondPassFixes();
         v214AuditFixes();
+        v230GlossaryAudit();
         versionConsistency();
         docConsistency();
 
@@ -2346,6 +2348,10 @@ public class VerifyCore {
         check("README 的命令表里有 /hxtranslate status", contains(readme, "/hxtranslate status"));
         check("README 的命令表里有 incoming", contains(readme, "/hxtranslate incoming on|off"));
         check("README 的命令表里有 outgoing", contains(readme, "/hxtranslate outgoing on|off"));
+        // v2.3.0：术语表体检是多了一个命令，README 不写玩家就不知道有它
+        check("README 的命令表里有 /hxtranslate glossary", contains(readme, "/hxtranslate glossary"));
+        check("README 写明了术语表的方向约定（英文在等号左边）",
+                contains(readme, "英文在等号左边"));
 
         // ignorePatterns 那一行的说明不能承诺代码里没有的效果
         check("README 不再声称默认 ignorePatterns 挡「服务器提示音效」",
@@ -2641,6 +2647,199 @@ public class VerifyCore {
      * <p>这些断言读的是**仓库里的真实文件**，不是常量副本 —— 所以它守的是「文件之间一致」，
      * 而不是「我抄的常量对不对」。
      */
+    /**
+     * v2.3.0：术语表体检（{@link GlossaryAudit}）。
+     *
+     * <p>为什么要它：术语表是用户资产，玩家会长期往里加词，而「写反了」和「格式错」这两类
+     * 错误是**完全静默**的 —— 前者让两个方向的含义都反过来，后者这条会被渲染直接丢掉，
+     * 玩家只会觉得「加了词没用」。这一组用例守住两件事：
+     * <ol>
+     *   <li><b>默认术语表必须一条都不报</b>（否则每次启动都拿噪音烦玩家）；</li>
+     *   <li>体检的判据必须与渲染**同源** —— 体检说格式错的，渲染必须真的丢掉它；
+     *       渲染能用的，体检不许误报成格式错。这条是防「两套解析各自演化」的守卫。</li>
+     * </ol>
+     */
+    private static void v230GlossaryAudit() {
+        System.out.println("== v2.3.0：术语表体检 ==");
+
+        // ---- 0) 关键守卫：默认术语表必须 0 条结论 ----
+        TranslatorConfig defaults = new TranslatorConfig();
+        List<GlossaryAudit.Finding> onDefaults = GlossaryAudit.audit(defaults.glossary);
+        check("默认术语表体检 0 条结论（" + defaults.glossary.size() + " 条条目，实测 "
+                + onDefaults.size() + " 条）", onDefaults.isEmpty());
+        check("默认术语表没问题时摘要为 null（启动不打扰玩家）",
+                GlossaryAudit.summarize(onDefaults) == null);
+        check("默认术语表没问题时没有明细行", GlossaryAudit.detailLines(onDefaults, 10).isEmpty());
+
+        // ---- 1) 写反：中文写在了等号左边 ----
+        List<GlossaryAudit.Finding> reversed = GlossaryAudit.audit(List.of("黑曜石=obby"));
+        checkEq("写反被报 1 条", 1, reversed.size());
+        check("写反判为 REVERSED 且严重度是 ERROR",
+                kindOf(reversed, 0) == GlossaryAudit.Kind.REVERSED
+                        && severityOf(reversed, 0) == GlossaryAudit.Severity.ERROR);
+        check("写反的提示说了「写反」", contains(describe(reversed, 0), "写反"));
+        check("写反的提示给出交换后的正确写法（玩家复制即可改好）",
+                contains(describe(reversed, 0), "obby=黑曜石"));
+        check("写反的提示带条目序号（第 1 条）", contains(describe(reversed, 0), "第 1 条"));
+
+        // ---- 2) 格式错：这几种都会被渲染静默丢掉 ----
+        List<GlossaryAudit.Finding> noSeparator = GlossaryAudit.audit(List.of("这不是对照表"));
+        check("缺等号的条目被判为 MALFORMED / ERROR",
+                kindOf(noSeparator, 0) == GlossaryAudit.Kind.MALFORMED
+                        && severityOf(noSeparator, 0) == GlossaryAudit.Severity.ERROR);
+        check("缺等号的提示说明整条不会生效", contains(describe(noSeparator, 0), "不会生效"));
+
+        List<GlossaryAudit.Finding> fullWidth = GlossaryAudit.audit(List.of("obby＝黑曜石"));
+        check("全角等号单独给提示（中文输入法最容易手滑的一种）",
+                kindOf(fullWidth, 0) == GlossaryAudit.Kind.MALFORMED
+                        && contains(describe(fullWidth, 0), "全角"));
+
+        check("等号左边为空被判为 MALFORMED",
+                kindOf(GlossaryAudit.audit(List.of("=只有右边")), 0) == GlossaryAudit.Kind.MALFORMED);
+        check("等号右边为空被判为 MALFORMED",
+                kindOf(GlossaryAudit.audit(List.of("onlyleft=")), 0) == GlossaryAudit.Kind.MALFORMED);
+        List<GlossaryAudit.Finding> bracketsOnly = GlossaryAudit.audit(List.of("abc=（说明）"));
+        check("右边只剩括号说明时判为 MALFORMED，并点明括号会被当注释去掉",
+                kindOf(bracketsOnly, 0) == GlossaryAudit.Kind.MALFORMED
+                        && contains(describe(bracketsOnly, 0), "括号"));
+
+        // ---- 3) 右边没有汉字：中→英方向会把它当成一个「说法」 ----
+        List<GlossaryAudit.Finding> noChinese = GlossaryAudit.audit(List.of("abc=obsidian"));
+        check("右边没有汉字的条目判为 NO_CHINESE / ERROR",
+                kindOf(noChinese, 0) == GlossaryAudit.Kind.NO_CHINESE
+                        && severityOf(noChinese, 0) == GlossaryAudit.Severity.ERROR);
+        check("右边没有汉字的提示说明格式是 英文=中文",
+                contains(describe(noChinese, 0), "英文=中文"));
+
+        // ---- 4) 单字母英文写法：会用，但有撞车风险（默认表 v2.1.4 起已清掉） ----
+        List<GlossaryAudit.Finding> single = GlossaryAudit.audit(List.of("u=你"));
+        check("单字母英文写法判为 SINGLE_LETTER / WARNING",
+                kindOf(single, 0) == GlossaryAudit.Kind.SINGLE_LETTER
+                        && severityOf(single, 0) == GlossaryAudit.Severity.WARNING);
+        check("单字母的提示说明了风险（玩家名 / 普通英文撞车）",
+                contains(describe(single, 0), "撞车"));
+        check("单字母只是提醒，不拦着玩家用（提示里说明可以忽略）",
+                contains(describe(single, 0), "忽略"));
+
+        // ---- 5) 重复：整条重复 / 英文写法重复 ----
+        List<GlossaryAudit.Finding> dupEntry = GlossaryAudit.audit(List.of("obby=黑曜石", "obby=黑曜石"));
+        check("整条重复判为 DUPLICATE_ENTRY / WARNING",
+                kindOf(dupEntry, 0) == GlossaryAudit.Kind.DUPLICATE_ENTRY
+                        && severityOf(dupEntry, 0) == GlossaryAudit.Severity.WARNING);
+        check("整条重复的提示指向第一次出现的位置",
+                contains(describe(dupEntry, 0), "第 1 条"));
+
+        List<GlossaryAudit.Finding> dupEnglish = GlossaryAudit.audit(
+                List.of("mid=中路、中间的资源点", "mid=中路"));
+        check("同一英文写法两种中文判为 DUPLICATE_ENGLISH / WARNING",
+                kindOf(dupEnglish, 0) == GlossaryAudit.Kind.DUPLICATE_ENGLISH
+                        && severityOf(dupEnglish, 0) == GlossaryAudit.Severity.WARNING);
+        check("英文写法重复的提示指向先出现的那条",
+                contains(describe(dupEnglish, 0), "第 1 条"));
+
+        // 同一中文说法对应多个英文写法是**默认表的有意设计**（反查只取第一条），
+        // 体检查它只会变成噪音，所以刻意不检查 —— 这条断言把这个决定固定下来。
+        check("同一中文说法的同义词（dia / dias）不被报为问题",
+                GlossaryAudit.audit(List.of("dia=钻石（diamond）", "dias=钻石")).isEmpty());
+
+        // ---- 6) 一条配置里的多组对照要逐组体检 ----
+        List<GlossaryAudit.Finding> multi = GlossaryAudit.audit(
+                List.of("def=防守（defend）；没有等号的组"));
+        checkEq("分号隔开的多组对照逐组体检（只报坏的那一组）", 1, multi.size());
+        check("结论指向条目本身（第 1 条），不是组号",
+                contains(describe(multi, 0), "第 1 条"));
+
+        // ---- 7) 与渲染同源：体检说格式错的，渲染必须真的丢掉 ----
+        for (String part : List.of("这不是对照表", "=只有右边", "onlyleft=", "abc=（说明）", "obby＝黑曜石")) {
+            boolean reported = !GlossaryAudit.audit(List.of(part)).isEmpty();
+            boolean rendered = PromptGlossary.render(List.of(part), Direction.OUTGOING) != null;
+            check("格式错的「" + part + "」体检报错且渲染确实丢掉它（报=" + reported + " 渲染=" + rendered + "）",
+                    reported && !rendered);
+        }
+        // 反过来：渲染能用的条目不能被误报成格式错，否则玩家会去改一条本来就正常的条目
+        for (String part : List.of("obby=黑曜石（obsidian）", "you def=你来防守", "u=你", "abc=obsidian")) {
+            boolean malformed = countOf(GlossaryAudit.audit(List.of(part)),
+                    GlossaryAudit.Kind.MALFORMED) > 0;
+            boolean rendered = PromptGlossary.render(List.of(part), Direction.OUTGOING) != null;
+            check("能用的「" + part + "」不被误报为格式错（渲染=" + rendered + "）",
+                    rendered && !malformed);
+        }
+
+        // ---- 8) 异常输入：抗自己的失败，不能抛异常 ----
+        check("术语表为 null 时不炸且无结论", GlossaryAudit.audit(null).isEmpty());
+        check("空术语表无结论", GlossaryAudit.audit(List.of()).isEmpty());
+        check("列表里有 null 条目不炸，并报为格式错",
+                countOf(GlossaryAudit.audit(Arrays.asList(null, "obby=黑曜石")),
+                        GlossaryAudit.Kind.MALFORMED) == 1);
+        check("空白条目不炸，并报为格式错",
+                countOf(GlossaryAudit.audit(List.of("   ")), GlossaryAudit.Kind.MALFORMED) == 1);
+
+        // ---- 9) 摘要与明细：启动最多几行，其余指路到命令 ----
+        List<GlossaryAudit.Finding> mixed = GlossaryAudit.audit(List.of(
+                "黑曜石=obby", "u=你", "这不是对照表", "mid=中路、中间的资源点", "mid=中路"));
+        checkEq("混合术语表体检出 4 条（写反 1 + 单字母 1 + 格式 1 + 英文重复 1）",
+                4, mixed.size());
+        checkEq("结论按条目顺序排列", 0, mixed.isEmpty() ? -1 : mixed.get(0).entryIndex());
+        String summary = GlossaryAudit.summarize(mixed);
+        check("摘要区分「写错或不会生效」与「有风险」",
+                contains(summary, "2 条写错或不会生效") && contains(summary, "2 条有风险"));
+        check("摘要指路到 /hxtranslate glossary", contains(summary, "/hxtranslate glossary"));
+        List<String> limited = GlossaryAudit.detailLines(mixed, 2);
+        checkEq("明细受上限约束（2 条明细 + 1 行省略说明）", 3, limited.size());
+        check("省略说明写清还有几条", contains(at(limited, 2), "另有 2 条"));
+        check("明细带上「第 N 条」与原因",
+                contains(at(limited, 0), "第 1 条") && contains(at(limited, 0), "写反"));
+        checkEq("上限为 0 时不输出明细", 0, GlossaryAudit.detailLines(mixed, 0).size());
+        checkEq("没有问题时不输出明细", 0, GlossaryAudit.detailLines(onDefaults, 5).size());
+
+        // ---- 10) 条目文本是不可信内容：明细必须清洗成单行、控制长度 ----
+        List<String> dirty = GlossaryAudit.detailLines(
+                GlossaryAudit.audit(List.of("§c坏§r条目\n第二行（没有等号）")), 5);
+        check("带 § 与换行的条目也能体检出结论", !dirty.isEmpty());
+        check("明细里没有 § 格式代码", dirty.stream().noneMatch(line -> line.indexOf('§') >= 0));
+        check("明细被压成一行", dirty.stream().noneMatch(line -> line.indexOf('\n') >= 0));
+        List<String> longLine = GlossaryAudit.detailLines(
+                GlossaryAudit.audit(List.of("a".repeat(200))), 5);
+        check("超长条目在明细里被截断（实测 " + lengthOf(at(longLine, 0)) + " 字符）",
+                !longLine.isEmpty() && lengthOf(at(longLine, 0)) <= 80);
+    }
+
+    /** 取第 index 条结论的种类；越界返回 null（用例要抗自己的失败）。 */
+    private static GlossaryAudit.Kind kindOf(List<GlossaryAudit.Finding> findings, int index) {
+        return index >= 0 && index < findings.size() ? findings.get(index).kind() : null;
+    }
+
+    /** 取第 index 条结论的严重度；越界返回 null。 */
+    private static GlossaryAudit.Severity severityOf(List<GlossaryAudit.Finding> findings, int index) {
+        return index >= 0 && index < findings.size() ? findings.get(index).kind().severity() : null;
+    }
+
+    /** 取第 index 条结论的描述文本；越界返回 null。 */
+    private static String describe(List<GlossaryAudit.Finding> findings, int index) {
+        return index >= 0 && index < findings.size() ? findings.get(index).describe() : null;
+    }
+
+    /** 数一数某类结论有几条。 */
+    private static int countOf(List<GlossaryAudit.Finding> findings, GlossaryAudit.Kind kind) {
+        int count = 0;
+        for (GlossaryAudit.Finding finding : findings) {
+            if (finding.kind() == kind) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** 取列表第 index 个元素；越界返回 null。 */
+    private static String at(List<String> lines, int index) {
+        return index >= 0 && index < lines.size() ? lines.get(index) : null;
+    }
+
+    /** 字符串长度；null 返回 -1（避免断言里出现 NPE）。 */
+    private static int lengthOf(String text) {
+        return text == null ? -1 : text.length();
+    }
+
     private static void versionConsistency() {
         System.out.println("== 版本一致性（gradle.properties / fabric.mod.json / README）==");
 

@@ -6,6 +6,7 @@ import com.isomeria.hxtranslate.chat.GameClient;
 import com.isomeria.hxtranslate.chat.GameFeedback;
 import com.isomeria.hxtranslate.command.TranslateCommand;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
+import com.isomeria.hxtranslate.core.GlossaryAudit;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.api.ClientModInitializer;
@@ -15,6 +16,8 @@ import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.List;
 
 /**
  * Hypixel 聊天翻译模组入口（纯客户端）。
@@ -115,6 +118,29 @@ public final class HxTranslateClient implements ClientModInitializer {
             feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
             feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
+        }
+        reportGlossaryFindings();
+    }
+
+    /**
+     * 启动时报一次术语表体检（v2.3.0）。
+     *
+     * <p>术语表是玩家长期往里加词的**用户资产**，而两类错误是完全静默的：写反了
+     * （{@code 黑曜石=obby}，两个方向含义都反）、格式错（漏等号 / 全角等号，整条被渲染丢掉）。
+     * 玩家只会觉得「加了词没用」，所以这里主动说一次。
+     *
+     * <p>判定逻辑全在 {@link GlossaryAudit} 里（纯逻辑、离线自检覆盖），本类只负责打印 ——
+     * 装配类不在自检覆盖范围内（见 RELEASING §6），所以别在这里加判断。
+     */
+    private void reportGlossaryFindings() {
+        List<GlossaryAudit.Finding> findings = GlossaryAudit.audit(config.glossary);
+        String summary = GlossaryAudit.summarize(findings);
+        if (summary == null) {
+            return;
+        }
+        feedback.hint(summary);
+        for (String line : GlossaryAudit.detailLines(findings, GlossaryAudit.STARTUP_DETAIL_LIMIT)) {
+            feedback.hint(line);
         }
     }
 }

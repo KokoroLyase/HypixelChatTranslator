@@ -5,6 +5,7 @@ import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
+import com.isomeria.hxtranslate.core.GlossaryAudit;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.LangUtils;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -14,11 +15,16 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.network.chat.Component;
 
+import java.util.List;
+
 /**
  * 客户端命令 /hxtranslate（别名 /hxt）。
  * 这些命令只在本地执行，不会发到 Hypixel 服务器。
  */
 public final class TranslateCommand {
+
+    /** 术语表体检在一次命令里最多列几条明细（再多就把聊天记录顶掉了）。 */
+    private static final int GLOSSARY_DETAIL_LIMIT = 12;
 
     private TranslateCommand() {
     }
@@ -73,6 +79,11 @@ public final class TranslateCommand {
                             : "§c配置重新加载有问题：" + warning;
                     if (revived > 0) {
                         message = message + "§a（另有 " + revived + " 条被停用的忽略正则已恢复）";
+                    }
+                    // 重载往往就是「刚改完术语表」：顺手体检一次，写反 / 漏等号的条目当场说清楚
+                    String suspicious = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
+                    if (suspicious != null) {
+                        message = message + "§e（术语表体检：" + suspicious + "，输入 /hxtranslate glossary 查看）";
                     }
                     context.getSource().sendFeedback(Component.literal(message));
                     return 1;
@@ -145,6 +156,10 @@ public final class TranslateCommand {
                     thread.start();
                     return 1;
                 }))
+                .then(ClientCommands.literal("glossary").executes(context -> {
+                    reportGlossary(context.getSource(), config);
+                    return 1;
+                }))
                 .then(ClientCommands.literal("test")
                         .then(ClientCommands.argument("text", StringArgumentType.greedyString())
                                 .executes(context -> {
@@ -153,6 +168,33 @@ public final class TranslateCommand {
                                     runTest(service, feedback, text);
                                     return 1;
                                 })));
+    }
+
+    /**
+     * 术语表体检报告（{@code /hxtranslate glossary}）。
+     *
+     * <p>术语表是玩家长期维护的资产，而「写反了」「漏了等号」这类错误是**完全静默**的：
+     * 前者让两个方向的含义都反过来，后者会被渲染直接丢掉（加了词却一个字都没进提示词）。
+     * 判定逻辑全在 {@link GlossaryAudit} 里（纯逻辑、离线自检覆盖），这里只负责打印。
+     *
+     * <p>命令反馈走的是 {@code source.sendFeedback}，**不经过** {@code GameFeedback} 的统一清洗，
+     * 所以明细文本由 {@code GlossaryAudit.detailLines} 负责去 {@code §}、压成一行并限长。
+     */
+    private static void reportGlossary(FabricClientCommandSource source, TranslatorConfig config) {
+        List<GlossaryAudit.Finding> findings = GlossaryAudit.audit(config.glossary);
+        int total = config.glossary == null ? 0 : config.glossary.size();
+        source.sendFeedback(Component.literal("§8===== §b术语表体检 §8====="));
+        String counts = GlossaryAudit.countsText(findings);
+        if (counts == null) {
+            source.sendFeedback(Component.literal("§a未发现可疑条目§7（共 " + total + " 条）"));
+            return;
+        }
+        source.sendFeedback(Component.literal("§e发现 " + counts));
+        for (String line : GlossaryAudit.detailLines(findings, GLOSSARY_DETAIL_LIMIT)) {
+            source.sendFeedback(Component.literal("§7  - " + line));
+        }
+        source.sendFeedback(Component.literal(
+                "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/hxtranslate reload §7即可生效"));
     }
 
     /** 测试翻译要发网络请求，必须放到后台线程，否则会卡住游戏。 */
@@ -199,6 +241,13 @@ public final class TranslateCommand {
             for (String regex : LangUtils.disabledRegexes()) {
                 source.sendFeedback(Component.literal("§8  - §7" + LangUtils.sanitizeOneLine(regex)));
             }
+        }
+        // 术语表体检（v2.3.0）：有问题才说话，和上面的正则熔断一样，避免把状态刷成一片。
+        // 写反 / 漏等号的条目完全静默（加了词却进不了提示词），不主动报玩家永远发现不了。
+        String glossaryCounts = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
+        if (glossaryCounts != null) {
+            source.sendFeedback(Component.literal("§e术语表体检发现 " + glossaryCounts
+                    + "，输入 §f/hxtranslate glossary §e查看并修改"));
         }
         source.sendFeedback(Component.literal("§7输入长度上限: §f" + config.maxIncomingChars
                 + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()
