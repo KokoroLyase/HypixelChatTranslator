@@ -249,7 +249,7 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 这是 **v2.0.x 的一个 bug，v2.1.0 已修复**：模组的日志出口引用了入口类，等于「打一行日志」
 也要去加载 Fabric 的加载器 API；万一加载失败，翻译线程会直接死掉且**不报任何错**
 （连 `/hxtranslate status` 里的失败计数都不会涨）。
-**先确认模组是 v2.1.0 或更新**；如果升级后仍然复现，请按 [Bug 模板](.github/ISSUE_TEMPLATE/bug_report.md)
+**先确认模组是 v2.1.0 或更新**；如果升级后仍然复现，请按 [Bug 模板](.github/ISSUE_TEMPLATE/bug_report.yml)
 贴出 `/hxtranslate status` 与 `debug on` 的输出，那能直接定位到具体分支。
 
 **服务器里出现的消息太多，翻译刷屏 / 太费钱**
