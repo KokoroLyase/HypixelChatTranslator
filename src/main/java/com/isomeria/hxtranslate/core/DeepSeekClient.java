@@ -4,7 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.isomeria.hxtranslate.HxTranslateClient;
+import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.util.LangUtils;
 
@@ -116,7 +116,7 @@ public final class DeepSeekClient {
             if (consecutiveFailures.incrementAndGet() >= BREAKER_THRESHOLD) {
                 breakerOpenUntil = System.currentTimeMillis() + BREAKER_OPEN_MS;
                 consecutiveFailures.set(0);
-                HxTranslateClient.LOGGER.warn("DeepSeek 连续失败 {} 次，熔断 {} 秒",
+                Log.LOGGER.warn("DeepSeek 连续失败 {} 次，熔断 {} 秒",
                         BREAKER_THRESHOLD, BREAKER_OPEN_MS / 1000);
             }
         }
@@ -223,10 +223,10 @@ public final class DeepSeekClient {
             }
             return parseResponse(response, text, direction);
         } catch (IOException e) {
-            HxTranslateClient.LOGGER.warn("翻译请求失败: {}", e.toString());
+            Log.LOGGER.warn("翻译请求失败: {}", e.toString());
             return Result.retryableFailure("网络错误: " + e.getClass().getSimpleName());
         } catch (RuntimeException e) {
-            HxTranslateClient.LOGGER.warn("翻译请求异常: {}", e.toString());
+            Log.LOGGER.warn("翻译请求异常: {}", e.toString());
             return Result.failure("请求异常: " + e.getMessage());
         } finally {
             if (connection != null) {

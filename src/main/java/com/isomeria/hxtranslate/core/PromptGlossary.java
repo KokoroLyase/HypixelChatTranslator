@@ -1,6 +1,6 @@
 package com.isomeria.hxtranslate.core;
 
-import com.isomeria.hxtranslate.HxTranslateClient;
+import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.util.LangUtils;
 
 import java.util.List;
@@ -165,7 +165,7 @@ public final class PromptGlossary {
         try {
             return render(glossary, direction);
         } catch (RuntimeException e) {
-            HxTranslateClient.LOGGER.warn("拼装术语表失败（本条提示词不带术语表）: {}", e.toString());
+            Log.LOGGER.warn("拼装术语表失败（本条提示词不带术语表）: {}", e.toString());
             return null;
         }
     }

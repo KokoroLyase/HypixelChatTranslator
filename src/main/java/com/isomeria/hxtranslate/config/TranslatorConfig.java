@@ -6,7 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
-import com.isomeria.hxtranslate.HxTranslateClient;
+import com.isomeria.hxtranslate.Log;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
@@ -550,7 +550,7 @@ public final class TranslatorConfig {
         if (!Files.exists(path)) {
             TranslatorConfig defaults = new TranslatorConfig();
             defaults.save(path);
-            HxTranslateClient.LOGGER.info("已生成默认配置文件: {}", path);
+            Log.LOGGER.info("已生成默认配置文件: {}", path);
             return defaults;
         }
 
@@ -567,9 +567,9 @@ public final class TranslatorConfig {
             return loaded;
         } catch (IOException | JsonSyntaxException e) {
             Path backup = backupBrokenFile(path);
-            HxTranslateClient.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
+            Log.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
             if (backup != null) {
-                HxTranslateClient.LOGGER.error("原文件已备份为 {}，修好后可改回原名", backup);
+                Log.LOGGER.error("原文件已备份为 {}，修好后可改回原名", backup);
             }
             TranslatorConfig fallback = new TranslatorConfig();
             fallback.loadWarning = describeLoadFailure(e, backup);
@@ -615,12 +615,12 @@ public final class TranslatorConfig {
         try {
             if (!JsonParser.parseString(diskJson).getAsJsonObject().has("configVersion")) {
                 loaded.configVersion = VERSION_WITHOUT_FIELD;
-                HxTranslateClient.LOGGER.info("配置里没有 configVersion（v1.0.0 时代的文件），按 v{} 执行迁移",
+                Log.LOGGER.info("配置里没有 configVersion（v1.0.0 时代的文件），按 v{} 执行迁移",
                         VERSION_WITHOUT_FIELD);
             }
         } catch (RuntimeException e) {
             // 不是 JSON 对象：交给后面的迁移逻辑按当前值处理，不影响主流程
-            HxTranslateClient.LOGGER.warn("无法判断配置版本号（{}）", e.toString());
+            Log.LOGGER.warn("无法判断配置版本号（{}）", e.toString());
         }
     }
 
@@ -635,7 +635,7 @@ public final class TranslatorConfig {
             Files.copy(path, backup);
             return backup;
         } catch (IOException e) {
-            HxTranslateClient.LOGGER.error("备份损坏的配置文件失败: {}", e.toString());
+            Log.LOGGER.error("备份损坏的配置文件失败: {}", e.toString());
             return null;
         }
     }
@@ -686,9 +686,9 @@ public final class TranslatorConfig {
                 return;
             }
             save(path);
-            HxTranslateClient.LOGGER.info("配置文件已自动补全新字段 {}（原有设置未改动）: {}", missing, path);
+            Log.LOGGER.info("配置文件已自动补全新字段 {}（原有设置未改动）: {}", missing, path);
         } catch (RuntimeException e) {
-            HxTranslateClient.LOGGER.warn("补全配置字段失败（不影响使用）: {}", e.toString());
+            Log.LOGGER.warn("补全配置字段失败（不影响使用）: {}", e.toString());
         }
     }
 
@@ -701,7 +701,7 @@ public final class TranslatorConfig {
         int before = configVersion;
         boolean changed = applyMigrations();
         if (configVersion != before) {
-            HxTranslateClient.LOGGER.info("配置已从 v{} 升级到 v{}（{}）", before, configVersion,
+            Log.LOGGER.info("配置已从 v{} 升级到 v{}（{}）", before, configVersion,
                     changed ? "新增默认值已补齐，自定义内容保留" : "无需改动");
             save(path);
         }
@@ -796,7 +796,7 @@ public final class TranslatorConfig {
         // ---- v4 -> v5：DeepSeek 2026-09 起下线 deepseek-chat 等旧模型名 ----
         if (from < 5) {
             if (model == null || model.isBlank() || RETIRED_MODELS.contains(model.trim().toLowerCase(Locale.ROOT))) {
-                HxTranslateClient.LOGGER.info("模型名 {} 已下线，自动切换为 {}",
+                Log.LOGGER.info("模型名 {} 已下线，自动切换为 {}",
                         model, defaults.model);
                 model = defaults.model;
                 changed = true;
@@ -929,7 +929,7 @@ public final class TranslatorConfig {
             }
             writeAtomically(path, serializeKeepingUnknownFields(path));
         } catch (IOException e) {
-            HxTranslateClient.LOGGER.error("保存配置失败: {}", e.toString());
+            Log.LOGGER.error("保存配置失败: {}", e.toString());
         }
     }
 
@@ -957,7 +957,7 @@ public final class TranslatorConfig {
             return GSON.toJson(merged);
         } catch (IOException | RuntimeException e) {
             // 旧文件读不出来（例如刚被改坏）：直接按当前内容重写，损坏的那份已经在 load() 里备份过了
-            HxTranslateClient.LOGGER.warn("读取旧配置失败，本次按当前内容重写: {}", e.toString());
+            Log.LOGGER.warn("读取旧配置失败，本次按当前内容重写: {}", e.toString());
             return GSON.toJson(current);
         }
     }
@@ -983,7 +983,7 @@ public final class TranslatorConfig {
             }
             return true;
         } catch (IOException e) {
-            HxTranslateClient.LOGGER.error("写入配置失败: {}", e.toString());
+            Log.LOGGER.error("写入配置失败: {}", e.toString());
             try {
                 Files.deleteIfExists(temp);
             } catch (IOException ignored) {

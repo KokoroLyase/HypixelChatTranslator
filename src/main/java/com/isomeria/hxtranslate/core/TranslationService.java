@@ -1,6 +1,6 @@
 package com.isomeria.hxtranslate.core;
 
-import com.isomeria.hxtranslate.HxTranslateClient;
+import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.util.LangUtils;
 
@@ -128,7 +128,7 @@ public final class TranslationService {
         ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
         if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
             if (config.debugLog) {
-                HxTranslateClient.LOGGER.info("[queue-full] 丢弃 {}", text);
+                Log.LOGGER.info("[queue-full] 丢弃 {}", text);
             }
             return SubmitResult.QUEUE_FULL;
         }
@@ -139,39 +139,79 @@ public final class TranslationService {
         }
         if (cached != null) {
             if (config.debugLog) {
-                HxTranslateClient.LOGGER.info("[cache] {} {}", direction.label(), text);
+                Log.LOGGER.info("[cache] {} {}", direction.label(), text);
             }
             // 缓存命中也要走同一个执行队列，绝不能在这里直接回调调用方。
             // 发送方向是单线程 FIFO，直接回调等于让「命中缓存的第二条」插队：
             // 先发的那条还在等网络，后发的这条已经排队去发了，译文就会乱序。
             // （v1.0.5 为「连打两条中文乱序」改成了单线程池，但漏了这条捷径。）
             String hit = cached;
-            pool.execute(() -> callback.onResult(true, hit, null));
+            pool.execute(() -> {
+                try {
+                    callback.onResult(true, hit, null);
+                } catch (Throwable t) {
+                    // 同上：回调必被调用，且它自己抛错也不能弄死工作线程
+                    reportFailure(text, direction, t);
+                }
+            });
             return SubmitResult.ACCEPTED;
         }
 
         if (!tryAcquireRateLimit()) {
             if (config.debugLog) {
-                HxTranslateClient.LOGGER.info("[rate-limit] 丢弃 {}", text);
+                Log.LOGGER.info("[rate-limit] 丢弃 {}", text);
             }
             return SubmitResult.RATE_LIMITED;
         }
 
         pool.execute(() -> {
-            DeepSeekClient.Result result = client.translate(text, direction);
-            if (result.ok()) {
-                synchronized (this) {
-                    cache.put(key, result.text());
+            try {
+                DeepSeekClient.Result result = client.translate(text, direction);
+                if (result.ok()) {
+                    synchronized (this) {
+                        cache.put(key, result.text());
+                    }
+                    if (config.debugLog) {
+                        Log.LOGGER.info("[translate] {} {} -> {}", direction.label(), text, result.text());
+                    }
+                } else if (config.debugLog) {
+                    Log.LOGGER.info("[translate-fail] {} {}: {}", direction.label(), text, result.error());
                 }
-                if (config.debugLog) {
-                    HxTranslateClient.LOGGER.info("[translate] {} {} -> {}", direction.label(), text, result.text());
+                callback.onResult(result.ok(), result.text(), result.error());
+            } catch (Throwable t) {
+                // 兜底：**回调必须被调用**（submit 的契约），否则这条消息会永远停在「⏳ 翻译中…」，
+                // 在发送方向更是「玩家打了中文，然后什么都没发生」。
+                //
+                // 这里刻意捕获 Throwable 而不是 Exception：真出过事 —— debug 分支引用了实现
+                // ClientModInitializer 的入口类，加载失败抛的是 NoClassDefFoundError（Error），
+                // 现有的 catch (IOException|RuntimeException) 全都接不住，工作线程直接死、
+                // 回调不执行、消息静默消失。任何从这个任务里穿出去的 Throwable 都必须在
+                // 这里转成「翻译失败」，而不是让线程死掉。
+                reportFailure(text, direction, t);
+                try {
+                    callback.onResult(false, null, describeFailure(t));
+                } catch (Throwable fromCallback) {
+                    // 连调用方都抛了：仍然不能让线程死掉（否则后续排队的请求全部丢失）
+                    reportFailure(text, direction, fromCallback);
                 }
-            } else if (config.debugLog) {
-                HxTranslateClient.LOGGER.info("[translate-fail] {} {}: {}", direction.label(), text, result.error());
             }
-            callback.onResult(result.ok(), result.text(), result.error());
         });
         return SubmitResult.ACCEPTED;
+    }
+
+    /** 把「任务里逃出来的 Throwable」写进日志；连日志都写不了时也不能再抛。 */
+    private static void reportFailure(String text, Direction direction, Throwable t) {
+        try {
+            Log.LOGGER.error("翻译任务异常（{} {}）: {}", direction.label(), text, t.toString(), t);
+        } catch (Throwable ignored) {
+            // 日志出口本身都坏了：这里必须保持沉默，抛出去就又回到「线程死、回调丢」的老问题
+        }
+    }
+
+    /** 给玩家看的失败原因：类型 + 消息，够定位就行。 */
+    private static String describeFailure(Throwable t) {
+        String message = t.getMessage();
+        return t.getClass().getSimpleName() + (message == null ? "" : ": " + message);
     }
 
     /** 正在执行 + 排队中的翻译请求数，给状态命令用。 */
@@ -243,7 +283,7 @@ public final class TranslationService {
 
     private void warnMissingKeyOnce() {
         if (missingKeyWarned.compareAndSet(false, true)) {
-            HxTranslateClient.LOGGER.warn("未配置 DeepSeek API Key，翻译功能不可用。请编辑 {}", TranslatorConfig.configPath());
+            Log.LOGGER.warn("未配置 DeepSeek API Key，翻译功能不可用。请编辑 {}", TranslatorConfig.configPath());
         }
     }
 
