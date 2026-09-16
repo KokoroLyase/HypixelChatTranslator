@@ -1,0 +1,12 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: 使用问题 / 翻译质量问题
+    url: https://github.com/KokoroLyase/HypixelChatTranslator#readme
+    about: 安装、配置、命令、常见问题（含「一直显示翻译中」「缩写没被翻译」等）都写在 README 里，先扫一眼能省一次来回。
+  - name: 更新记录
+    url: https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest
+    about: 你的问题可能已经在最新版修好了 —— 报 bug 前先确认一下版本。
+  - name: 安全问题（例如 Key 处理、接口文本注入）
+    url: https://github.com/KokoroLyase/HypixelChatTranslator/security/policy
+    about: 请不要开公开 issue，走 SECURITY.md 里的私密报告渠道。
