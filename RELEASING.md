@@ -149,6 +149,14 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   `configurations.compileClasspath` 整个塞回去 —— 那会让「纯逻辑类误引用游戏 API」
   重新变成能悄悄通过的事。
 - **提交**：一个改动一个提交，提交信息写清根因与修法；纯文档改动不占版本号（见 §1）。
+- **issue 模板要放两份**：`.github/ISSUE_TEMPLATE/` 下的 **YAML 表单**（`bug_report.yml`，
+  GitHub 现行格式，新建 issue 页面优先用它）与**同名 Markdown 模板**（`bug_report.md`）。
+  两份内容是同一份东西，改动时一起改。原因是 2026-09 实测出来的一个坑：
+  GitHub 的**社区档案接口只统计旧式路径**（`.github/ISSUE_TEMPLATE.md` 或目录下的
+  **Markdown** 模板），目录下的 YAML 表单不会被它登记 —— 只放 YAML 时
+  `health_percentage` 会一直显示 `issue_template: 缺失`。GraphQL 的
+  `repository.issueTemplates` 同样只返回旧式模板，因此**这两个接口都不能用来判断
+  YAML 表单是否生效**，要确认只能打开一次「New issue」页面看选择器。
 
 ## 9. 跨 Minecraft 版本升级（换 `minecraft_version` 时照做）
 

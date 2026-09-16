@@ -1,5 +1,56 @@
 # 更新日志
 
+## v2.1.3 — 2026-09-16
+
+**纯仓库配置版本，不改代码、不加功能、不需要迁移。** 这一版是 v2.1.2 那件事的**结论**：
+issue 模板到底有没有被 GitHub 认，以及「社区档案里 `issue_template: 缺失`」究竟是什么原因。
+
+### 结论：那不是我们的文件有问题，是两个 API 的口径问题
+
+v2.1.2 改成 YAML 表单后，GitHub 社区档案仍一直显示 `issue_template: 缺失`。这一轮把
+**所有能想到的可能性都做了 A/B 实测**（每一种都推上 `main` 后立刻用 API 复测）：
+
+| 试过的形式 | 社区档案 / GraphQL 是否登记 |
+| --- | --- |
+| `.github/ISSUE_TEMPLATE/bug_report.md`（旧版 Markdown 模板，v2.1.1 及以前） | ❌ 不登记 |
+| `.github/ISSUE_TEMPLATE/bug_report.yml`（YAML 表单，v2.1.2） | ❌ 不登记 |
+| YAML 表单写成极简版（只留两个字段，排除字段不合规） | ❌ 不登记 |
+| 上面再加一份 Markdown 模板（排除「只有 YAML 才不认」） | ❌ 不登记 |
+| 删掉 `config.yml`（排除它干扰） | ❌ 不登记 |
+| **`.github/ISSUE_TEMPLATE.md`（旧式单文件路径）** | ✅ **登记** |
+
+也就是说：**GitHub 的社区档案接口与 GraphQL 的 `repository.issueTemplates` 只认「旧式路径」**
+（`.github/ISSUE_TEMPLATE.md`，或目录下的 **Markdown** 模板），对 `.github/ISSUE_TEMPLATE/`
+下的 **YAML 表单**一律不登记 —— 而 YAML 表单才是 GitHub 现行推荐、也是新建 issue 页面实际使用的格式。
+所以那个「缺失」只是**统计口径落后**，不代表模板没生效。
+
+> 顺便验证了 issue 功能本身正常：用 API 建了一条测试 issue（编号 #1），创建成功，
+> 验证完已关闭并把标题与正文改写成说明；**删除需要 token 的 issues 写权限**，
+> 当时只开了读权限，所以它还在（已关闭状态），有权限时删掉即可 —— 这是本次唯一的遗留物。
+
+### 最终布局：两份模板同时存在
+
+- `.github/ISSUE_TEMPLATE/bug_report.yml`：YAML 表单（必填项校验、语言下拉、`status`/`debug on`
+  的预填代码块、两条必勾确认：已删 API Key、版本对应）；
+- `.github/ISSUE_TEMPLATE/bug_report.md`：内容相同的 Markdown 兜底版 —— 它也是
+  **唯一**会被社区档案统计到的形式；
+- `.github/ISSUE_TEMPLATE/config.yml`：新建 issue 页面入口处的三条引导
+  （先读 README / 看最新版 / 安全问题走私密渠道）。
+
+`RELEASING.md §8` 补了这条实测结论，避免以后有人（或 AI）再来一轮「YAML 是不是写错了」的排查，
+也避免误删 Markdown 那份。
+
+### 关于 commit 历史
+
+排查期间在 `main` 上留了 4 个 `test:` 过渡提交（每换一种形式推一次）。这些提交**没有任何 tag
+或 Release 指向**，因此把它们压成了本版这一个正式提交，`main` 的历史只保留「改动 + 结论」。
+已发布过的 tag 与 Release（≤ v2.1.2）未受任何影响。
+
+### 验证
+
+`./gradlew clean build` 全绿，离线自检 465 项通过（本次只动模板与文档）。
+两份模板的 YAML 已用解析器校验，字段结构与必填项齐全。
+
 ## v2.1.2 — 2026-09-16
 
 **纯仓库配置版本，不改任何代码、不加功能、不需要迁移。** 仍是同一轮审计的收尾 ——
