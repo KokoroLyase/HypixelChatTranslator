@@ -11,7 +11,6 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
-import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,8 +22,21 @@ public final class HxTranslateClient implements ClientModInitializer {
     public static final String MOD_ID = "hxtranslate";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
-    /** 默认按 F6 切换翻译开关，可在“按键设置 → 多人游戏”里修改。 */
-    private static final int DEFAULT_TOGGLE_KEY = GLFW.GLFW_KEY_F6;
+    /**
+     * 默认按 F6 切换翻译开关，可在“按键设置 → 多人游戏”里修改。
+     *
+     * <p>两处都是 26.3 的适配点，改之前请先看 26.2 的写法：
+     * <ul>
+     *   <li>键码常量用 {@link InputConstants#KEY_F6}，不要用
+     *       {@code org.lwjgl.glfw.GLFW.GLFW_KEY_F6} —— 26.3 起 Loom 的编译类路径不再直接暴露
+     *       LWJGL 的 glfw 模块，直接引它是 {@code package org.lwjgl.glfw does not exist}。
+     *       Minecraft 自己已经把键码导出在 {@link InputConstants} 里，不需要额外依赖；</li>
+     *   <li>输入类型用 {@link InputConstants.Type#KEYBOARD}，不是 26.2 的
+     *       {@code InputConstants.Type.KEYSYM} —— 26.3 把 {@code KEYSYM} / {@code SCANCODE}
+     *       合并成了 {@code KEYBOARD}（{@code Type} 现在只剩 {@code KEYBOARD} 与 {@code MOUSE}）。</li>
+     * </ul>
+     */
+    private static final int DEFAULT_TOGGLE_KEY = InputConstants.KEY_F6;
 
     private TranslatorConfig config;
     private TranslationService service;
@@ -41,7 +53,7 @@ public final class HxTranslateClient implements ClientModInitializer {
 
         KeyMapping toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.hxtranslate.toggle",
-                InputConstants.Type.KEYSYM,
+                InputConstants.Type.KEYBOARD,
                 DEFAULT_TOGGLE_KEY,
                 KeyMapping.Category.MULTIPLAYER));
 

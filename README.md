@@ -1,6 +1,6 @@
 # Hypixel 聊天翻译 (hx-chat-translator)
 
-面向 **Minecraft Java 版 26.2 + Fabric** 的纯客户端聊天翻译模组。调用 **DeepSeek API** 做 AI 翻译：
+面向 **Minecraft Java 版 26.3 + Fabric** 的纯客户端聊天翻译模组。调用 **DeepSeek API** 做 AI 翻译：
 
 - **别人打的英文 → 自动翻成中文**，作为一条附带消息显示在原消息下面；
 - **你打的中文 → 自动翻成英文再发出去**，服务器里的外国人看到的是正常英文；
@@ -18,23 +18,27 @@
 
 | 项目 | 版本 |
 | --- | --- |
-| Minecraft | **26.2**（2026-06-16 发布的正式版） |
-| Fabric Loader | **≥ 0.19.3** |
-| Fabric API | **0.160.0+26.2**（必须安装，模组依赖它的聊天事件） |
-| Java | **25**（26.2 强制要求，启动器会自动带上） |
+| Minecraft | **26.3**（2026-09-15 发布的正式版） |
+| Fabric Loader | **≥ 0.19.5** |
+| Fabric API | **0.160.5+26.3**（必须安装，模组依赖它的聊天事件） |
+| Java | **25**（26.3 强制要求，启动器会自动带上） |
 | 系统 | Windows / macOS / Linux 均可 |
+
+> **2.0.0 起不再支持 26.2**。游戏升到 26.3 后请用本版；
+> 还想继续玩 26.2 的话，用 [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)
+> （旧版 Release 一律保留）。
 
 ## 2. 安装
 
-1. 安装 **Fabric Loader ≥ 0.19.3**（[官方安装器](https://fabricmc.net/use/installer/)）。
+1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
-   `fabric-api-0.160.0+26.2.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.2)）。
-3. 把本模组 **`hx-chat-translator-<版本>+mc26.2-fabric.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
+   `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
+3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
 
-   文件名里的 `mc26.2` 是游戏版本、`fabric` 是模组加载器，和大多数模组一样。下载后**不需要改名**，直接丢进 `mods` 即可。
+   文件名里的 `mc26.3` 是游戏版本、`fabric` 是模组加载器，和大多数模组一样。下载后**不需要改名**，直接丢进 `mods` 即可。
 4. 启动游戏，进入 Hypixel。
 
 ## 3. 配置 DeepSeek API Key（必须做一次）
@@ -125,7 +129,7 @@
 | `includeOriginalInIncoming` | `false` | 译文里是否再带上原文 |
 | `minLatinLetters` | `2` | 至少几个拉丁字母才认为“像英文” |
 | `chineseRatioThreshold` | `0.4` | 正文里汉字占比达到多少就认为「本来就是中文」而跳过（见下方「为什么需要这个阈值」） |
-| `glossary` | 约 50 条 | Hypixel / Bed Wars 术语表，`缩写=含义`；会追加到提示词里，要求模型按含义翻译而不是保留 `obby`/`dia`/`u def` 这类英文缩写。清空即可关闭 |
+| `glossary` | 约 100 条 | Hypixel / Bed Wars 术语表，格式 `英文写法=中文含义`。**两个方向都用**：收到英文时要求模型按含义翻成中文（不要保留 `obby`/`dia`/`u def` 这类缩写）；你打中文时反过来当「中文说法 → 英文写法」的对照，让译文用英文服里真正在用的说法。清空即可关闭 |
 | `maxIncomingChars` | `240` | 超过这个长度不翻译 |
 | `maxOutgoingChars` | `256` | 译文最大长度（原版聊天框上限 256，超长会被服务器拒绝），超出会按词边界截断并加省略号。**只能调小**：调大也不会真的发出去，反而可能被服务器踢（配置会被自动夹到 256） |
 | `requestsPerMinute` | `60` | 每分钟最多请求次数（防刷屏烧钱）；超限时会在聊天栏提醒一次 |
@@ -194,7 +198,7 @@ v1.0.7 起再加了一道 **15 秒时间窗**：只有 15 秒内自己发过的�
 几个实现上的选择：
 
 - **为什么译文另起一行，而不是把原消息替换掉？** 翻译是异步的（几百毫秒到几秒），而聊天栏消息一旦显示就无法就地修改文字；另起一行最稳，也不会破坏服务器原来的颜色/点击事件。
-- **为什么不用 Mixin？** 26.2 的 Fabric API 已经提供了收发聊天的全部事件，模组**零 Mixin**，对游戏版本更新更耐受，也几乎不可能与其它模组冲突。
+- **为什么不用 Mixin？** 26.3 的 Fabric API 已经提供了收发聊天的全部事件，模组**零 Mixin**，对游戏版本更新更耐受，也几乎不可能与其它模组冲突。（26.2 → 26.3 这次升级只改了两处 API 调用，零 Mixin 的结构省掉了跟进字节码的麻烦。）
 - **HTTP 只用 `HttpURLConnection`**（`java.base` 模块），不依赖 `java.net.http`，避免 Mojang 精简版运行时缺少模块导致崩溃。
 - **为什么进来的消息要同时接 `CHAT` 和 `GAME` 两条事件？** 别删掉任何一条。正常服务器的玩家聊天走签名聊天（`CHAT`，能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**（`GAME`）下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。只接一条就会有一半场景失效。
 - **发送方向为什么要「取消原发送 → 异步翻译 → 自己重发」？** Fabric 的发送事件是同步回调，而网络请求要几百毫秒，不能在主线程里等；重发时必须走原版 `ClientPacketListener.sendChat`，让客户端自己重新签名。也因此必须有个 `programmaticSend` 开关把「自己发的」和「玩家发的」区分开，否则会无限递归。
@@ -281,6 +285,14 @@ v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 �
 如果还有不认识的缩写，直接往配置的 `glossary` 里加一条（例如 `"gapple=金苹果"`），
 然后 `/hxtranslate reload` 即可生效。
 
+**我打中文时，译文没用上 `obby` / `rush` / `u def` 这些缩写**
+v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成「中文说法 → 英文写法」交给模型，
+所以「我们有黑曜石，直接冲他家」会译成 `we have obby, rush their base`，而不是
+`we have black obsidian, charge their base`。想让它用某个说法，就往 `glossary` 里加一条
+`英文写法=中文说法`：**英文写在等号左边、中文写在右边**，中文那侧第一个括号之前的内容才算说法
+（括号里可以写补充说明，例如 `"obby=黑曜石（obsidian）"`），例如加 `"mid=中路"`。
+你后来自己加的词同样会被反查。
+
 **在 Hypixel 用会被封号吗？**
 本模组只做「读取聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏，属于常见的聊天辅助类客户端模组。但 Hypixel 的模组政策由服务器单方面解释，请自行阅读其 *Allowed Modifications* 并自行承担风险。
 
@@ -303,7 +315,7 @@ v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 �
 ```bash
 export JAVA_HOME=/path/to/jdk-25
 ./gradlew build
-# 产物: build/libs/hx-chat-translator-<版本>+mc26.2-fabric.jar
+# 产物: build/libs/hx-chat-translator-<版本>+mc26.3-fabric.jar
 ```
 
 只用到了 Fabric API（`fabric-message-api-v1` / `fabric-key-mapping-api-v1` / `fabric-command-api-v2` / `fabric-lifecycle-events-v1`），无需额外依赖。

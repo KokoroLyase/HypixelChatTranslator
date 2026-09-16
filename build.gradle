@@ -76,7 +76,7 @@ jar {
 	inputs.property "projectName", projectName
 
 	// 文件名带上游戏版本与模组加载器，和主流模组一致：
-	// hx-chat-translator-1.0.3+mc26.2-fabric.jar
+	// hx-chat-translator-2.0.0+mc26.3-fabric.jar
 	archiveFileName = "${project.archives_base_name}-${project.mod_version}+mc${project.minecraft_version}-fabric.jar"
 
 	from("LICENSE") {

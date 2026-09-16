@@ -4,6 +4,7 @@ import com.google.gson.JsonParser;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.DeepSeekClient;
 import com.isomeria.hxtranslate.core.Direction;
+import com.isomeria.hxtranslate.core.PromptGlossary;
 import com.isomeria.hxtranslate.core.TranslationService;
 import com.isomeria.hxtranslate.util.CommandMessage;
 import com.isomeria.hxtranslate.util.EchoMatcher;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,6 +58,7 @@ public class VerifyCore {
         v113ConfigDurability();
         v113ApiTextAndRequest();
         v113OwnMessageAndRules();
+        v114GlossaryBothDirections();
         httpSuccess();
         httpBaseUrls();
         httpErrors();
@@ -825,7 +828,7 @@ public class VerifyCore {
         Path dir = Files.createTempDirectory("hxtranslate-verify-");
         try {
             // ---- 1) v1.0.0 时代的配置：文件里**没有** configVersion（v1.0.1 起才写）----
-            //    Gson 会给「文件里没有的键」保留字段初始值，也就是当前版本号 6，
+            //    Gson 会给「文件里没有的键」保留字段初始值，也就是当前版本号，
             //    于是迁移第一行就判定「已是最新」直接返回 —— 模型名永远停在已下线的 deepseek-chat。
             JsonObject legacyJson = new JsonObject();
             legacyJson.addProperty("apiKey", "sk-legacy");
@@ -856,7 +859,8 @@ public class VerifyCore {
             check("旧配置的老提示词被换成了新默认值", legacy.incomingSystemPrompt.contains("Examples:"));
             checkEq("用户写的 API Key 原样保留", "sk-legacy", legacy.apiKey);
             check("迁移结果落盘（configVersion 已写进文件）",
-                    Files.readString(legacyFile, StandardCharsets.UTF_8).contains("\"configVersion\": 6"));
+                    Files.readString(legacyFile, StandardCharsets.UTF_8)
+                            .contains("\"configVersion\": " + TranslatorConfig.CURRENT_CONFIG_VERSION));
 
             // ---- 2) 坏 JSON：备份原件 + 给玩家看的原因，且绝不静默覆盖 ----
             Path brokenFile = dir.resolve("broken.json");
@@ -1162,6 +1166,123 @@ public class VerifyCore {
 
     // ------------------------------------------------------------------
 
+    /**
+     * v1.1.4：术语表开始服务于「中→英」方向（反查成「中文说法 -> 英文写法」），
+     * 以及配套的 v7 配置迁移。
+     *
+     * <p>渲染规则抽在 {@link PromptGlossary} 里，这里调用的是生产代码那一份实现。
+     */
+    private static void v114GlossaryBothDirections() {
+        System.out.println("== v1.1.4：术语表两个方向 ==");
+
+        // ---- 英→中：照旧原样列出条目，要求按含义翻成中文 ----
+        String toChinese = PromptGlossary.render(
+                List.of("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.INCOMING);
+        check("英→中方向带对照表标题", contains(toChinese, "术语与缩写对照表"));
+        check("英→中方向保留原始条目", contains(toChinese, "obby=黑曜石（obsidian）"));
+        check("英→中方向要求按含义翻译", contains(toChinese, "不要保留英文原样"));
+
+        // ---- 中→英：反查成「中文说法 -> 英文写法」，括号里的说明不进对照表 ----
+        String toEnglish = PromptGlossary.render(
+                List.of("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.OUTGOING);
+        check("中→英方向给出英文写法", contains(toEnglish, "黑曜石 -> obby"));
+        check("中→英方向去掉括号说明",
+                contains(toEnglish, "黑曜石 -> obby")
+                        && !contains(toEnglish, "（obsidian）") && !contains(toEnglish, "(obsidian)"));
+        check("中→英方向保留顿号写法", contains(toEnglish, "速攻、直接冲家 -> rush"));
+        check("中→英方向要求别硬套", contains(toEnglish, "do not force"));
+
+        // 一个条目里有多组对照：分号隔开，两组都要能反查
+        String multi = PromptGlossary.render(List.of("def=防守（defend）；\"u def\"=你来防守"), Direction.OUTGOING);
+        check("多组对照都进对照表",
+                contains(multi, "防守 -> def") && contains(multi, "你来防守 -> \"u def\""));
+
+        // 括号是半角时同样要截掉
+        check("半角括号也截掉", contains(PromptGlossary.render(List.of("dia=钻石(diamond)"), Direction.OUTGOING),
+                "钻石 -> dia"));
+
+        // ---- 异常输入：宁可少一段提示词，也不能让翻译请求本身出问题 ----
+        check("空术语表不注入", PromptGlossary.render(List.of(), Direction.OUTGOING) == null
+                && PromptGlossary.render(null, Direction.INCOMING) == null);
+        check("没有等号的条目被忽略",
+                PromptGlossary.render(List.of("这不是对照表"), Direction.OUTGOING) == null);
+        check("缺英文写法或中文说法的条目被忽略",
+                PromptGlossary.render(List.of("=只有右边", "onlyleft="), Direction.OUTGOING) == null);
+        check("坏条目不影响好条目",
+                contains(PromptGlossary.render(List.of("这不是对照表", "obby=黑曜石"), Direction.OUTGOING),
+                        "黑曜石 -> obby"));
+        check("术语表里的换行不会带进请求体",
+                !contains(PromptGlossary.render(List.of("obby=黑\n曜石"), Direction.OUTGOING), "\n曜"));
+        check("列表里有 null 也不炸",
+                contains(PromptGlossary.render(Arrays.asList(null, "obby=黑曜石"), Direction.OUTGOING),
+                        "黑曜石 -> obby"));
+        // 只数对照行（行首是汉字）；表头里也有一个 " -> "，不能拿它当条数
+        String manyTable = PromptGlossary.render(manyGlossaryEntries(), Direction.OUTGOING);
+        long capped = manyTable == null ? -1 : manyTable.lines().filter(line -> line.startsWith("词")).count();
+        check("反查条数有上限（用户写很长也不撑爆提示词） = " + capped,
+                capped == PromptGlossary.MAX_OUTGOING_PAIRS);
+
+        // ---- 默认术语表本身：新增的说法要能反查到英文写法 ----
+        TranslatorConfig defaults = new TranslatorConfig();
+        String defaultTable = PromptGlossary.render(defaults.glossary, Direction.OUTGOING);
+        check("默认术语表能反查出 fall back", contains(defaultTable, "撤、退回来 -> fall back"));
+        check("默认术语表能反查出 low hp", contains(defaultTable, "残血 -> low hp"));
+        check("默认术语表能反查出 side rush", contains(defaultTable, "侧翼速攻 -> side rush"));
+        check("默认术语表能反查出 obby", contains(defaultTable, "黑曜石 -> obby"));
+        // 反查是有上限的截断列表，所以「排在第几名」本身就是行为的一部分：
+        // 第一版上限设成 80、新词又追加在末尾，结果 low hp / side rush / fall back 全被截掉，
+        // 等于这次补词白补。这条用例专门守住「常用说法必须落在上限之内」。
+        check("默认术语表的常用说法没有被上限截掉",
+                List.of("残血 -> low hp", "侧翼速攻 -> side rush", "撤、退回来 -> fall back",
+                                "床已经没了 -> bed gone", "速度药水 -> speed pot", "等一下 -> hold on")
+                        .stream().allMatch(s -> contains(defaultTable, s)));
+        // 比上一条更强的规则：默认术语表要**整份**装得下，一条都不许被静默截掉。
+        // 只守住「某几个词还在」是不够的 —— 以后往默认表里加词、或把上限调小，
+        // 末尾那几条就会悄悄消失，而前一条用例照样是绿的（反向验证时就是这么漏过去的）。
+        // 对照表每一行长这样：{@code <中文说法> -> <英文写法>}（表头是英文，见 PromptGlossary）。
+        long rows = defaultTable == null ? -1
+                : defaultTable.lines().filter(line -> line.contains(" -> ")).count() - 1;
+        long entriesInDefaultGlossary = defaults.glossary.size();
+        check("默认术语表整份装得下（上限 " + PromptGlossary.MAX_OUTGOING_PAIRS
+                        + " 组，默认表 " + entriesInDefaultGlossary + " 条条目）",
+                rows <= PromptGlossary.MAX_OUTGOING_PAIRS
+                        && rows >= entriesInDefaultGlossary);
+
+        // ---- v7 迁移：补词不覆盖用户自定义，提示词只动仍是默认值的 ----
+        TranslatorConfig user = new TranslatorConfig();
+        user.configVersion = 6;
+        user.glossary = new ArrayList<>(List.of("obby=我的黑曜石叫法", "我的词=我的意思"));
+        user.outgoingSystemPrompt = "Translate into English, keep it short.";
+        user.applyMigrations();
+        checkEq("v7 后配置版本", TranslatorConfig.CURRENT_CONFIG_VERSION, user.configVersion);
+        checkEq("用户改过的 obby 条目保留", "obby=我的黑曜石叫法", user.glossary.get(0));
+        check("用户自己写的词保留", user.glossary.contains("我的词=我的意思"));
+        check("新默认词已补进用户的术语表", user.glossary.contains("side rush=侧翼速攻"));
+        checkEq("手写的发送方向提示词不被覆盖", "Translate into English, keep it short.",
+                user.outgoingSystemPrompt);
+
+        TranslatorConfig stock = new TranslatorConfig();
+        stock.configVersion = 6;
+        stock.outgoingSystemPrompt = new TranslatorConfig().outgoingSystemPrompt
+                .replace("\n            我们有黑曜石，直接冲他家 -> we have obby, rush their base"
+                        + "\n            他残血了，你上 -> he is low hp, go", "");
+        stock.applyMigrations();
+        check("仍是默认值的发送方向提示词被升级（补上 obsidian 示例）",
+                stock.outgoingSystemPrompt.contains("我们有黑曜石，直接冲他家 -> we have obby, rush their base"));
+        checkEq("升级不会把示例弄重复",
+                1L, stock.outgoingSystemPrompt.lines()
+                        .filter(line -> line.contains("we have obby, rush their base")).count());
+    }
+
+    /** 造一份超过反查上限的术语表，用来验证上限真的生效。 */
+    private static List<String> manyGlossaryEntries() {
+        List<String> entries = new ArrayList<>();
+        for (int i = 0; i < 120; i++) {
+            entries.add("word" + i + "=词" + i);
+        }
+        return entries;
+    }
+
     private static void httpSuccess() throws Exception {
         System.out.println("== DeepSeek 正常返回 ==");
         try (MockServer server = new MockServer()) {
@@ -1242,7 +1363,31 @@ public class VerifyCore {
             JsonObject outgoing = JsonParser.parseString(server.lastBody).getAsJsonObject();
             String outgoingPrompt = outgoing.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
             check("发送方向提示词提示了英文", outgoingPrompt.contains("English"));
-            check("发送方向不注入中文术语表", !outgoingPrompt.contains("obby=黑曜石"));
+            // v1.1.4：术语表从「只给接收方向」改成两个方向都用 —— 发送方向反查成
+            // 「中文说法 -> 英文写法」，否则玩家打「我有黑曜石」只能得到 black obsidian。
+            check("发送方向也注入术语表（反查成中文 -> 英文）",
+                    outgoingPrompt.contains("黑曜石 -> obby") && outgoingPrompt.contains("terminology reference"));
+            check("发送方向不注入英→中的原始条目", !outgoingPrompt.contains("obby=黑曜石"));
+        }
+
+        // 术语表为空（用户清空 = 关闭术语表）时两个方向都不该有术语表段落
+        try (MockServer server = new MockServer()) {
+            server.response = ok("translated");
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.glossary = new ArrayList<>();
+            DeepSeekClient client = new DeepSeekClient(config);
+
+            client.translate("Hello world", Direction.INCOMING);
+            String incomingPrompt = JsonParser.parseString(server.lastBody).getAsJsonObject()
+                    .getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
+            check("清空术语表后接收方向没有对照表", !incomingPrompt.contains("对照表"));
+
+            client.translate("你好", Direction.OUTGOING);
+            String outgoingPrompt = JsonParser.parseString(server.lastBody).getAsJsonObject()
+                    .getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
+            check("清空术语表后发送方向没有对照表", !outgoingPrompt.contains("terminology reference"));
         }
     }
 
@@ -1366,8 +1511,18 @@ public class VerifyCore {
 
     // ------------------------------------------------------------------
 
-    private static void check(String label, boolean condition) {
-        if (condition) {
+    /**
+     * 安全的「包含」判断：被检查的文本可能是 null。
+     *
+     * <p>用例要**抗自己的失败**（RELEASING §6）：断言里直接写 {@code render(...).contains(...)}，
+     * 一旦被测对象返回 null，抛出的 NPE 会让整个自检停在半路 —— 后面的用例一条都跑不到，
+     * 反向验证也看不出全貌。返回 null 本身就是要断言的情况之一，不该变成异常。
+     */
+    private static boolean contains(String haystack, String needle) {
+        return haystack != null && haystack.contains(needle);
+    }
+
+    private static void check(String label, boolean condition) {        if (condition) {
             passed++;
             System.out.println("  [OK]   " + label);
         } else {

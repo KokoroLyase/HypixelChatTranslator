@@ -1,0 +1,485 @@
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/9.5.1/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :
+Fabric Loom: 1.17.21
+
+> Task :clean
+> Task :compileJava
+> Task :processResources
+> Task :classes
+> Task :processIncludeJars
+> Task :jar
+> Task :sourcesJar
+> Task :assemble
+> Task :compileTestJava NO-SOURCE
+> Task :processTestResources NO-SOURCE
+> Task :testClasses UP-TO-DATE
+> Task :test NO-SOURCE
+> Task :validateAccessWidener NO-SOURCE
+> Task :compileVerifyJava
+> Task :processVerifyResources NO-SOURCE
+> Task :verifyClasses
+
+> Task :verifyCore
+== 语言判断 ==
+  [OK]   英文不算汉字
+  [OK]   中文算汉字
+  [OK]   中英混排算汉字
+  [OK]   日文假名不算汉字
+  [OK]   中文标点不算汉字
+  [OK]   拉丁字母数 = 5
+  [OK]   归一化 = hello world
+  [OK]   去双引号 = 你好
+  [OK]   去中文引号 = 你好
+  [OK]   无引号不变 = hello
+  [OK]   单个引号不处理 = "
+  [OK]   短文本不截断 = hello
+  [OK]   正好等于上限不截断 = abcde
+  [OK]   超长被截断到上限内: word word word…
+  [OK]   截断后带省略号
+  [OK]   在词边界切断 = word word word…
+  [OK]   连续无空格也能硬切
+  [OK]   纯中文占比 1.0 = 1.0
+  [OK]   纯英文占比 0.0 = 0.0
+  [OK]   带本地化队伍名的英文喊话占比很低
+  [OK]   中文击杀播报占比不高（所以不能只看占比）
+  [OK]   识别中文标点：句号
+  [OK]   识别中文标点：右角括号
+  [OK]   识别中文标点：全角问号
+  [OK]   英文标点不算中文标点
+  [OK]   取冒号后的正文 = rush mid
+  [OK]   没有冒号时用整条 = hello world
+== 命令拆解 ==
+  [OK]   私聊 head = msg Steve 
+  [OK]   私聊 message = 你好世界
+  [OK]   回复 head = r 
+  [OK]   回复 message = 你好
+  [OK]   队伍频 head = pc 
+  [OK]   队伍频 message = 集合
+  [OK]   大小写不敏感 head = MSG Steve 
+  [OK]   大小写不敏感 message = hi
+  [OK]   双空格 head = msg  Steve  
+  [OK]   双空格 message = 你好
+  [OK]   回复双空格 head = r   
+  [OK]   回复双空格 message = 你好
+  [OK]   未配置的命令不翻译
+  [OK]   没有正文时返回 null
+  [OK]   空命令返回 null
+  [OK]   null 返回 null
+  [OK]   只有命令名返回 null
+== Hypixel 聊天命令识别 ==
+  [OK]   /shout 致我们伟大的末地石建筑 head = shout 
+  [OK]   /shout 致我们伟大的末地石建筑 message = 致我们伟大的末地石建筑
+  [OK]   /shout 大家快来中路 head = shout 
+  [OK]   /shout 大家快来中路 message = 大家快来中路
+  [OK]   /ac 有人吗 head = ac 
+  [OK]   /ac 有人吗 message = 有人吗
+  [OK]   /achat 有人吗 head = achat 
+  [OK]   /achat 有人吗 message = 有人吗
+  [OK]   /pc 集合 head = pc 
+  [OK]   /pc 集合 message = 集合
+  [OK]   /pchat 集合 head = pchat 
+  [OK]   /pchat 集合 message = 集合
+  [OK]   /gc 大家好 head = gc 
+  [OK]   /gc 大家好 message = 大家好
+  [OK]   /gchat 大家好 head = gchat 
+  [OK]   /gchat 大家好 message = 大家好
+  [OK]   /oc 开会了 head = oc 
+  [OK]   /oc 开会了 message = 开会了
+  [OK]   /ochat 开会了 head = ochat 
+  [OK]   /ochat 开会了 message = 开会了
+  [OK]   /msg Steve 你好 head = msg Steve 
+  [OK]   /msg Steve 你好 message = 你好
+  [OK]   /message Steve 你好 head = message Steve 
+  [OK]   /message Steve 你好 message = 你好
+  [OK]   /tell Steve 你好 head = tell Steve 
+  [OK]   /tell Steve 你好 message = 你好
+  [OK]   /w Steve 你好 head = w Steve 
+  [OK]   /w Steve 你好 message = 你好
+  [OK]   /whisper Steve 你好 head = whisper Steve 
+  [OK]   /whisper Steve 你好 message = 你好
+  [OK]   /r 你好 head = r 
+  [OK]   /r 你好 message = 你好
+  [OK]   /reply 你好 head = reply 
+  [OK]   /reply 你好 message = 你好
+  [OK]   /party chat 大家好 head = party chat 
+  [OK]   /party chat 大家好 message = 大家好
+  [OK]   /guild chat 大家好 head = guild chat 
+  [OK]   /guild chat 大家好 message = 大家好
+  [OK]   不应翻译: /party invite 小明
+  [OK]   不应翻译: /p invite 小明
+  [OK]   不应翻译: /g kick 小明
+  [OK]   不应翻译: /guild warp
+  [OK]   不应翻译: /chat p
+  [OK]   不应翻译: /chat a
+  [OK]   不应翻译: /party chat
+  [OK]   /newchatcmd 大家快来这里集合 head = newchatcmd 
+  [OK]   /newchatcmd 大家快来这里集合 message = 大家快来这里集合
+  [OK]   不应翻译: /newcmd 小明
+  [OK]   不应翻译: /tp 小明
+  [OK]   不应翻译: /f add 小明明明
+  [OK]   不应翻译: /report Steve 他开挂骂人
+  [OK]   不应翻译: /visit 某某的家
+  [OK]   不应翻译: /ah 我的世界
+  [OK]   /shout rush mid head = shout 
+  [OK]   /shout rush mid message = rush mid
+  [OK]   /msg Steve hello there head = msg Steve 
+  [OK]   /msg Steve hello there message = hello there
+  [OK]   迁移报告有改动
+  [OK]   迁移后补上了 /shout
+  [OK]   迁移后补上了 /pc、/gc、/oc
+  [OK]   迁移后移除了误收录的 /chat
+  [OK]   迁移保留了原有条目 = 1
+  [OK]   迁移补齐了 guardedCommands
+  [OK]   迁移后版本号已更新 = 7
+  [OK]   迁移后的旧配置能识别 /shout
+== Hypixel 真实聊天样本回归 ==
+  [OK]   应翻译: [MVP+] [红队] Mguappe: rush
+  [OK]   应翻译: [MVP+] [红队] Enimoria2013: blue u will delete by yellow so stop kil us
+  [OK]   应翻译: [MVP+] [红队] Enimoria2013: yellow stop cheating! u Scaffold
+  [OK]   应翻译: [MVP+] [红队] Mguappe: u def obby dia
+  [OK]   应翻译: [MVP+] [红队] 小张: inc mid
+  [OK]   应翻译: Chunky_Monk: omw mid
+  [OK]   应翻译: +4 Bed Wars XP (Diamonds)
+  [OK]   应跳过: 团队 > Mguappe: 有人进攻！ (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: 你购买了金苹果 (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: +11 tokens! (时长奖励) (已经是中文（汉字占比 40%）)
+  [OK]   应跳过: isabellab2012被Venomed击杀。 (正文含成段中文)
+  [OK]   应跳过: hbs_」被NikeFig」逼入末路。 (正文含成段中文)
+  [OK]   应跳过: 2bi7因踩到了Enimoria2013的烧烤酱而跌落边缘。 (已经是中文（汉字占比 57%）)
+  [OK]   应跳过: Fxring被MikahManz07塞进了戴维·琼斯的箱子 (已经是中文（汉字占比 42%）)
+  [OK]   应跳过: [MVP+] [红队] 小张: 你们去中路 (已经是中文（汉字占比 100%）)
+  [OK]   +15 Bed Wars XP 命中默认 ignorePatterns
+  [OK]   自己的回显跳过
+== v1.0.3 回归：英文播报 + 喊话回显误判 ==
+  [OK]   应翻译: 3_0HY was thrown into a black hole by G19sy. 最终击杀！
+  [OK]   应翻译: [喊话] [黄队] [MVP+] Maceuser: green u have a real good range
+  [OK]   应翻译: [喊话] [红队] [MVP+] iFarmUnityPhoneFri: ur so sweaty bro chill! fr fr
+  [OK]   应跳过: bedsyuu被Mlable击杀 (正文含成段中文)
+  [OK]   应跳过: 9twHest被iFarmUnityPhoneFri践踏。 (正文含成段中文)
+  [OK]   应跳过: _Moriarty__受到了ku_jo232的冷淡。 (正文含成段中文)
+  [OK]   应跳过: the_Sponger_ 被Maceuser_化作月尘。 (正文含成段中文)
+  [OK]   应跳过: Green的床成为了iFarmUnityPhoneFri破坏的第1,569张床！ (正文含成段中文)
+  [OK]   应跳过: RiloLess被G19sy塞进了戴维·琼斯的箱子。 (已经是中文（汉字占比 50%）)
+  [OK]   应跳过: Blaineley被G19sy塞进了戴维·琼斯的箱子。 (已经是中文（汉字占比 48%）)
+  [OK]   应跳过: Dzeaimo被bedsyuu挪落深渊。 (正文含成段中文)
+  [OK]   应跳过: kallepekka1a被fabian1ooooo击杀。 (正文含成段中文)
+  [OK]   应跳过: kerimfx12被Im_Emma307吼了。 (正文含成段中文)
+  [OK]   应跳过: 床已被破坏 > (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: 队伍已被淘汰 > 蓝队 已被淘汰！ (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: 你购买了永久的铁链盔甲 (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: 绿宝石不足！还需要绿宝石x6! (已经是中文（汉字占比 92%）)
+  [OK]   发过 "u" 不会把别人的喊话误判成回显
+  [OK]   发过 "so" 不会把别人的喊话误判成回显
+  [OK]   发过 "hi" 不会把含 hi 的句子误判成回显
+  [OK]   发过 "go" 不会把别人的话误判成回显
+  [OK]   自己的喊话回显能认出来
+  [OK]   自己的私聊回显能认出来
+  [OK]   自己发的英文回显能认出来（v1.0.3 起英文也会被记住）
+  [OK]   服务器截断的长消息也能认出来
+  [OK]   英文信号词：英文句子 = 3
+  [OK]   英文信号词：玩家名不算 = 0
+  [OK]   英文信号词：整词匹配（im 不该命中 time/ime） = 0
+  [OK]   英文信号词：单字母不算 = 0
+  [OK]   最长汉字段：击杀 = 2
+  [OK]   最长汉字段：化作月尘 = 4
+  [OK]   v4 迁移补上了新术语（sweaty）
+  [OK]   v4 迁移保留了用户原有术语
+  [OK]   v4 迁移后 obby 没有重复 = 1
+  [OK]   限流默认值升到 60 = 60
+  [OK]   迁移后提示词带少样本示例
+  [OK]   用户自定义的限流值不被覆盖 = 25
+== v1.0.4 加固：格式代码 / 背压 / 限流 ==
+  [OK]   剔除颜色/格式代码 = [MVP+] Steve: inc mid
+  [OK]   没有代码时原样返回 = hello world
+  [OK]   结尾孤立的 § 保留 = abc§
+  [OK]   null 安全 = 
+  [OK]   应翻译: [喊话] [红队] [MVP+] Steve: green u have a real good range
+  [OK]   应跳过: 你购买了金苹果 (已经是中文（汉字占比 100%）)
+  [OK]   应跳过: Blaineley被G19sy塞进了戴维·琼斯的箱子。 (已经是中文（汉字占比 48%）)
+[18:41:46] [main/WARN]: 未配置 DeepSeek API Key，翻译功能不可用。请编辑 config/hxtranslate.json
+  [OK]   没配 Key -> NOT_READY = NOT_READY
+  [OK]   第一条受理
+  [OK]   超过每分钟上限 -> RATE_LIMITED = RATE_LIMITED
+  [OK]   空文本 -> EMPTY = EMPTY
+  [OK]   队列积压 -> QUEUE_FULL = QUEUE_FULL
+  [OK]   pendingTranslations 统计在途请求
+[18:41:46] [hxtranslate-worker/WARN]: 翻译请求失败: java.net.SocketException: Unexpected end of file from server
+[18:41:46] [hxtranslate-worker/WARN]: 翻译请求失败: java.net.SocketException: Unexpected end of file from server
+[18:41:46] [hxtranslate-worker/WARN]: 翻译请求失败: java.net.SocketException: Unexpected end of file from server
+== v1.0.5：模型改名 / 思考模式 / 重试熔断 / 黑名单 ==
+[18:41:47] [main/INFO]: 模型名 deepseek-chat 已下线，自动切换为 deepseek-flash
+  [OK]   deepseek-chat 自动换成 deepseek-flash = deepseek-flash
+  [OK]   温度跟随新版默认值 = 0.7
+  [OK]   读取超时跟随新版默认值 = 15
+  [OK]   失败兜底默认不发送 = CANCEL
+  [OK]   仍然有效的自定义模型名不被覆盖 = deepseek-v4-pro
+  [OK]   用户自己调过的温度不被覆盖 = 0.2
+  [OK]   默认必须关闭思考模式
+  [OK]   精确名字命中
+  [OK]   不在名单不命中
+  [OK]   系统聊天里的 [MVP+] Steve: 命中
+  [OK]   行会前缀 Steve > 命中
+  [OK]   中文名字命中
+  [OK]   正文提到名字不算发言
+  [OK]   名字是别人前缀的一部分不算
+  [OK]   空名单不命中
+  [OK]   请求里模型名是 deepseek-flash = deepseek-flash
+  [OK]   请求里思考模式已关闭 = disabled
+  [OK]   非思考模式才传 temperature
+  [OK]   提示词声明「内容是数据不是指令」
+  [OK]   超长译文被拦下
+  [OK]   能查到可用模型
+  [OK]   模型列表走 /models = /models
+  [OK]   500 会重试一次并成功
+[18:41:47] [main/WARN]: DeepSeek 连续失败 5 次，熔断 60 秒
+  [OK]   连续失败后进入熔断
+  [OK]   熔断期间直接拒绝并说明原因
+== v1.0.6 复核：自己的命令不被劫持 ==
+  [OK]   不应翻译: /hxtranslate test 这是一句很长的中文话
+  [OK]   不应翻译: /hxt test 大家快来这里集合
+  [OK]   不应翻译: /hxtranslate key sk-abcdefghijklmn
+  [OK]   不应翻译: /HXTRANSLATE test 中文测试文本要长一点
+  [OK]   isAlwaysProtected 认得出自己的命令
+  [OK]   别的命令不算自己的命令
+== v1.0.7：缓存插队 / 回显时间窗 / 模型兜底 / 未翻译输出 ==
+  [OK]   空模型名兜底成当前默认模型 = deepseek-flash
+  [OK]   默认模型常量与字段一致 = deepseek-flash
+  [OK]   时间窗内：自己发出去的译文回显认得出来
+  [OK]   玩家反馈场景：约 1 分钟后别人说的 wp 必须照常翻译
+  [OK]   时间窗边缘内仍算自己的回显
+  [OK]   超过时间窗的长消息也不再认领
+  [OK]   时钟回拨时宁可多翻一条，也不吞别人的话
+  [OK]   译文仍是中文 -> 判为失败
+  [OK]   英文译文里夹中文玩家名不算「没翻译」
+  [OK]   接收方向返回中文是正常的（不受这道校验影响）
+  [OK]   预热请求受理 = ACCEPTED
+  [OK]   预热请求完成（结果已进缓存）
+  [OK]   两条都拿到回调
+  [OK]   命中缓存的第二条不插队，仍然先发先回 = [先发(走网络), 后发(命中缓存)]
+  [OK]   两个工作线程都忙时仍可排队一条 = ACCEPTED
+  [OK]   队列积压 -> QUEUE_FULL = QUEUE_FULL
+  [OK]   被挡下的请求不消耗限流配额（只应记 3 条） = 3
+[18:41:49] [hxtranslate-worker/WARN]: 翻译请求失败: java.net.SocketException: Unexpected end of file from server
+[18:41:49] [hxtranslate-worker/WARN]: 翻译请求失败: java.net.SocketException: Unexpected end of file from server
+== v1.0.8 复核：不可信文本 / 代理对截断 / 缓存容量 / 熔断复位 ==
+  [OK]   清洗不可信文本：去掉 § 代码 = 翻译失败 请稍后重试
+  [OK]   清洗不可信文本：换行压成一行 = 第一行 第二行
+  [OK]   清洗不可信文本：回车与制表符也压掉 = a b
+  [OK]   清洗不可信文本：其余控制字符丢弃 = ab
+  [OK]   清洗不可信文本：null 安全 = 
+  [OK]   代理对截断：不产生孤立代理项
+  [OK]   代理对截断：只保留放得下的完整 emoji + 省略号 = 😀…
+  [OK]   代理对截断：中英混排也不产生孤立代理
+  [OK]   代理对截断：长度仍不超上限
+  [OK]   代理对截断：没超长时原样返回
+  [OK]   failureFallback 大小写不敏感 = SEND_ORIGINAL
+  [OK]   failureFallback 连字符也认（写错就静默不发，代价太大） = SEND_ORIGINAL
+  [OK]   failureFallback 写错时按 CANCEL 兜底 = CANCEL
+  [OK]   接口错误正文里的 § 被清洗
+  [OK]   接口错误正文里的换行被清洗
+  [OK]   接口错误正文清洗后仍带着真正的原因
+[18:41:50] [main/WARN]: DeepSeek 连续失败 5 次，熔断 60 秒
+  [OK]   连续失败后进入熔断
+  [OK]   复位后不再熔断
+  [OK]   复位后能立刻正常翻译
+  [OK]   17 条不同文本都翻译完成
+  [OK]   改小后的 cacheSize 立刻生效（第一条已被 LRU 挤掉，重新走了网络）
+== v1.1.1：玩家截图反馈 ==
+  [OK]   应跳过: Im_Bad_At_PKMN失足跌入虚空。 (正文含成段中文)
+  [OK]   玩家名里的 im/bad/at 不再算英文信号词 = 0
+  [OK]   应跳过: Im_Bad_At_PKMN被G19sy击杀。 (正文含成段中文)
+  [OK]   同一句话换成普通名字也照样跳过 = 0
+  [OK]   应翻译: Im_Bad_At_PKMN was thrown into the void by G19sy.
+  [OK]   应翻译: bad at the game, u def mid
+  [OK]   应跳过: 你购买了 Wood (已经是中文（汉字占比 50%）)
+  [OK]   应跳过: 铁锭不足！还需要铁锭x21! (已经是中文（汉字占比 90%）)
+  [OK]   应翻译: You earned 187 Bed Wars XP
+  [OK]   别人的 gg：名字对不上，不是我的消息（关键修复）
+  [OK]   别人的 gg：说一样的话也不是我的
+  [OK]   自己的 gg：名字对上才是我的
+  [OK]   名字比对大小写不敏感
+  [OK]   队伍/喊话前缀里的名字也能认出来
+  [OK]   To xxx 是自己发出的私聊
+  [OK]   别人私聊给我（From）不是我的消息
+  [OK]   认不出说话人时返回 null（调用方退回正文比对）
+  [OK]   拿不到本地名字时也返回 null（退回正文比对）
+  [OK]   服务器公告不误判成玩家发言
+  [OK]   说话人解析 = Steve
+== v1.1.2：服务器横幅不再翻译 ==
+  [OK]   横幅（分隔线 + 游戏名整块）被忽略
+  [OK]   单独一行游戏名被忽略
+  [OK]   大小写与无空格变体也命中
+  [OK]   纯分隔线被忽略
+  [OK]   别的分隔符也认（----- / ===== / ═════）
+  [OK]   u def 不受影响
+  [OK]   rush mid 不受影响
+  [OK]   短句 inc 不受影响
+  [OK]   点名单词不受影响
+  [OK]   玩家喊话不受影响
+  [OK]   Bed Wars 出现在句子里不受影响
+  [OK]   少一个分隔符就不算横幅
+  [OK]   v5 的默认列表补上了横幅规则 = 5
+  [OK]   迁移后 configVersion = 7
+  [OK]   用户自己加的规则保留
+  [OK]   补缺后共 6 条 = 6
+  [OK]   用户删过默认值就不动它 = 1
+  [OK]   自定义内容原样保留 = ^我的自定义规则
+== v1.1.3：配置不再丢 ==
+[18:41:50] [main/INFO]: 配置里没有 configVersion（v1.0.0 时代的文件），按 v1 执行迁移
+[18:41:50] [main/INFO]: 模型名 deepseek-chat 已下线，自动切换为 deepseek-flash
+[18:41:50] [main/INFO]: 配置已从 v1 升级到 v7（新增默认值已补齐，自定义内容保留）
+[18:41:50] [main/INFO]: 配置文件已自动补全新字段 [configVersion, apiBaseUrl, enableThinking, maxTokens, connectTimeoutSeconds, retryOnFailure, enabled, translateIncoming, translateOutgoing, translateCommandMessages, skipOwnEcho, failureFallback, blacklistedPlayers, showErrorsInChat, debugLog, incomingPrefix, outgoingPrefix, includeOriginalInIncoming, minLatinLetters, chineseRatioThreshold, maxIncomingChars, maxOutgoingChars, maxPendingTranslations, cacheSize, translateCommandArgs, guardedCommands, commandManagementKeywords, translateUnknownCommands, protectedCommands, outgoingSystemPrompt]（原有设置未改动）: /tmp/hxtranslate-verify-11758899411180397660/hxtranslate.json
+  [OK]   没有 configVersion 的旧配置：模型名换成当前的（否则每条请求 400） = deepseek-flash
+  [OK]   没有 configVersion 的旧配置：版本号升到当前 = 7
+  [OK]   旧配置的每分钟上限跟随新默认值 = 60
+  [OK]   旧配置的读取超时跟随新默认值 = 15
+  [OK]   旧配置的术语表被补齐
+  [OK]   旧配置补上了横幅规则 = 5
+  [OK]   旧配置的老提示词被换成了新默认值
+  [OK]   用户写的 API Key 原样保留 = sk-legacy
+  [OK]   迁移结果落盘（configVersion 已写进文件）
+[18:41:50] [main/ERROR]: 读取配置失败，将使用默认配置: com.google.gson.JsonSyntaxException: com.google.gson.stream.MalformedJsonException: Unterminated object at line 4 column 4 path $.glossary
+See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json
+[18:41:50] [main/ERROR]: 原文件已备份为 /tmp/hxtranslate-verify-11758899411180397660/broken.json.broken-20260916-184150，修好后可改回原名
+  [OK]   坏配置：给出给玩家看的警告（不是只写日志）
+  [OK]   坏配置：本次退回默认值
+  [OK]   坏配置：原文件一字未改 = {
+  "apiKey": "sk-USER-SECRET",
+  "glossary": ["我的词=意思"]
+  "debugLog": true
+}
+  [OK]   坏配置：生成了备份 = 1
+  [OK]   坏配置：备份内容就是原件（Key 还在） = {
+  "apiKey": "sk-USER-SECRET",
+  "glossary": ["我的词=意思"]
+  "debugLog": true
+}
+[18:41:50] [main/WARN]: 读取旧配置失败，本次按当前内容重写: com.google.gson.JsonSyntaxException: com.google.gson.stream.MalformedJsonException: Unterminated object at line 4 column 4 path $.glossary
+See https://github.com/google/gson/blob/main/Troubleshooting.md#malformed-json
+  [OK]   坏配置：保存之后备份仍在，内容可恢复 = {
+  "apiKey": "sk-USER-SECRET",
+  "glossary": ["我的词=意思"]
+  "debugLog": true
+}
+[18:41:50] [main/ERROR]: 读取配置失败，将使用默认配置: com.google.gson.JsonSyntaxException: java.lang.NumberFormatException: Expected an int but was 6.5 at line 1 column 22 path $.configVersion
+[18:41:50] [main/ERROR]: 原文件已备份为 /tmp/hxtranslate-verify-11758899411180397660/typo.json.broken-20260916-184150，修好后可改回原名
+  [OK]   数值笔误：有警告
+  [OK]   数值笔误：原件也备份了 = 1
+  [OK]   保存不会抹掉模组不认识的字段
+  [OK]   认识的字段照常写回 = sk-note
+  [OK]   原子写入成功
+  [OK]   原子写入内容正确 = {"hello":1}
+  [OK]   原子写入不留下临时文件
+  [OK]   maxOutgoingChars 上限夹到原版聊天框长度 = 256
+  [OK]   cacheSize 下限显式化 = 16
+  [OK]   手写的接收方向提示词不被覆盖 = 只翻译成中文，别啰嗦。
+  [OK]   手写的发送方向提示词不被覆盖 = Translate into natural English.
+  [OK]   老版默认提示词仍然会被升级到新默认值
+== v1.1.3：接口文本清洗与请求体 ==
+  [OK]   译文里的换行被清洗
+  [OK]   译文里的 § 代码被清洗
+  [OK]   清洗只是压成一行，内容还在 = 第一行 第二行 红字
+  [OK]   清洗后为空的译文判为失败
+  [OK]   超大响应被拒绝而不是打爆客户端
+  [OK]   模型名里的换行被清洗
+  [OK]   模型名里的颜色代码被清洗（只去掉接口带来的 §c）
+  [OK]   模型列表自己的高亮分隔符保留（§7 / §f 是本模组加的）
+  [OK]   思考模式开启时 thinking.type = enabled
+  [OK]   思考模式开启时不传 temperature（传了不生效）
+  [OK]   第一个方向完成
+  [OK]   第一个方向发了一次请求 = 6
+  [OK]   第二个方向完成
+  [OK]   换方向必须重新翻译（缓存按方向分开） = 7
+  [OK]   同方向重复完成
+  [OK]   同方向重复命中缓存，不再发请求 = 7
+== v1.1.3：自己的消息 / 忽略规则判定 ==
+  [OK]   To xxx: 仍然是自己发出的私聊
+  [OK]   以 To 开头的服务器提示不算自己的消息
+  [OK]   同一条提示仍然会被翻译
+  [OK]   忽略规则仍能命中 / 不误伤
+  [OK]   非法正则只跳过、不炸
+  [OK]   空/缺省列表安全
+== v1.1.4：术语表两个方向 ==
+  [OK]   英→中方向带对照表标题
+  [OK]   英→中方向保留原始条目
+  [OK]   英→中方向要求按含义翻译
+  [OK]   中→英方向给出英文写法
+  [OK]   中→英方向去掉括号说明
+  [OK]   中→英方向保留顿号写法
+  [OK]   中→英方向要求别硬套
+  [OK]   多组对照都进对照表
+  [OK]   半角括号也截掉
+  [OK]   空术语表不注入
+  [OK]   没有等号的条目被忽略
+  [OK]   缺英文写法或中文说法的条目被忽略
+  [OK]   坏条目不影响好条目
+  [OK]   术语表里的换行不会带进请求体
+  [OK]   列表里有 null 也不炸
+  [OK]   反查条数有上限（用户写很长也不撑爆提示词） = 120
+  [OK]   默认术语表能反查出 fall back
+  [OK]   默认术语表能反查出 low hp
+  [OK]   默认术语表能反查出 side rush
+  [OK]   默认术语表能反查出 obby
+  [OK]   默认术语表的常用说法没有被上限截掉
+  [OK]   默认术语表整份装得下（上限 120 组，默认表 99 条条目）
+  [OK]   v7 后配置版本 = 7
+  [OK]   用户改过的 obby 条目保留 = obby=我的黑曜石叫法
+  [OK]   用户自己写的词保留
+  [OK]   新默认词已补进用户的术语表
+  [OK]   手写的发送方向提示词不被覆盖 = Translate into English, keep it short.
+  [OK]   仍是默认值的发送方向提示词被升级（补上 obsidian 示例）
+  [OK]   升级不会把示例弄重复 = 1
+== DeepSeek 正常返回 ==
+  [OK]   请求成功
+  [OK]   译文 = 你好，世界
+  [OK]   请求路径 = /chat/completions
+  [OK]   鉴权头 = Bearer sk-test-key
+  [OK]   请求方法 = POST
+  [OK]   去掉模型加的引号
+== API 地址归一化 ==
+  [OK]   去掉结尾斜杠 = /chat/completions
+  [OK]   带 /v1 前缀 = /v1/chat/completions
+  [OK]   已是完整地址不重复拼接 = /v1/chat/completions
+== 错误处理 ==
+  [OK]   401 失败
+  [OK]   401 提示 Key 无效: API Key 无效或已过期 (401) 
+  [OK]   402 提示余额不足: DeepSeek 账户余额不足 (402) Insufficient Balance
+  [OK]   429 提示限流
+  [OK]   500 提示服务不可用
+  [OK]   空 choices 失败
+  [OK]   非 JSON 失败
+== 网络异常 ==
+[18:41:51] [main/WARN]: 翻译请求失败: java.net.ConnectException: Connection refused (connect failed)
+[18:41:52] [main/WARN]: 翻译请求失败: java.net.ConnectException: Connection refused (connect failed)
+  [OK]   连接失败不抛异常
+  [OK]   连接失败提示网络错误: 网络错误: ConnectException
+== 没有 Key ==
+  [OK]   没 Key 直接失败
+== 请求体 ==
+  [OK]   model = deepseek-chat
+  [OK]   stream=false
+  [OK]   temperature 存在
+  [OK]   max_tokens 存在
+  [OK]   消息条数 = 2
+  [OK]   system 角色 = system
+  [OK]   user 角色 = user
+  [OK]   user 内容 = Hello world
+  [OK]   system 提示词提示了中文方向
+  [OK]   术语表已注入
+  [OK]   术语表要求按含义翻译
+  [OK]   提示词说明了要保留 [红队] 这类前缀
+  [OK]   发送方向提示词提示了英文
+  [OK]   发送方向也注入术语表（反查成中文 -> 英文）
+  [OK]   发送方向不注入英→中的原始条目
+  [OK]   清空术语表后接收方向没有对照表
+  [OK]   清空术语表后发送方向没有对照表
+
+通过 397 项，失败 0 项
+
+> Task :check
+> Task :build
+
+BUILD SUCCESSFUL in 20s
+8 actionable tasks: 8 executed

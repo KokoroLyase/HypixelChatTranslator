@@ -33,7 +33,7 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 6;
+    public static final int CURRENT_CONFIG_VERSION = 7;
 
     /**
      * v1.0.0 的配置文件里<b>没有</b> {@code configVersion} 这个字段（v1.0.1 起才写），
@@ -89,6 +89,24 @@ public final class TranslatorConfig {
             "let's go mid",                       // v1.0.0
             "never produce mixed-language text"   // v1.0.1 / v1.0.2
     };
+
+    /**
+     * v1.1.3（配置 v6）的默认发送方向提示词尾部。
+     *
+     * <p>v7 给示例补了两组「中文 → 英文缩写」（术语表开始服务于中→英方向）。
+     * 判据是这段原文：它仍在，说明用户用的是默认提示词，可以直接升级；
+     * 不在了（用户自己改过），就一个字都不动。
+     */
+    private static final String OUTGOING_PROMPT_V6_TAIL = """
+            干得漂亮 -> wp
+            等我一下，马上到 -> wait for me, omw""";
+
+    /** v1.1.4（配置 v7）的默认发送方向提示词尾部。 */
+    private static final String OUTGOING_PROMPT_V7_TAIL = """
+            干得漂亮 -> wp
+            等我一下，马上到 -> wait for me, omw
+            我们有黑曜石，直接冲他家 -> we have obby, rush their base
+            他残血了，你上 -> he is low hp, go""";
 
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
@@ -243,8 +261,16 @@ public final class TranslatorConfig {
     /**
      * Hypixel / Bed Wars 术语与缩写对照表，格式 {@code 英文=中文含义}。
      *
-     * <p>会追加到「收到消息」的提示词里，要求模型按含义翻译而不是原样保留英文缩写。
-     * 清空这个列表即可关闭术语表。
+     * <p>会追加到<b>两个方向</b>的提示词里，但渲染方式不同（见
+     * {@link com.isomeria.hxtranslate.core.PromptGlossary}）：
+     * <ul>
+     *   <li>「英→中」：要求模型按含义翻成中文，而不是把 {@code obby} / {@code u def} 原样留下；</li>
+     *   <li>「中→英」：把条目反查成「中文说法 → 英文写法」，让模型用英文服里真正在用的缩写，
+     *       而不是 {@code black obsidian} 这种没人这么说的直译。</li>
+     * </ul>
+     *
+     * <p>因为要反查，条目请写成「英文在左、中文在右」；中文那侧取第一个括号之前的内容，
+     * 括号里可以写补充说明。清空这个列表即可关闭术语表。
      */
     public List<String> glossary = new ArrayList<>(List.of(
             "obby=黑曜石（obsidian）",
@@ -255,18 +281,33 @@ public final class TranslatorConfig {
             "mid=中路、中间的资源点",
             "gen=资源点、刷资源机（generator）",
             "rush=速攻、直接冲家",
+            "side rush=侧翼速攻",
             "bed=床（要破坏的目标）",
+            "bed gone=床已经没了",
+            "my bed=我的床",
+            "our bed=我们的床",
             "final=终杀（final kill）",
             "void=虚空",
             "kb=击退（knockback）",
             "pot=药水（potion）",
+            "pots=药水",
             "invis=隐身药水",
             "jump=跳跃药水",
+            "jump boost=跳跃药水",
             "speed=速度药水",
+            "speed pot=速度药水",
             "pearl=末影珍珠",
             "fb=火球（fireball）",
+            "fireball=火球",
             "gap=金苹果（golden apple）",
             "gaps=金苹果",
+            "hp=血量（health）",
+            "low hp=残血",
+            "fall back=撤、退回来",
+            "hold on=等一下",
+            "1 sec=等一下、马上",
+            "go left=走左路",
+            "go right=走右路",
             "sharp=锋利附魔",
             "prot=保护附魔",
             "scaffold=搭桥（多指作弊搭桥）",
@@ -296,10 +337,15 @@ public final class TranslatorConfig {
             "teamwipe=团灭对面",
             "defend=防守（同 def）",
             "gg=打得好",
+            "gg wp=打得好、干得漂亮",
             "wp=干得漂亮",
+            "nice=漂亮、干得好",
+            "close fight=差一点就赢了",
+            "op=太强了、超模",
             "afk=挂机",
             "brb=马上回来",
             "gtg=我要下了",
+            "gtg soon=马上要走",
             "omw=在路上",
             "ty=谢谢",
             "thx=谢谢",
@@ -311,9 +357,21 @@ public final class TranslatorConfig {
             "r=are（例如 \"r u ok\" = 你还好吗）",
             "y=是",
             "n=不",
+            "nvm=没事了、算了（never mind）",
+            "jk=开玩笑的（just kidding）",
+            "ik=我知道（I know）",
+            "idk=不知道（I don't know）",
+            "wtf=什么鬼",
+            "ily=爱你",
             "1v1=单挑",
             "team=队伍",
-            "island=岛"
+            "island=岛",
+            "bridge=搭桥、桥",
+            "skybridge=空中搭桥",
+            "falling=掉下去了",
+            "stack=一组、一组物品",
+            "one more=再来一个",
+            "last hit=最后一下"
     ));
 
     /**
@@ -438,6 +496,8 @@ public final class TranslatorConfig {
             我们床没了，先撤 -> we lost our bed, fall back
             干得漂亮 -> wp
             等我一下，马上到 -> wait for me, omw
+            我们有黑曜石，直接冲他家 -> we have obby, rush their base
+            他残血了，你上 -> he is low hp, go
 
             Rules:
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
@@ -725,20 +785,7 @@ public final class TranslatorConfig {
                 glossary = new ArrayList<>();
             }
             // 术语表只补缺，用户自己加的词不会被删
-            for (String entry : defaults.glossary) {
-                String key = glossaryKey(entry);
-                boolean exists = false;
-                for (String existing : glossary) {
-                    if (glossaryKey(existing).equals(key)) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (!exists) {
-                    glossary.add(entry);
-                    changed = true;
-                }
-            }
+            changed |= backfillGlossary(defaults);
             // 只有还是老默认值时才调整，用户自己改过的数字不动
             if (requestsPerMinute == 40) {
                 requestsPerMinute = defaults.requestsPerMinute;
@@ -790,7 +837,52 @@ public final class TranslatorConfig {
             }
         }
 
+        // ---- v6 -> v7：术语表补词（含英文服的常用说法），发送方向开始用术语表 ----
+        if (from < 7) {
+            // 补词和 v4 一样「只补缺」：用户自己加的词、自己改过的条目都留着。
+            // 他会想反查自己写的那些词 —— 这正是 v7 的功能。
+            changed |= backfillGlossary(defaults);
+
+            // 发送方向的默认提示词新增了一组「中文 -> 英文缩写」的示例（配合术语表反查）。
+            // 判据用「v6 默认提示词的原文片段」而不是整段比对：用户照着默认值只改了一个词，
+            // 我们就不该把他那一句换掉。判据不成立时一个字都不动。
+            if (outgoingSystemPrompt != null
+                    && outgoingSystemPrompt.contains(OUTGOING_PROMPT_V6_TAIL)
+                    && !outgoingSystemPrompt.contains("直接冲他家")) {
+                outgoingSystemPrompt = outgoingSystemPrompt.replace(
+                        OUTGOING_PROMPT_V6_TAIL, OUTGOING_PROMPT_V7_TAIL);
+                changed = true;
+            }
+        }
+
         configVersion = CURRENT_CONFIG_VERSION;
+        return changed;
+    }
+
+    /**
+     * 把当前默认术语表里缺的条目补进去（同名条目已存在就不动，用户改过的写法保留）。
+     *
+     * @return 是否真的补了词
+     */
+    private boolean backfillGlossary(TranslatorConfig defaults) {
+        if (glossary == null) {
+            glossary = new ArrayList<>();
+        }
+        boolean changed = false;
+        for (String entry : defaults.glossary) {
+            String key = glossaryKey(entry);
+            boolean exists = false;
+            for (String existing : glossary) {
+                if (glossaryKey(existing).equals(key)) {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists) {
+                glossary.add(entry);
+                changed = true;
+            }
+        }
         return changed;
     }
 

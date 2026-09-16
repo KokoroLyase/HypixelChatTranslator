@@ -5,6 +5,12 @@ build/
 out/
 classes/
 
+# 本机构建用的临时目录（便携 JDK / Gradle 缓存 / TMPDIR），绝不入库
+/.jdk/
+/.gradle-home/
+/.tmp/
+/.build-log.txt
+
 # 本地配置（含 DeepSeek API Key），绝对不要提交
 config/hxtranslate.json
 run/config/hxtranslate.json

@@ -1,5 +1,185 @@
 # 更新日志
 
+## v2.0.0 — 2026-09-16
+
+两件事：**跟上 Minecraft 26.3**（并就此结束对 26.2 的支持），以及**让术语表对「中→英」方向也生效**。
+
+按 RELEASING §1，换 MC 版本属于不兼容变更，所以版本号从 `1.x` 直接进到 `2.0.0`。
+发布产物文件名随之变成 `hx-chat-translator-2.0.0+mc26.3-fabric.jar`。
+
+### 迁移：Minecraft 26.2 → 26.3（不再支持 26.2）
+
+26.3 于 2026-09-15 发布。这一版把整条工具链与适配点都搬了过去：
+
+| 项目 | 26.2（v1.1.3 及之前） | 26.3（本版） |
+| --- | --- | --- |
+| Minecraft | 26.2 | **26.3** |
+| Fabric Loader | ≥ 0.19.3 | **≥ 0.19.5** |
+| Fabric API | 0.160.0+26.2 | **0.160.5+26.3** |
+| Java | 25 | **25**（26.3 的 `javaVersion` 仍是 25，无需升级 JDK） |
+| 产物文件名 | `...-1.1.3+mc26.2-fabric.jar` | `...-2.0.0+mc26.3-fabric.jar` |
+
+**26.3 的两处破坏性 API 变更**（都是编译期就能撞上的，逐一说明改法，避免下次升级再踩）：
+
+1. **`org.lwjgl.glfw` 不再直接可见**。原来 `DEFAULT_TOGGLE_KEY = GLFW.GLFW_KEY_F6` 直接引了
+   LWJGL 的 glfw 模块，26.3 下编译报 `package org.lwjgl.glfw does not exist`。
+   → 改用 Minecraft 自己导出的 `InputConstants.KEY_F6`。语义完全一样，还少一层对外部
+   LWJGL 模块的隐式依赖（原来能编过只是 Loom 顺手把它放上了编译类路径）。
+2. **`InputConstants.Type` 合并了键盘类型**。26.2 是 `KEYSYM` / `SCANCODE` / `MOUSE`
+   三个值，26.3 只剩 `KEYBOARD` 与 `MOUSE`。原代码的 `InputConstants.Type.KEYSYM`
+   因此编译失败 → 换成 `InputConstants.Type.KEYBOARD`。
+
+除此之外**代码零改动**：聊天收发事件（`ClientReceiveMessageEvents` / `ClientSendMessageEvents`）、
+`KeyMapping.Category.MULTIPLAYER`、`ClientPacketListener.sendChat/sendCommand`、
+`GameProfile` / `ChatType.Bound` / `PlayerChatMessage` 的签名在 26.3 下都与 26.2 一致。
+模组**零 Mixin**的结构在这里再次体现价值：升级只需要跟 API，不需要跟字节码。
+
+`fabric.mod.json` 的依赖声明同步收紧为 `minecraft ~26.3` / `fabricloader >=0.19.5`。
+**装到 26.2 上会被加载器直接拒绝**——这是有意的：本版不再兼容 26.2，想继续玩 26.2 请用
+[v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)（它仍在 Releases 里）。
+
+### 修复：术语表只服务「英→中」，自己打中文时完全没用上
+
+`glossary` 的条目写成 `英文写法=中文含义`，天然是「英→中」的查表方向；`DeepSeekClient`
+里那段拼装代码又带着一句「**必须按含义翻译成中文**」，而且只在 `direction.toChinese()` 时执行。
+于是发送方向（中→英）既拿不到术语表，也没有任何地方告诉模型英文服里怎么说这些话：
+
+| 你打的 | 术语表里有 | 实际可能译成 |
+| --- | --- | --- |
+| 我们有黑曜石，直接冲他家 | `obby=黑曜石`、`rush=速攻、直接冲家` | `we have black obsidian, charge their base` |
+| 他残血了，你上 | `hp=血量`、`low hp=残血` | `he has little health left, you go` |
+| 侧翼速攻 | `side rush=侧翼速攻` | `attack from the side` |
+
+语法都对，但英文服里没人这么说 —— 而「让外国人看到正常英文」正是这个模组存在的理由。
+更别扭的是 `outgoingSystemPrompt` 里本来就写着「欢迎用 `def`/`inc`/`obby`/`gg` 这类缩写」，
+却没有给它任何缩写清单，只能靠模型自己发挥。
+
+→ 术语表按方向渲染（新文件 `core/PromptGlossary.java`，纯函数、可离线测试）：
+
+- **英→中**：和以前一样原样列出条目，要求按含义翻成中文；
+- **中→英**：把条目**反查**成「中文说法 → 英文写法」再交给模型，并明确要求
+  「列表里有就用列表里的写法，没有就用最自然的英文，别硬套」——
+  避免模型为了凑术语表把一句正常中文译得不像人话。
+
+反查时只取中文那侧**第一个括号之前**的内容：括号里通常是给模型看的补充说明
+（`黑曜石（obsidian）`、`防守（defend）`），写进对照表只会干扰。
+一个条目里的多组对照（`def=防守（defend）；"u def"=你来防守`）会拆成两条。
+渲染失败、条目里混进换行或 `§`、用户把术语表改成没有 `=` 的自由格式，都在这一层收口：
+最坏的结果是「这段提示词不带术语表」，不会让翻译请求本身出错。
+
+### 新增：术语表补词（约 70 → 约 100 条），并新增两组发送方向示例
+
+补的都是英文服里真在用的说法，主要补「中文 → 英文」这一侧缺的：`hp` / `low hp` / `nvm` /
+`idk` / `op` / `wtf` / `nice` / `close fight` / `hold on` / `1 sec` / `fall back` /
+`go left` / `go right` / `my bed` / `our bed` / `side rush` / `bridge` / `falling` /
+`skybridge` / `one more` / `last hit` / `stack` / `jk` / `ik` / `ily` / `pots` /
+`jump boost` / `speed pot` / `fireball` / `bed gone` / `gg wp`。
+
+`outgoingSystemPrompt` 的少样本示例补了两组（`我们有黑曜石，直接冲他家 -> we have obby, rush their base`、
+`他残血了，你上 -> he is low hp, go`），配合反查对照表一起说明「缩写该出现在译文里」。
+
+### 兼容性
+
+- **环境要求**：MC 26.3 / Fabric Loader ≥ 0.19.5 / Fabric API 0.160.5+26.3 / Java 25；
+  **不再支持 26.2**（加载器会按 `minecraft ~26.3` 拒绝加载）；
+- 升级时 `configVersion` 6 → 7：**只补缺**。术语表里同名的条目（`obby=...`）按你自己写的保留，
+  你新加的词也留着——反查会对它们同样生效；提示词只在原文里仍有 v6 默认尾部时才升级；
+- 你的 `apiKey`、忽略规则、命令名单、自定义提示词都不受影响；
+- 配置文件路径与结构不变，不需要手动改任何东西（26.2 → 26.3 的升级不会动配置）。
+
+### 测试
+
+`./gradlew clean build` 全绿：离线自检 **397 项通过、0 失败**，产物
+`hx-chat-translator-2.0.0+mc26.3-fabric.jar`（`fabric.mod.json` 里的 `minecraft` / `fabricloader`
+已核验为 `~26.3` / `>=0.19.5`）。
+
+`tools/VerifyCore.java` 新增 `v114GlossaryBothDirections`：术语表两个方向的渲染、括号截断、
+多组对照拆分、空表/坏条目/null/超长表的边界、反查条数上限，以及 v7 迁移
+（补词不覆盖、手写提示词不动、默认提示词升级且不重复）。
+原来的断言「发送方向不注入中文术语表」按新行为改成「反查成中文 → 英文」。
+
+按 RELEASING §6 做了两轮反向验证，各查出一个真问题（都已修）：
+
+1. **砍掉发送方向的术语表**：用例一次报出全部 15 处失败，但第一条就抛 NPE ——
+   断言里写的是 `render(...).contains(...)`，被测对象返回 null 就变成异常，
+   后面 381 项一条都跑不到，反向验证也看不出全貌。改成 null 安全的 `contains(...)` 后才
+   「一次报全」。这正是 §6 要求「用例要抗自己的失败」的原因。
+2. **把反查上限改回 80**：397 项竟然全绿。因为我当时只断言了「这几个常用词还在」，
+   而它们已经被前置到上限之内 —— 换句话说，「默认术语表整份装得下」这条规则当时无人守护，
+   以后再加词或调小上限就会重演静默截断。已补断言：对照表行数必须 ≤ 上限，且 ≥ 默认条目数。
+
+**26.3 的适配没有自动化覆盖**：`ChatTranslator` 与 `HxTranslateClient` 依赖 Minecraft 类，
+不在离线自检里（自检只覆盖不依赖游戏的纯逻辑），那两处改动只能靠编译期报错 + 代码审查定位。
+另外**提示词的实际翻译效果也没有自动化覆盖**（需要真实 API Key，无法离线跑），
+这条只能靠上面的结构约束与人工观察。
+
+### 修复：术语表只服务「英→中」，自己打中文时完全没用上
+
+`glossary` 的条目写成 `英文写法=中文含义`，天然是「英→中」的查表方向；`DeepSeekClient`
+里那段拼装代码又带着一句「**必须按含义翻译成中文**」，而且只在 `direction.toChinese()` 时执行。
+于是发送方向（中→英）既拿不到术语表，也没有任何地方告诉模型英文服里怎么说这些话：
+
+| 你打的 | 术语表里有 | 实际可能译成 |
+| --- | --- | --- |
+| 我们有黑曜石，直接冲他家 | `obby=黑曜石`、`rush=速攻、直接冲家` | `we have black obsidian, charge their base` |
+| 他残血了，你上 | `hp=血量`、`low hp=残血` | `he has little health left, you go` |
+| 侧翼速攻 | `side rush=侧翼速攻` | `attack from the side` |
+
+语法都对，但英文服里没人这么说 —— 而「让外国人看到正常英文」正是这个模组存在的理由。
+更别扭的是 `outgoingSystemPrompt` 里本来就写着「欢迎用 `def`/`inc`/`obby`/`gg` 这类缩写」，
+却没有给它任何缩写清单，只能靠模型自己发挥。
+
+→ 术语表按方向渲染（新文件 `core/PromptGlossary.java`，纯函数、可离线测试）：
+
+- **英→中**：和以前一样原样列出条目，要求按含义翻成中文；
+- **中→英**：把条目**反查**成「中文说法 → 英文写法」再交给模型，并明确要求
+  「列表里有就用列表里的写法，没有就用最自然的英文，别硬套」——
+  避免模型为了凑术语表把一句正常中文译得不像人话。
+
+反查时只取中文那侧**第一个括号之前**的内容：括号里通常是给模型看的补充说明
+（`黑曜石（obsidian）`、`防守（defend）`），写进对照表只会干扰。
+一个条目里的多组对照（`def=防守（defend）；"u def"=你来防守`）会拆成两条。
+渲染失败、条目里混进换行或 `§`、用户把术语表改成没有 `=` 的自由格式，都在这一层收口：
+最坏的结果是「这段提示词不带术语表」，不会让翻译请求本身出错。
+
+### 新增：术语表补词（约 70 → 约 100 条），并新增两组发送方向示例
+
+补的都是英文服里真在用的说法，主要补「中文 → 英文」这一侧缺的：`hp` / `low hp` / `nvm` /
+`idk` / `op` / `wtf` / `nice` / `close fight` / `hold on` / `1 sec` / `fall back` /
+`go left` / `go right` / `my bed` / `our bed` / `side rush` / `bridge` / `falling` /
+`skybridge` / `one more` / `last hit` / `stack` / `jk` / `ik` / `ily` / `pots` /
+`jump boost` / `speed pot` / `fireball` / `bed gone` / `gg wp`。
+
+`outgoingSystemPrompt` 的少样本示例补了两组（`我们有黑曜石，直接冲他家 -> we have obby, rush their base`、
+`他残血了，你上 -> he is low hp, go`），配合反查对照表一起说明「缩写该出现在译文里」。
+
+### 兼容性
+
+- 升级时 `configVersion` 6 → 7：**只补缺**。术语表里同名的条目（`obby=...`）按你自己写的保留，
+  你新加的词也留着——反查会对它们同样生效；提示词只在原文里仍有 v6 默认尾部时才升级；
+- 你的 `apiKey`、忽略规则、命令名单、自定义提示词都不受影响；
+- MC 26.2 / Loader ≥ 0.19.3 / Fabric API 0.160.0+26.2 / Java 25 的要求不变。
+
+### 测试
+
+`tools/VerifyCore.java` 新增 `v114GlossaryBothDirections`：术语表两个方向的渲染、括号截断、
+多组对照拆分、空表/坏条目/null/超长表的边界、反查条数上限，以及 v7 迁移
+（补词不覆盖、手写提示词不动、默认提示词升级且不重复）。
+原来的断言「发送方向不注入中文术语表」按新行为改成「反查成中文 → 英文」。
+
+按 RELEASING §6 做了两轮反向验证，各查出一个真问题（都已修）：
+
+1. **砍掉发送方向的术语表**：用例一次报出全部 15 处失败，但第一条就抛 NPE ——
+   断言里写的是 `render(...).contains(...)`，被测对象返回 null 就变成异常，
+   后面 381 项一条都跑不到，反向验证也看不出全貌。改成 null 安全的 `contains(...)` 后才
+   「一次报全」。这正是 §6 要求「用例要抗自己的失败」的原因。
+2. **把反查上限改回 80**：397 项竟然全绿。因为我当时只断言了「这几个常用词还在」，
+   而它们已经被前置到上限之内 —— 换句话说，「默认术语表整份装得下」这条规则当时无人守护，
+   以后再加词或调小上限就会重演静默截断。已补断言：对照表行数必须 ≤ 上限，且 ≥ 默认条目数。
+
+`ChatTranslator` 之外的改动都在离线自检覆盖范围内；**提示词的实际翻译效果没有自动化覆盖**
+（需要真实 API Key，无法离线跑），这条只能靠上面的结构约束与人工观察。
+
 ## v1.1.3 — 2026-09-15
 
 这一版**不加功能、不改翻译行为**，专门修「模组会悄悄弄丢你的东西」和「模组会悄悄不干活」这两类问题。
