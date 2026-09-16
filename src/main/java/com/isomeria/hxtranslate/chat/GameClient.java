@@ -21,7 +21,7 @@ import java.util.UUID;
  * 所有决策逻辑都在 {@link ChatTranslator} 里，因此那部分可以被离线自检完整驱动。
  *
  * <p><b>为什么值得这么切</b>：以前「注册了哪几条事件」和「发送时怎么判定连接」都埋在
- * 逻辑里，只能靠人工看代码。现在注册清单集中在 {@link #register(KeyMapping)} 一处，
+ * 逻辑里，只能靠人工看代码。现在注册清单集中在 {@link #register()} 一处，
  * 而发送/连接/身份判定在自检里有假实现对照着测。
  */
 public final class GameClient implements ChatClientPort {

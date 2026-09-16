@@ -10,7 +10,8 @@
 
 > 仓库：<https://github.com/KokoroLyase/HypixelChatTranslator>
 > 下载：见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)（也可以点 [Actions](https://github.com/KokoroLyase/HypixelChatTranslator/actions) 里任意一次成功构建，在 Artifacts 里下载）。
-> 更新记录：[CHANGELOG.md](CHANGELOG.md)
+> 更新记录：[CHANGELOG.md](CHANGELOG.md)。
+> 第一次用请**直接看 [最新版 Release](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)** —— 下面一律以最新版为准。
 
 ---
 
@@ -114,6 +115,7 @@
 | `model` | `deepseek-flash` | 模型。**2026-09 起 DeepSeek 只提供 `deepseek-flash` 与 `deepseek-v4-pro`**，旧的 `deepseek-chat` 已下线（升级时会自动改过来） |
 | `enableThinking` | `false` | 是否开启思考模式。新模型**默认开启**，聊天翻译既慢又贵，所以默认显式关闭 |
 | `temperature` | `0.7` | 采样温度；翻译要稳定，别调太高（思考模式下该参数不生效） |
+| `maxTokens` | `512` | 模型单次最多输出多少 token。聊天译文很短，默认值很宽松；**调小可能导致译文被截断**，调大也不会让译文变长（译文另有 256 字符上限） |
 | `retryOnFailure` | `true` | 429/5xx/网络抖动时自动重试一次；连续失败 5 次后熔断 60 秒 |
 | `enabled` | `true` | 总开关 |
 | `translateIncoming` | `true` | 翻译收到的英文 |
@@ -243,6 +245,13 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 > 这里说的"失败"包括全部 5 种情况：没配 Key、翻译失败、译文仍是中文、**被限流**、**队列积压**。
 > 早期版本里最后两种会把中文原文直接发出去，v1.0.8 起统一。
 
+**物品栏上方一直显示「⏳ 翻译中…」，然后再没下文 / 打了中文什么都没发生**
+这是 **v2.0.x 的一个 bug，v2.1.0 已修复**：模组的日志出口引用了入口类，等于「打一行日志」
+也要去加载 Fabric 的加载器 API；万一加载失败，翻译线程会直接死掉且**不报任何错**
+（连 `/hxtranslate status` 里的失败计数都不会涨）。
+**先确认模组是 v2.1.0 或更新**；如果升级后仍然复现，请按 [Bug 模板](.github/ISSUE_TEMPLATE/bug_report.md)
+贴出 `/hxtranslate status` 与 `debug on` 的输出，那能直接定位到具体分支。
+
 **服务器里出现的消息太多，翻译刷屏 / 太费钱**
 把“收到的消息翻译”关掉：`/hxtranslate incoming off`，或调低 `requestsPerMinute`、往 `ignorePatterns` 里加正则。
 
@@ -256,6 +265,12 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 - 提示「命中 ignorePatterns」→ 你的忽略正则把它挡了。
 
 > 历史 bug（均已修复，请确保用最新版）：
+> - v2.0.0：仍是**不兼容变更** —— 换到 **Minecraft 26.3** 并结束对 26.2 的支持；
+>   还在玩 26.2 的话要用 [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)；
+> - v2.0.x：`glossary` 术语表只对「收到的英文」生效，你自己打中文时一个字都没用上（「我们有黑曜石」
+>   会译成 `we have black obsidian` 而不是 `we have obby`）→ **v2.0.0 起两个方向都用**；
+> - v2.0.x：日志出口引用了模组入口类，等于「打一行日志」也要加载 Fabric 的加载器 API。
+>   万一加载不到，模组会**静默卡在「⏳ 翻译中…」**、消息收不到反应，连统计都不计数 → **v2.1.0 修复**；
 > - v1.0.0：带本地化 `[红队]` 前缀的英文喊话被误判成中文 → **v1.0.1 修复**；
 > - v1.0.1：`/shout` 等命令不在名单里 → **v1.0.2 修复**；
 > - v1.0.2：回显判断用「子串包含」，发过 `u`、`so` 这种短词后别人的喊话会被误当成自己的回显丢弃 → **v1.0.3 修复**；
