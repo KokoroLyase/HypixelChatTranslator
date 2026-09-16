@@ -120,23 +120,18 @@ public final class TranslationService {
 
         String key = direction.name() + '|' + LangUtils.normalizeKey(text);
 
-        // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
-        // 免得延迟滚雪球、内存也跟着涨。
+        // 缓存查找必须排在背压**之前**（v2.2.3 调整顺序）。
         //
-        // 这一步必须排在限流之前：被背压挡下的请求根本没有发出去，
-        // 却先把每分钟的配额吃掉，等于让后面的消息替它买单。
-        ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
-        if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
-            if (config.debugLog) {
-                Log.LOGGER.info("[queue-full] 丢弃 {}", text);
-            }
-            return SubmitResult.QUEUE_FULL;
-        }
-
+        // 原因：缓存命中是唯一「零网络、可立即完成」的出路 —— 它不需要接口，也不占限流配额。
+        // 以前先查背压，于是接口变慢、队列积压时，连「这句我刚才已经翻过」的免费消息
+        // 也会被当成「接口变慢」拒绝（默认 failureFallback=CANCEL 下直接不发出去）。
+        // 顺序调换只影响「缓存命中 + 队列满」这一种组合，发送顺序语义不变：
+        // 命中缓存仍然走下面同一个执行队列（见那里的注释）。
         String cached;
         synchronized (this) {
             cached = cache.get(key);
         }
+        ThreadPoolExecutor pool = direction == Direction.OUTGOING ? outgoingExecutor : incomingExecutor;
         if (cached != null) {
             if (config.debugLog) {
                 Log.LOGGER.info("[cache] {} {}", direction.label(), text);
@@ -155,6 +150,18 @@ public final class TranslationService {
                 }
             });
             return SubmitResult.ACCEPTED;
+        }
+
+        // 背压：接口变慢时消息会堆在队列里，越堆越晚。超过阈值就先不接了，
+        // 免得延迟滚雪球、内存也跟着涨。
+        //
+        // 这一步必须排在限流之前：被背压挡下的请求根本没有发出去，
+        // 却先把每分钟的配额吃掉，等于让后面的消息替它买单。
+        if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
+            if (config.debugLog) {
+                Log.LOGGER.info("[queue-full] 丢弃 {}", text);
+            }
+            return SubmitResult.QUEUE_FULL;
         }
 
         if (!tryAcquireRateLimit()) {

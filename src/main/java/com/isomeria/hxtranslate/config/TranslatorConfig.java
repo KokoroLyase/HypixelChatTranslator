@@ -153,7 +153,9 @@ public final class TranslatorConfig {
             干得漂亮 -> wp
             等我一下，马上到 -> wait for me, omw
             我们有黑曜石，直接冲他家 -> we have obby, rush their base
-            他残血了，你上 -> he is low hp, go""";
+            他残血了，你上 -> he is low hp, go
+            小明你来防守 -> xiaoming you def
+            ok 我来了 -> ok im coming""";
 
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
@@ -378,7 +380,7 @@ public final class TranslatorConfig {
             "fr fr=说真的、真的（fr 同理）",
             "bro=兄弟",
             "camp=龟缩、蹲点",
-            "carry=带飞、carry 全场",
+            "carry=带飞、带队赢",
             "clutch=极限翻盘",
             "trap=陷阱",
             "gapple=金苹果",
@@ -424,6 +426,10 @@ public final class TranslatorConfig {
             "skybridge=空中搭桥",
             "falling=掉下去了",
             "stack=一组、一组物品",
+            // v2.2.3 试过补 iron=铁、铁装 / wool=羊毛 / glass=玻璃，A/B 实测后**撤回**：
+            // 「我们有铁装」在加上 iron 之后从 `we have iron armor` 退化成 `we have iron` ——
+            // 多给一个词反而让模型偷懒，而 wool/glass 也没有跑出可证实的收益。
+            // 记在这里是为了避免以后有人再"顺手补一下"。
             "one more=再来一个",
             "last hit=最后一下"
     ));
@@ -513,6 +519,10 @@ public final class TranslatorConfig {
 
             Style:
             - Output natural, casual Chinese that a Chinese Minecraft player would actually type in chat.
+            - There must be no English word left untranslated in the output. Anything that has a
+              natural Chinese equivalent gets translated: watchdog -> 看门狗, hacker -> 外挂,
+              reach -> 攻击距离, kb -> 击退, clutch -> 极限翻盘. Only keep a word in English when it
+              is genuinely untranslatable in chat (a player name, or a game title such as "Bed Wars").
             - Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the
               English abbreviation: obby -> 黑曜石, dia -> 钻石, u def -> 你来防守, inc -> 有人进攻,
               mid -> 中路, sweaty -> 太拼了, chill -> 冷静点, fr fr -> 说真的, gg -> 打得不错.
@@ -541,7 +551,13 @@ public final class TranslatorConfig {
             - Common Hypixel / Bed Wars abbreviations are welcome when they are unambiguous
               ("def", "inc", "mid", "obby", "dia", "gg", "wp", "omw", "ty"), but never mix Chinese
               characters into the English output.
-            - Keep player names, numbers and coordinates unchanged.
+            - Keep player names, numbers and coordinates unchanged — with one exception:
+              a Chinese player name must be written in pinyin / Roman letters
+              (user IDs are ASCII, so a Chinese character shows up as garbage for other players).
+              Never drop a player name the player actually typed.
+            - Mixed Chinese and English input must still come out as all English:
+              translate the Chinese parts and keep the English parts.
+            - You must never keep any Chinese character in the output, not even in a name.
             - Do not add greetings, emojis, explanations or punctuation noise.
 
             Examples:
@@ -552,11 +568,14 @@ public final class TranslatorConfig {
             等我一下，马上到 -> wait for me, omw
             我们有黑曜石，直接冲他家 -> we have obby, rush their base
             他残血了，你上 -> he is low hp, go
+            小明你来防守 -> xiaoming you def
+            ok 我来了 -> ok im coming
 
             Rules:
             - Translate only. Do NOT answer, explain, comment on or continue the conversation.
             - Do NOT add quotes, prefixes, emojis or any extra text.
-            - If the text is already English, output it unchanged.
+            - Only when the whole message is already English may you output it unchanged;
+              if it contains any Chinese, the output must be fully English.
             Output only the English translation.""";
 
     // ------------------------------------------------------------------

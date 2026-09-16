@@ -70,6 +70,7 @@ public class VerifyCore {
         v222RegexSafety();
         v222InputHygiene();
         v222NoExceptionNamesToPlayers();
+        v223PromptClarity();
         v222SecondPassFixes();
         v214AuditFixes();
         versionConsistency();
@@ -533,14 +534,18 @@ public class VerifyCore {
             DeepSeekClient client = new DeepSeekClient(config);
             server.response = ok("你好世界");
             DeepSeekClient.Result unchanged = client.translate("你好世界", Direction.OUTGOING);
-            check("译文仍是中文 -> 判为失败", !unchanged.ok() && unchanged.error().contains("仍有汉字"));
+            check("译文仍是中文 -> 判为失败",
+                    !unchanged.ok() && unchanged.error().contains("还有汉字"));
 
             // v2.1.4 起判据是「一个汉字都不许有」，所以夹着中文玩家名的译文同样按失败处理。
             // 取舍理由见 DeepSeekClient.parseResponse 的注释；半中半英的完整用例在 v214AuditFixes。
             server.response = ok("find 小明 to play");
             DeepSeekClient.Result withName = client.translate("找小明一起玩", Direction.OUTGOING);
             check("英文译文里夹中文玩家名 -> 也判为失败（宁可不发，也不把汉字送进英文服）",
-                    !withName.ok() && withName.error().contains("仍有汉字"));
+                    !withName.ok() && withName.error().contains("还有汉字"));
+            // 失败文案要能让玩家自救（v2.2.3）：说清最可能的原因与下一步
+            check("闸门失败文案给出了原因与下一步: " + withName.error(),
+                    withName.error().contains("中文玩家名") && withName.error().contains("重发"));
 
             server.response = ok("find xiaoming to play");
             check("模型把中文玩家名转成拼音 -> 正常放行",
@@ -1916,6 +1921,7 @@ public class VerifyCore {
     private static void v222RegexSafety() throws Exception {
         System.out.println("== v2.2.2：用户正则的灾难性回溯防护 ==");
         LangUtils.resetRegexCircuit(); // 用例之间互不影响
+        String worstA = "a".repeat(239) + "!";
 
         // 先确认默认正则本身是安全的（别把默认值也一起熔断了）
         TranslatorConfig defaults = new TranslatorConfig();
@@ -1950,9 +1956,18 @@ public class VerifyCore {
 
         // 一条坏正则不能把同批的其它规则一起废掉
         List<Pattern> mixed = LangUtils.compilePatterns(
-                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
-        check("同批里的好正则仍然生效（坏的那条被单独跳过）",
+                List.of("^\\+\\d+ .*(XP|Coins|Tokens)", "(.*a){20}$"), null);
+        check("同批里的好正则仍然生效（坏的那条被单独跳过，顺序无关）",
                 LangUtils.matchesAny("+25 SkyWars XP", mixed));
+
+        // 偶发卡顿不该累积成停用：中间成功一次就把疑似计数清掉
+        LangUtils.resetRegexCircuit();
+        List<Pattern> mostlyFine = LangUtils.compilePatterns(
+                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
+        LangUtils.matchesAny(worst, mostlyFine);
+        LangUtils.matchesAny("+25 SkyWars XP", mostlyFine);
+        LangUtils.matchesAny(worst, mostlyFine);
+        checkEq("中间成功过就不会被累积停用", 0, LangUtils.disabledRegexCount());
 
         // reload 会重新编译出新的 Pattern 实例：熔断按「正则文本」记，坏正则不能复活
         List<Pattern> recompiled = LangUtils.compilePatterns(List.of("(.*a){20}$"), null);
@@ -1961,14 +1976,48 @@ public class VerifyCore {
         LangUtils.resetRegexCircuit();
         checkEq("resetRegexCircuit 之后熔断名单清空", 0, LangUtils.disabledRegexCount());
 
-        // 安全的正则不受影响
-        List<Pattern> fine = LangUtils.compilePatterns(List.of("^\\+\\d+ .*(XP|Coins|Tokens)"), null);
-        check("普通正则照常命中", LangUtils.matchesAny("+25 SkyWars XP", fine));
-        check("普通正则照常不命中", !LangUtils.matchesAny("hello everyone", fine));
 
         // 空/空白/null 正则条目仍然被忽略（老行为不能改坏）
         checkEq("空正则条目被跳过", 1, LangUtils.compilePatterns(
                 Arrays.asList(null, "", "   ", "abc"), null).size());
+
+        // ---- v2.2.3：缓存命中不能被背压误拒 ----
+        // 缓存命中是唯一「零网络、立即完成」的出路（不占限流配额）。以前背压检查排在缓存查找
+        // **之前**，于是接口变慢时连「这句我刚翻过」的免费消息也会被拒（默认 CANCEL 下直接不发）。
+        try (MockServer server = new MockServer()) {
+            server.response = ok("u def");
+            TranslatorConfig cfg = new TranslatorConfig();
+            cfg.apiKey = "sk-test";
+            cfg.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            cfg.httpTimeoutSeconds = 5;
+            cfg.maxPendingTranslations = 1; // 队列只留 1 个位置，方便堆满
+            TranslationService service = new TranslationService(cfg);
+            try {
+                // 先翻一次，让它进缓存（阻塞式，确定性）
+                var first = service.translateBlocking("你来防守", Direction.OUTGOING);
+                check("第一次翻译成功并进入缓存", first.ok());
+
+                // 堆满队列：提交两条慢请求（server.delayMs 让它占住工作线程）
+                server.delayMs = 3000;
+                service.submit("第一条占用", Direction.OUTGOING, (ok, t, e) -> { });
+                service.submit("第二条排队", Direction.OUTGOING, (ok, t, e) -> { });
+
+                // 现在队列已满：命中缓存的请求仍然必须被受理
+                TranslationService.SubmitResult cachedResult =
+                        service.submit("你来防守", Direction.OUTGOING, (ok, t, e) -> { });
+                checkEq("队列满时缓存命中仍然受理（不再误报「接口变慢」）",
+                        TranslationService.SubmitResult.ACCEPTED, cachedResult);
+
+                // 对照：没命中缓存的请求在队列满时仍然要被拒绝（背压本身不能被改坏）
+                TranslationService.SubmitResult fresh =
+                        service.submit("这条没缓存过", Direction.OUTGOING, (ok, t, e) -> { });
+                checkEq("队列满时未命中的请求仍然被背压拒绝",
+                        TranslationService.SubmitResult.QUEUE_FULL, fresh);
+            } finally {
+                server.delayMs = 0;
+                service.shutdown();
+            }
+        }
     }
 
     /**
@@ -2063,6 +2112,74 @@ public class VerifyCore {
     }
 
     /**
+     * v2.2.3：提示词里那些「没有明说、靠模型猜」的地方。
+     *
+     * <p>起因是一次真实 API 基线审读发现的**结构性冲突**：
+     * 发送方向提示词要求 {@code Keep player names ... unchanged}，而 v2.2.0 的闸门要求
+     * 「译文里一个汉字都不许有」。对含中文玩家名的输入，模型照规则保留汉字就会被闸门拦下
+     * （消息发不出去），转成拼音才过 —— 而提示词里**从来没有要求过转拼音**，
+     * 于是同一句「小明你来防守」有时得到 `xiaoming you def`（过）、有时名字被整个丢掉。
+     *
+     * <p>修法只做「补规则」，一个字都不动现有的 7 行少样本示例 —— 那几行是模型「照抄范式」
+     * 的主要来源（实测同一句重复多次译文稳定一致），动它等于动高频输出的字面结果。
+     * 下面这两条断言分别守住「规则补上了」与「示例没被顺手改掉」。
+     */
+    private static void v223PromptClarity() {
+        System.out.println("== v2.2.3：提示词补规则（不动少样本示例）==");
+        TranslatorConfig defaults = new TranslatorConfig();
+        String outgoing = defaults.outgoingSystemPrompt;
+        String incoming = defaults.incomingSystemPrompt;
+        if (outgoing == null || incoming == null) {
+            fail("配置里的提示词为 null");
+            return;
+        }
+
+        // ---- 1) 中文玩家名必须转写成拼音/拉丁（这是「keep names unchanged」的唯一例外）----
+        check("发送方向提示词要求中文名转写成拼音/拉丁字母",
+                outgoing.contains("pinyin") && outgoing.contains("Roman letters"));
+        check("发送方向提示词说明了为什么（用户 ID 只认 ASCII，汉字对别人是乱码）",
+                outgoing.contains("user IDs are ASCII"));
+        check("发送方向提示词明确「不得保留任何汉字」（与闸门口径一致）",
+                outgoing.contains("must never keep any Chinese character"));
+
+        // ---- 2) 中英混排：整句都要变成英文 ----
+        check("发送方向提示词要求中英混排时整句输出都是英文",
+                outgoing.contains("Mixed Chinese and English input must still come out as all English"));
+
+        // ---- 3) 「已经是英文就原样返回」这条不能诱导模型原样吐回中文 ----
+        check("发送方向提示词限定「原样返回」只适用于整条都是英文",
+                outgoing.contains("Only when the whole message is already English"));
+
+        // ---- 4) 少样本示例必须逐行未变（防止「顺手改了示例」这种最难发现的回归）----
+        String[] expectedExamples = {
+                "你来防守 -> u def",
+                "中路有人进攻 -> inc mid",
+                "我们床没了，先撤 -> we lost our bed, fall back",
+                "干得漂亮 -> wp",
+                "等我一下，马上到 -> wait for me, omw",
+                "我们有黑曜石，直接冲他家 -> we have obby, rush their base",
+                "他残血了，你上 -> he is low hp, go",
+                "小明你来防守 -> xiaoming you def",
+                "ok 我来了 -> ok im coming",
+        };
+        for (String example : expectedExamples) {
+            check("少样本示例逐行保留：" + example, outgoing.contains(example));
+        }
+        long exampleLines = outgoing.lines()
+                .filter(line -> line.contains(" -> ") && !line.contains("Chinese phrasing"))
+                .count();
+        checkEq("发送方向的少样本示例行数符合预期（9 行：7 条原有 + 2 条新增）",
+                (long) expectedExamples.length, exampleLines);
+
+        // ---- 5) 接收方向不能出现「中文译文里夹英文」的诱导 ----
+        // 实测反例：Killed by a hacker, watchdog didnt ban him lol
+        //          -> 被外挂杀了，watchdog 居然没封他，笑里（英文词原样留下）
+        check("接收方向提示词要求译文里不要保留英文单词",
+                incoming.contains("no English word left untranslated")
+                        || incoming.contains("Do not leave English words"));
+    }
+
+    /**
      * 结构性门禁：生产代码里不允许再把「Java 异常类名」拼进给玩家看的文案里。
      *
      * <p>这条用例的由来：v2.2.1 统一网络错误文案时**漏了一处** catch（{@code readBody}），
@@ -2133,15 +2250,6 @@ public class VerifyCore {
         check("恢复后同一条正则重新参与匹配（不会一次超时就永久失效）",
                 !LangUtils.matchesAny("hello", evil));
 
-        // ---- 3) 偶发卡顿不该累积成停用：成功一次就清掉疑似计数 ----
-        LangUtils.resetRegexCircuit();
-        List<Pattern> mostlyFine = LangUtils.compilePatterns(
-                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
-        LangUtils.matchesAny(worst, mostlyFine);          // 第一条超时 -> 记 1 次疑似
-        LangUtils.matchesAny("+25 SkyWars XP", mostlyFine); // 走完一轮且命中 -> 清计数
-        LangUtils.matchesAny(worst, mostlyFine);          // 再超时也只算第 1 次
-        checkEq("中间成功过就不会被累积停用", 0, LangUtils.disabledRegexCount());
-
         // ---- 4) 回显归一化对称：模型译文带 § 时仍要能认出自己的回显 ----
         // 实测（v2.2.2 修的就是这条）：模型偶尔会回一个**末尾**带 § 的译文
         // （sanitizeOneLine 只处理「§ + 后一个字符」，末尾孤立的 § 会原样留下并被发出去）。
@@ -2184,9 +2292,10 @@ public class VerifyCore {
         check("中文说法含箭头时两条都保留（不再静默合并后写的那条）",
                 contains(arrowTable, "a -> b -> aaa") && contains(arrowTable, "c -> d -> bbb"));
         // 同一个中文说法写两遍仍然只留第一条（这是去重本身的功能，不能被上面那条改坏）
+        // 注意 checkEq 用 equals 比较：int 与 long 必须显式统一类型，否则 Integer(1).equals(Long(1)) 恒假
         String sameGloss = PromptGlossary.render(List.of("aaa=x -> y", "bbb=x -> y"), Direction.OUTGOING);
-        checkEq("同一个中文说法仍然只保留一条", 1, PromptGlossary.outgoingPairCount(
-                List.of("aaa=x -> y", "bbb=x -> y")));
+        checkEq("同一个中文说法仍然只保留一条", 1,
+                PromptGlossary.outgoingPairCount(List.of("aaa=x -> y", "bbb=x -> y")));
         check("同中文说法保留的是先写的那条", contains(sameGloss, "x -> y -> aaa"));
     }
 

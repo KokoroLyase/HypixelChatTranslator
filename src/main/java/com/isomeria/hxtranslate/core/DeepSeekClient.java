@@ -443,7 +443,11 @@ public final class DeepSeekClient {
             // 失败时玩家得到明确提示、内容不丢（↑ 可找回），比悄悄把中文送进英文服好；
             // 而且实测模型通常会把中文名转成拼音（小明 -> xiaoming），正常路径不受影响。
             if (!direction.toChinese() && LangUtils.containsHan(content)) {
-                return Result.failure("模型没有译成英文（返回的仍有汉字）");
+                // 文案要能让玩家自救（v2.2.3）：以前只说「返回的仍有汉字」，
+                // 玩家不知道该怎么办。实测最常见的两种原因是中文玩家名被原样保留、以及
+                // 模型把口语原样吐回来 —— 换个人称/改个说法重发就能过。
+                return Result.failure("模型没有译成英文（译文里还有汉字，可能是中文玩家名没转拼音）"
+                        + "，换个说法重发试试");
             }
             return Result.success(content);
         } catch (RuntimeException e) {
@@ -460,9 +464,11 @@ public final class DeepSeekClient {
         return switch (status) {
             case 400 -> Result.failure("请求被拒绝 (400)，通常是模型名不对；"
                     + "当前模型 §f" + config.model + "§c，可改成 deepseek-flash。" + detail);
-            case 401 -> Result.failure("API Key 无效或已过期 (401) " + detail);
-            case 402 -> Result.failure("DeepSeek 账户余额不足 (402) " + detail);
-            case 429 -> Result.retryableFailure("请求过于频繁，被限流 (429) " + detail);
+            // 401/402/429 都补上「下一步」（v2.2.3）：这三条以前只说「出错了」，
+            // 而玩家看完最需要知道的就是该做什么 —— 对照 400 那条本来就给了动作。
+            case 401 -> Result.failure("API Key 无效或已过期 (401)。用 §f/hxtranslate key <你的Key>§c 重新设置。" + detail);
+            case 402 -> Result.failure("DeepSeek 账户余额不足 (402)，需要去 platform.deepseek.com 充值。" + detail);
+            case 429 -> Result.retryableFailure("请求过于频繁被限流 (429)，可调大配置里的 §frequestsPerMinute§c。" + detail);
             case 500, 502, 503, 504 -> Result.retryableFailure("DeepSeek 服务暂时不可用 (" + status + ") " + detail);
             default -> Result.failure("HTTP " + status + " " + detail);
         };

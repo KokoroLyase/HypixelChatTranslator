@@ -216,8 +216,8 @@ public final class ChatTranslator {
             }
             case QUEUE_FULL -> {
                 skipIncoming("翻译队列积压", text);
-                warnThrottled("翻译请求积压超过 " + config.maxPendingTranslations
-                        + " 条（接口变慢了），已跳过部分消息。");
+                warnThrottled("接口变慢，排队中的翻译超过 " + config.maxPendingTranslations
+                        + " 条，部分消息被先跳过（会自动恢复；持续出现可调大 §fmaxPendingTranslations§c）。");
             }
             case EMPTY -> skipIncoming("空消息", text);
         }
@@ -616,7 +616,9 @@ public final class ChatTranslator {
         if (!sent) {
             // 具体失败原因（异常类型/消息）由实现打在日志里，这里只告诉玩家「没发出去」。
             // 同 fallbackToOriginal：这条也绝不静默，否则玩家会以为已经发出去了。
-            notifyFallback("发送失败，这条内容没有发出去。");
+            // 「按 ↑ 可找回」不能省（v2.2.3 补）：玩家看到「没发出去」的第一反应是
+            // 「我打的字呢？」—— 同一个降级出口的另一条路径本来就写了这句，这里漏了。
+            notifyFallback("发送失败，这条内容没有发出去（按 ↑ 可找回刚才的内容）。");
         }
         return sent;
     }
