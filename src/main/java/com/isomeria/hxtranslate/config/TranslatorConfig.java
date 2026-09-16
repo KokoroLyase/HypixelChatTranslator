@@ -45,6 +45,22 @@ public final class TranslatorConfig {
     public static final int MIN_CACHE_SIZE = 16;
 
     /**
+     * {@code cacheSize} 的实际上限（v2.2.2 新增）。
+     *
+     * <p>它是缓存 Map 的容量上限，写成超大值就等于无界缓存 —— 每条译文都留着，
+     * 长时间游玩内存只涨不落。1 万条对聊天翻译早已远超够用（按每条 100 字符算约 1 MB）。
+     */
+    public static final int MAX_CACHE_SIZE_LIMIT = 10_000;
+
+    /**
+     * {@code maxTokens} 的实际上限（v2.2.2 新增）。
+     *
+     * <p>译文另有 256 字符的硬上限，所以单次输出根本用不到几万 token；
+     * 夹这个上限只是防「手滑多打几位」把每次请求的账单抬高。
+     */
+    public static final int MAX_TOKENS_LIMIT = 8_192;
+
+    /**
      * v2.2.0 及更早的默认读取超时（秒）。
      *
      * <p>用来判断用户有没有动过这个值：等于它就说明还是默认值，v2.2.1 才会把默认值调到 30
@@ -603,7 +619,19 @@ public final class TranslatorConfig {
             loaded.migrate(path);
             loaded.fillMissingFields(json, path);
             return loaded;
-        } catch (IOException | JsonSyntaxException e) {
+        } catch (IOException | RuntimeException e) {
+            // v2.2.2：这里必须接 RuntimeException，不能只接 JsonSyntaxException。
+            //
+            // 实测：配置文件里给 **double** 字段填了非数字字符串（`{"temperature":"hot"}`）时，
+            // gson 抛的是 NumberFormatException —— 它是 RuntimeException，与 JsonSyntaxException
+            // 是兄弟不是父子，所以原来那句 catch 接不住，异常直接逃出 load()。
+            // 而 load() 是在 HxTranslateClient.onInitializeClient() 里调用的 ——
+            // 后果是**游戏一启动就崩**，而且备份、退回默认值、「配置坏了」的提示全都来不及做。
+            // int 字段没这个问题（收字符串会走 JsonSyntaxException），只有两个 double 字段漏了。
+            //
+            // 多接一个 RuntimeException 不会掩盖真 bug：走到这里说明「文件读不出来」，
+            // 与其它坏配置（少逗号、类型写错、写成 6.5）走完全同一条路 ——
+            // 整份备份原件 + 退回默认值 + 在游戏内告知原因。
             Path backup = backupBrokenFile(path);
             Log.LOGGER.error("读取配置失败，将使用默认配置: {}", e.toString());
             if (backup != null) {
@@ -626,8 +654,17 @@ public final class TranslatorConfig {
     }
 
     /** 给玩家看的失败说明：说清「这次按默认跑」和「原件在哪」。 */
-    private static String describeLoadFailure(Exception e, Path backup) {
-        String reason = (e instanceof JsonSyntaxException) ? "JSON 语法有误" : "文件读取失败";
+    private static String describeLoadFailure(Throwable e, Path backup) {
+        // 分三类给原因：JSON 语法错、字段类型/取值不对、其它读取失败。
+        // 第二种（v2.2.2 起会走到这里）玩家最容易犯：手改配置时把数字写成了字符串。
+        String reason;
+        if (e instanceof JsonSyntaxException) {
+            reason = "JSON 语法有误";
+        } else if (e instanceof NumberFormatException) {
+            reason = "有数值字段写成了非数字";
+        } else {
+            reason = "文件读取失败";
+        }
         if (backup == null) {
             return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
                     + "原文件未被改动，修好后执行 /hxtranslate reload。";
@@ -1089,6 +1126,17 @@ public final class TranslatorConfig {
 
     /** 修正明显不合理的值，避免用户手改配置后崩溃或一直失败。 */
     public void normalize() {
+        // 版本号先夹紧（v2.2.2）：写成一个超大值（例如手滑多打几位）会让 applyMigrations()
+        // 的「已经是最新版」判定命中，于是**静默跳过全部迁移**，而且这个值会被写回文件 ——
+        // 「以后任何版本都不再迁移」，与当年 VERSION_WITHOUT_FIELD 修掉的是同一个失败模式的镜像。
+        // 夹到 [1, 当前版本]：比当前版本大的一律当成当前版本（迁移按需补缺，不会覆盖自定义内容）。
+        if (configVersion < VERSION_WITHOUT_FIELD) {
+            configVersion = VERSION_WITHOUT_FIELD;
+        } else if (configVersion > CURRENT_CONFIG_VERSION) {
+            Log.LOGGER.warn("配置里的 configVersion={} 超出已知版本（当前 {}），按当前版本处理",
+                    configVersion, CURRENT_CONFIG_VERSION);
+            configVersion = CURRENT_CONFIG_VERSION;
+        }
         if (apiBaseUrl == null || apiBaseUrl.isBlank()) {
             apiBaseUrl = "https://api.deepseek.com";
         }
@@ -1105,10 +1153,14 @@ public final class TranslatorConfig {
         maxPendingTranslations = Math.max(1, maxPendingTranslations);
         // 下限显式写出来：以前这个 16 藏在 TranslationService 里，配置写 0 也关不掉缓存，
         // 与 README 的「翻译缓存条数」不符。
-        cacheSize = Math.max(MIN_CACHE_SIZE, cacheSize);
+        //
+        // 上限（v2.2.2）：这是个 LinkedHashMap 的容量上限，写成一个超大值就等于**无界缓存** ——
+        // 每条译文都留着，长时间游玩内存持续上涨。1 万条对聊天翻译来说早已远超够用
+        // （按每条 100 字符算约 1 MB），所以夹到这里不影响任何正常配置。
+        cacheSize = Math.min(MAX_CACHE_SIZE_LIMIT, Math.max(MIN_CACHE_SIZE, cacheSize));
         connectTimeoutSeconds = Math.max(1, connectTimeoutSeconds);
         httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
-        maxTokens = Math.max(32, maxTokens);
+        maxTokens = Math.min(MAX_TOKENS_LIMIT, Math.max(32, maxTokens));
         temperature = Math.min(2.0, Math.max(0.0, temperature));
         if (failureFallback == null || failureFallback.isBlank()) {
             failureFallback = "CANCEL";

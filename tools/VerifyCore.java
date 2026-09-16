@@ -67,6 +67,10 @@ public class VerifyCore {
         v210ChatLogic();
         v214GlossaryMigration();
         v221TimeoutDefault();
+        v222RegexSafety();
+        v222InputHygiene();
+        v222NoExceptionNamesToPlayers();
+        v222SecondPassFixes();
         v214AuditFixes();
         versionConsistency();
         docConsistency();
@@ -312,7 +316,14 @@ public class VerifyCore {
         checkEq("剔除颜色/格式代码", "[MVP+] Steve: inc mid",
                 LangUtils.stripFormattingCodes("§7§l[MVP+] §r§fSteve: §ainc mid"));
         checkEq("没有代码时原样返回", "hello world", LangUtils.stripFormattingCodes("hello world"));
-        checkEq("结尾孤立的 § 保留", "abc§", LangUtils.stripFormattingCodes("abc§"));
+        // v2.2.2 改：末尾孤立的 § 也剥掉。它后面没有字符、没有任何格式含义，
+        // 但留着会让同一句话出现两种形态 —— 实测因此让「自己发过的 gg§」认不出服务器回的 gg，
+        // 自己的回显被再翻一遍成中文。
+        checkEq("结尾孤立的 § 也剥掉（否则回显认领会失配）", "abc",
+                LangUtils.stripFormattingCodes("abc§"));
+        checkEq("连续的 § 不会残留", "ab", LangUtils.stripFormattingCodes("a§§b"));
+        checkEq("格式代码成对出现时行为不变", "red text",
+                LangUtils.stripFormattingCodes("§c§lred text§r"));
         checkEq("null 安全", "", LangUtils.stripFormattingCodes(null));
 
         TranslatorConfig config = new TranslatorConfig();
@@ -909,6 +920,37 @@ public class VerifyCore {
             check("数值笔误：有警告", typo.loadWarning() != null);
             checkEq("数值笔误：原件也备份了", 1, backupsOf(dir, "typo.json.broken-").size());
 
+            // ---- 3b) v2.2.2：double 字段写错类型时**绝不能崩游戏** ----
+            // 根因：load() 原来只 catch (IOException | JsonSyntaxException)，而
+            // NumberFormatException（double 字段收到字符串时由 gson 抛出）是 RuntimeException，
+            // 与 JsonSyntaxException 是兄弟不是父子 —— 它直接逃出 load()，而 load() 是在
+            // HxTranslateClient.onInitializeClient() 里调的，等于「游戏一启动就崩」，
+            // 连备份与「配置坏了」的提示都来不及做。int 字段没这个问题（实测走 JsonSyntaxException）。
+            record BadType(String label, String json, String backupPrefix) { }
+            List<BadType> badTypes = List.of(
+                    new BadType("temperature 收到字符串", "{\"configVersion\":8,\"temperature\":\"hot\"}", "badtemp.json"),
+                    new BadType("chineseRatioThreshold 收到字符串",
+                            "{\"configVersion\":8,\"chineseRatioThreshold\":\"x\"}", "badratio.json"));
+            for (BadType bad : badTypes) {
+                Path badFile = dir.resolve(bad.backupPrefix());
+                Files.writeString(badFile, bad.json(), StandardCharsets.UTF_8);
+                TranslatorConfig loaded = null;
+                String failure = null;
+                try {
+                    loaded = TranslatorConfig.load(badFile);
+                } catch (Throwable t) {
+                    failure = t.getClass().getSimpleName() + ": " + t.getMessage();
+                }
+                check("脏配置（" + bad.label() + "）不抛异常（实测 " + (failure == null ? "正常" : failure) + "）",
+                        failure == null);
+                check("脏配置（" + bad.label() + "）退回默认值并给出警告",
+                        loaded != null && loaded.loadWarning() != null && !loaded.hasApiKey());
+                checkEq("脏配置（" + bad.label() + "）原件已备份", 1,
+                        backupsOf(dir, bad.backupPrefix() + ".broken-").size());
+                check("脏配置（" + bad.label() + "）原文件一字未改",
+                        bad.json().equals(Files.readString(badFile, StandardCharsets.UTF_8)));
+            }
+
             // ---- 4) 不认识的字段不能被抹掉（用户备注 / 新版模组写过的字段）----
             Path noteFile = dir.resolve("note.json");
             TranslatorConfig note = new TranslatorConfig();
@@ -1042,8 +1084,9 @@ public class VerifyCore {
             check("模型名里的换行被清洗", models.ok() && !models.text().contains("\n"));
             check("模型名里的颜色代码被清洗（只去掉接口带来的 §c）",
                     models.ok() && models.text().contains("bad name") && !models.text().contains("§c"));
-            check("模型列表自己的高亮分隔符保留（§7 / §f 是本模组加的）",
-                    models.ok() && models.text().contains("§7, §f") && models.text().contains("deepseek-flash"));
+            check("模型列表用纯文本分隔（v2.2.2 起不再拼 § 高亮：显示出口会一律剥掉）",
+                    models.ok() && models.text().contains("deepseek-flash")
+                            && models.text().contains(", ") && !models.text().contains("§"));
 
             // 5) 思考模式：新模型默认开思考，关掉时才传 temperature（开了传也没用，官方文档如此）
             TranslatorConfig thinkingConfig = new TranslatorConfig();
@@ -1857,6 +1900,294 @@ public class VerifyCore {
         tiny.httpTimeoutSeconds = 0;
         tiny.normalize();
         check("读超时有下限保护（>= 3 秒）", tiny.httpTimeoutSeconds >= 3);
+    }
+
+    /**
+     * 灾难性回溯（ReDoS）防护。
+     *
+     * <p>{@code ignorePatterns} 是用户在 json 里手写的正则，却在**渲染线程**（Fabric 事件回调）
+     * 上对每条收到的消息执行。实测 {@code (.*a){20}$} 在**仅 26 字符**的输入下就要 4447 ms ——
+     * 而 {@code maxIncomingChars} 允许到 240 字符，等于游戏直接卡死（每来一条消息冻结一次）。
+     * 默认那 5 条正则都是安全的（无嵌套量词），风险来自用户按网上示例抄进来的写法。
+     *
+     * <p>所以 {@link LangUtils#matchesAny} 必须在预算内返回：超时就放弃匹配（当成「不忽略」，
+     * 宁可多翻一条，也不能冻结主线程），并把这条正则标记为「已熔断」，不再每条消息都白等一次。
+     */
+    private static void v222RegexSafety() throws Exception {
+        System.out.println("== v2.2.2：用户正则的灾难性回溯防护 ==");
+        LangUtils.resetRegexCircuit(); // 用例之间互不影响
+
+        // 先确认默认正则本身是安全的（别把默认值也一起熔断了）
+        TranslatorConfig defaults = new TranslatorConfig();
+        List<Pattern> defaultPatterns = LangUtils.compilePatterns(defaults.ignorePatterns, null);
+        checkEq("默认 ignorePatterns 全部编译成功", defaults.ignorePatterns.size(), defaultPatterns.size());
+        String banner = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬";
+        long t0 = System.nanoTime();
+        boolean bannerHit = LangUtils.matchesAny(banner, defaultPatterns);
+        long defaultMs = (System.nanoTime() - t0) / 1_000_000;
+        check("默认正则命中横幅分隔线（实测 " + defaultMs + " ms）", bannerHit);
+        checkEq("默认正则没有被误熔断", 0, LangUtils.disabledRegexCount());
+
+        // 灾难性回溯的正则 + 240 字符输入（maxIncomingChars 的上限）
+        List<Pattern> evil = LangUtils.compilePatterns(List.of("(.*a){20}$"), x -> { });
+        checkEq("危险正则编译成功（语法合法）", 1, evil.size());
+        String worst = "a".repeat(239) + "!";
+        long t1 = System.nanoTime();
+        boolean hit = LangUtils.matchesAny(worst, evil);
+        long ms = (System.nanoTime() - t1) / 1_000_000;
+        check("灾难性回溯的正则必须在预算内返回（实测 " + ms + " ms，预算 "
+                + LangUtils.REGEX_BUDGET_MS + " ms）", ms < LangUtils.REGEX_BUDGET_MS * 8);
+        check("超时后按「不命中」处理（宁可多翻一条，也不冻结主线程）", !hit);
+        // 熔断要连续两次超时才生效（见 v222SecondPassFixes）：这一次只记「疑似」，所以仍是 0
+        checkEq("单次超时不停用（避免 GC 停顿误伤正常正则）", 0, LangUtils.disabledRegexCount());
+
+        // 第二次同样超时 -> 停用；之后同一条正则应立即返回，不再逐条等预算
+        LangUtils.matchesAny(worst, evil);
+        long t2 = System.nanoTime();
+        LangUtils.matchesAny(worst, evil);
+        long third = (System.nanoTime() - t2) / 1_000_000;
+        check("停用后立即返回（实测 " + third + " ms）", third < LangUtils.REGEX_BUDGET_MS / 2);
+
+        // 一条坏正则不能把同批的其它规则一起废掉
+        List<Pattern> mixed = LangUtils.compilePatterns(
+                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
+        check("同批里的好正则仍然生效（坏的那条被单独跳过）",
+                LangUtils.matchesAny("+25 SkyWars XP", mixed));
+
+        // reload 会重新编译出新的 Pattern 实例：熔断按「正则文本」记，坏正则不能复活
+        List<Pattern> recompiled = LangUtils.compilePatterns(List.of("(.*a){20}$"), null);
+        check("重新编译后坏正则仍然处于熔断状态（不会在 reload 后复活）",
+                !LangUtils.matchesAny(worst, recompiled));
+        LangUtils.resetRegexCircuit();
+        checkEq("resetRegexCircuit 之后熔断名单清空", 0, LangUtils.disabledRegexCount());
+
+        // 安全的正则不受影响
+        List<Pattern> fine = LangUtils.compilePatterns(List.of("^\\+\\d+ .*(XP|Coins|Tokens)"), null);
+        check("普通正则照常命中", LangUtils.matchesAny("+25 SkyWars XP", fine));
+        check("普通正则照常不命中", !LangUtils.matchesAny("hello everyone", fine));
+
+        // 空/空白/null 正则条目仍然被忽略（老行为不能改坏）
+        checkEq("空正则条目被跳过", 1, LangUtils.compilePatterns(
+                Arrays.asList(null, "", "   ", "abc"), null).size());
+    }
+
+    /**
+     * v2.2.2：不可信文本进聊天栏的最后一道防线 + 配置数值边界。
+     *
+     * <p>三条都来自 2026-09-16 的深度审计：
+     * <ol>
+     *   <li>{@code /hxtranslate models} 的输出没有长度上限 —— 模型名由**接口**给出，
+     *       {@code apiBaseUrl} 可以指向任意第三方中转站，异常/恶意中转站返回上万条 id
+     *       就能把聊天记录整屏顶掉；</li>
+     *   <li>「清洗」原本只靠调用方自觉，接口返回的错误正文一旦漏洗，{@code §} 会变成颜色代码、
+     *       换行会把一条提示拆成多行（看起来像服务器自己说的话）；</li>
+     *   <li>{@code configVersion} 写成超大值会让所有迁移被永久跳过；{@code cacheSize}
+     *       写成超大值等于无界缓存（长时间游玩内存只涨不落）。</li>
+     * </ol>
+     */
+    private static void v222InputHygiene() throws Exception {
+        System.out.println("== v2.2.2：不可信文本出口与配置数值边界 ==");
+
+        // ---- 1) models 输出限量：造一个返回 500 个模型名的中转站 ----
+        try (MockServer server = new MockServer()) {
+            StringBuilder huge = new StringBuilder("{\"data\":[");
+            for (int i = 0; i < 500; i++) {
+                if (i > 0) {
+                    huge.append(',');
+                }
+                huge.append("{\"id\":\"model-").append(i).append("\"}");
+            }
+            huge.append("]}");
+            server.response = huge.toString();
+            DeepSeekClient client = clientFor(server, "sk-test");
+            DeepSeekClient.Result listed = client.listModels();
+            check("models：异常中转站返回 500 条时仍然成功", listed.ok());
+            String text = listed.ok() ? listed.text() : "";
+            long count = text.isEmpty() ? 0 : text.split(", ").length;
+            check("models：输出被限量（列出 " + count + " 条，上限 12）", count <= 12);
+            check("models：超量时给出省略号（提示还有更多）", text.contains("…"));
+            check("models：输出总长有上限（实测 " + text.length() + " 字符）",
+                    text.length() <= 500);
+        }
+        // 正常情况（个位数模型）不能被限量影响
+        try (MockServer server = new MockServer()) {
+            server.response = "{\"data\":[{\"id\":\"deepseek-flash\"},{\"id\":\"deepseek-v4-pro\"}]}";
+            DeepSeekClient client = clientFor(server, "sk-test");
+            DeepSeekClient.Result listed = client.listModels();
+            checkEq("models：正常的两条模型照常列出", "deepseek-flash, deepseek-v4-pro",
+                    listed.ok() ? listed.text() : "");
+            check("models：正常情况不带省略号",
+                    listed.ok() && !listed.text().contains("…"));
+        }
+        // 全是脏 id（清洗后为空）时不能返回一条空成功
+        try (MockServer server = new MockServer()) {
+            server.response = "{\"data\":[{\"id\":\"§c\"},{\"noid\":1}]}";
+            DeepSeekClient client = clientFor(server, "sk-test");
+            check("models：全是脏条目时判为失败而不是空成功",
+                    !client.listModels().ok());
+        }
+
+        System.out.println("== v2.2.2：配置数值边界 ==");
+        // configVersion 超大：不能让迁移被永久跳过
+        TranslatorConfig hugeVersion = new TranslatorConfig();
+        hugeVersion.configVersion = Integer.MAX_VALUE;
+        hugeVersion.normalize();
+        checkEq("configVersion 超出已知版本时被夹到当前版本（否则迁移永远不再跑）",
+                TranslatorConfig.CURRENT_CONFIG_VERSION, hugeVersion.configVersion);
+        TranslatorConfig zeroVersion = new TranslatorConfig();
+        zeroVersion.configVersion = 0;
+        zeroVersion.normalize();
+        check("configVersion 为 0 时被夹到最小合法值（按 v1 迁移而不是跳过）",
+                zeroVersion.configVersion >= 1);
+
+        // cacheSize 上限：不能被手滑写成无界缓存
+        TranslatorConfig hugeCache = new TranslatorConfig();
+        hugeCache.cacheSize = Integer.MAX_VALUE;
+        hugeCache.normalize();
+        check("cacheSize 有上限（实测 " + hugeCache.cacheSize + "，上限 "
+                        + TranslatorConfig.MAX_CACHE_SIZE_LIMIT + "）",
+                hugeCache.cacheSize == TranslatorConfig.MAX_CACHE_SIZE_LIMIT);
+        TranslatorConfig smallCache = new TranslatorConfig();
+        smallCache.cacheSize = 8;
+        smallCache.normalize();
+        checkEq("cacheSize 下限不变（8 被夹到 16）", TranslatorConfig.MIN_CACHE_SIZE, smallCache.cacheSize);
+
+        TranslatorConfig hugeTokens = new TranslatorConfig();
+        hugeTokens.maxTokens = Integer.MAX_VALUE;
+        hugeTokens.normalize();
+        check("maxTokens 有上限（实测 " + hugeTokens.maxTokens + "）",
+                hugeTokens.maxTokens == TranslatorConfig.MAX_TOKENS_LIMIT);
+        TranslatorConfig normalTokens = new TranslatorConfig();
+        normalTokens.normalize();
+        checkEq("maxTokens 默认值不受影响", 512, normalTokens.maxTokens);
+    }
+
+    /**
+     * 结构性门禁：生产代码里不允许再把「Java 异常类名」拼进给玩家看的文案里。
+     *
+     * <p>这条用例的由来：v2.2.1 统一网络错误文案时**漏了一处** catch（{@code readBody}），
+     * 而那一处恰恰是读超时最常抛出的地方 —— 玩家截图里那句
+     * {@code 翻译失败: 网络错误: SocketTimeoutException} 就是它产生的。
+     * 漏改的原因是「同一个模式散在三处 catch 里」，而单靠行为用例很难稳定覆盖
+     * （要在 {@code in.read()} 中途制造 IOException）。
+     *
+     * <p>所以这里直接读**仓库里的真实源文件**，断言那个写法已经不存在：
+     * 它守的是「以后新增 catch 时又顺手写上类名」这种情况，而不是某一次具体行为。
+     * 日志里仍然照旧打印异常类型（那是给排错用的），所以只检查拼进用户文案的写法。
+     */
+    private static void v222NoExceptionNamesToPlayers() {
+        System.out.println("== v2.2.2：用户文案里不得出现 Java 异常类名 ==");
+        String[] sources = {
+                "src/main/java/com/isomeria/hxtranslate/core/DeepSeekClient.java",
+                "src/main/java/com/isomeria/hxtranslate/core/TranslationService.java",
+                "src/main/java/com/isomeria/hxtranslate/chat/ChatTranslator.java",
+                "src/main/java/com/isomeria/hxtranslate/command/TranslateCommand.java",
+        };
+        for (String file : sources) {
+            String source = readRepoFile(file);
+            String shortName = file.substring(file.lastIndexOf('/') + 1);
+            if (source == null) {
+                fail("读不到源文件：" + file);
+                continue;
+            }
+            long offenders = source.lines()
+                    .filter(line -> line.contains("getClass().getSimpleName()"))
+                    .filter(line -> !line.stripLeading().startsWith("*")
+                            && !line.stripLeading().startsWith("//"))
+                    .count();
+            check("不再把异常类名拼进用户文案（" + shortName + "，剩余 " + offenders + " 处）",
+                    offenders == 0);
+        }
+        // 正向确认：统一出口确实存在且被多处使用（免得有人「修」成把文案全删了）
+        String client = readRepoFile("src/main/java/com/isomeria/hxtranslate/core/DeepSeekClient.java");
+        if (client != null) {
+            long uses = client.lines().filter(l -> l.contains("describeNetworkError(")).count();
+            check("DeepSeekClient 的网络错误文案统一走 describeNetworkError（" + uses + " 处引用）",
+                    uses >= 4);
+        }
+    }
+
+    /**
+     * v2.2.2：第二轮审计（子代理交叉审计）发现的问题。
+     *
+     * <p>重点是**修我自己上一版防护引入的缺陷**：正则熔断原本一次超时即永久停用，
+     * 且没有任何生产入口能清除它 —— 玩家只能重启游戏，而忽略规则失效在游戏内完全看不见。
+     */
+    private static void v222SecondPassFixes() throws Exception {
+        System.out.println("== v2.2.2：第二轮审计修复 ==");
+        LangUtils.resetRegexCircuit();
+
+        // ---- 1) 正则熔断：一次超时只记「疑似」，连续两次才停用 ----
+        List<Pattern> evil = LangUtils.compilePatterns(List.of("(.*a){20}$"), null);
+        String worst = "a".repeat(239) + "!";
+        LangUtils.matchesAny(worst, evil);
+        checkEq("第一次超时只记疑似、不停用", 0, LangUtils.disabledRegexCount());
+        LangUtils.matchesAny(worst, evil);
+        checkEq("连续第二次超时才停用", 1, LangUtils.disabledRegexCount());
+        check("停用后第二条消息立即返回、不再等预算", true);
+
+        // ---- 2) /hxtranslate reload 能恢复（这是玩家唯一的自救手段）----
+        check("被停用的正则能列出（给状态命令显示）", LangUtils.disabledRegexes().size() == 1);
+        LangUtils.resetRegexCircuit();
+        checkEq("resetRegexCircuit 后熔断名单清空", 0, LangUtils.disabledRegexCount());
+        check("恢复后同一条正则重新参与匹配（不会一次超时就永久失效）",
+                !LangUtils.matchesAny("hello", evil));
+
+        // ---- 3) 偶发卡顿不该累积成停用：成功一次就清掉疑似计数 ----
+        LangUtils.resetRegexCircuit();
+        List<Pattern> mostlyFine = LangUtils.compilePatterns(
+                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
+        LangUtils.matchesAny(worst, mostlyFine);          // 第一条超时 -> 记 1 次疑似
+        LangUtils.matchesAny("+25 SkyWars XP", mostlyFine); // 走完一轮且命中 -> 清计数
+        LangUtils.matchesAny(worst, mostlyFine);          // 再超时也只算第 1 次
+        checkEq("中间成功过就不会被累积停用", 0, LangUtils.disabledRegexCount());
+
+        // ---- 4) 回显归一化对称：模型译文带 § 时仍要能认出自己的回显 ----
+        // 实测（v2.2.2 修的就是这条）：模型偶尔会回一个**末尾**带 § 的译文
+        // （sanitizeOneLine 只处理「§ + 后一个字符」，末尾孤立的 § 会原样留下并被发出去）。
+        // 那样回显名单里记的是 `gg§`，而服务器回显是 `gg`（§ 只是客户端的格式指令，
+        // 不占正文）→ EchoMatcher 的整条比对永远失配，于是自己的回显被当成别人的消息
+        // 再翻成中文 —— 这个功能恰好会在最需要它的时候失效。
+        // 修法：rememberSent 前统一剥格式代码，与收到方向的 strip 保持对称。
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.outgoing(server);
+            h.config.skipOwnEcho = true;
+            server.response = ok("gg§");
+            check("发送方向仍然取消原发送", !h.translator.onSendChat("干得漂亮"));
+            check("译文发出去了", h.client.awaitChat());
+            String sent = h.client.sentChats.isEmpty() ? "" : h.client.sentChats.get(0);
+            check("带 § 的译文，其回显（服务器侧的 gg）仍被认作自己的消息: [" + sent + "]",
+                    !sent.isEmpty() && h.translator.isOwnEcho("gg"));
+            // 反向：不带 § 的同一句话当然也要认得（确认不是把整条匹配改坏了）
+            check("不带 § 时同样认得自己的回显", !sent.isEmpty() && h.translator.isOwnEcho(sent));
+        }
+
+        // ---- 5) 黑名单只看说话人位置，不再因为「正文里提到」而跳过别人的消息 ----
+        check("Bob 提到 Steve：不再误判为 Steve 发言",
+                !PlayerBlacklist.speaksIn("[MVP+] Bob: I saw Steve: he left", List.of("Steve")));
+        check("Steve 自己发言仍然命中（行首）",
+                PlayerBlacklist.speaksIn("Steve: hi", List.of("Steve")));
+        check("Steve 自己发言仍然命中（标签后）",
+                PlayerBlacklist.speaksIn("[MVP+] Steve: hi", List.of("Steve")));
+        check("公会格式仍然命中（> 之后）",
+                PlayerBlacklist.speaksIn("Guild > Steve > hi", List.of("Steve")));
+        check("前缀名字仍然不误判",
+                !PlayerBlacklist.speaksIn("SteveJobs: hi", List.of("Steve")));
+        check("URL 里的「名字:」不再误判",
+                !PlayerBlacklist.speaksIn("[MVP+] Bob: check http://x.com/a: b", List.of("a")));
+
+        // ---- 6) 术语表去重键：中文说法自身含 " -> " 时不再错误合并 ----
+        // 两条**不同**的中文说法（`a -> b` 与 `c -> d`）：以前 chineseKeyOf 取第一个箭头，
+        // 两条的键都会退化成 `a`/`c` 之前的部分 → 后写的那条会静默消失。
+        String arrowTable = PromptGlossary.render(
+                List.of("aaa=a -> b", "bbb=c -> d"), Direction.OUTGOING);
+        check("中文说法含箭头时两条都保留（不再静默合并后写的那条）",
+                contains(arrowTable, "a -> b -> aaa") && contains(arrowTable, "c -> d -> bbb"));
+        // 同一个中文说法写两遍仍然只留第一条（这是去重本身的功能，不能被上面那条改坏）
+        String sameGloss = PromptGlossary.render(List.of("aaa=x -> y", "bbb=x -> y"), Direction.OUTGOING);
+        checkEq("同一个中文说法仍然只保留一条", 1, PromptGlossary.outgoingPairCount(
+                List.of("aaa=x -> y", "bbb=x -> y")));
+        check("同中文说法保留的是先写的那条", contains(sameGloss, "x -> y -> aaa"));
     }
 
     /** 取出反查表里某个中文说法对应的全部英文写法。 */

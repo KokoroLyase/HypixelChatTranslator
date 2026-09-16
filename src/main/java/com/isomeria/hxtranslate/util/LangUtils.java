@@ -1,9 +1,18 @@
 package com.isomeria.hxtranslate.util;
 
+import com.isomeria.hxtranslate.Log;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -16,6 +25,38 @@ public final class LangUtils {
 
     private LangUtils() {
     }
+
+    /**
+     * 单次正则匹配的预算（毫秒）。
+     *
+     * <p>超时就放弃这次匹配，并给这条正则记一次「疑似卡顿」；**连续**两次才真正停用。
+     * 取 500ms 的理由：正常匹配在微秒级（实测 5 条默认正则合计 19.6µs），
+     * 而渲染线程会被 GC 停顿 / 区块加载 / CPU 争抢拖慢 —— 预算给得太紧（试过 150ms）
+     * 会把**本来没问题**的正则误判成灾难性回溯，而误判的后果是用户的忽略规则静默失效。
+     * 真正的灾难性回溯是指数级的（实测 {@code (.*a){20}$} 在 26 字符时 4.4 秒、
+     * 240 字符时不可能在可接受时间内返回），所以 500ms 足够区分「卡了一下」与「真的爆了」。
+     */
+    public static final long REGEX_BUDGET_MS = 500L;
+
+    /**
+     * 连续超时几次才停用一条正则。
+     *
+     * <p>2 次：既不会因为一次 GC 停顿误伤，也不会让一条真坏的正则反复拖慢主线程
+     * （第二次超时之后就再也不碰它了）。
+     */
+    private static final int REGEX_TIMEOUT_STRIKES = 2;
+
+    /** 正在执行用户正则的工作线程；只在真的需要超时保护时才用（见 matchesAny）。 */
+    private static final ExecutorService REGEX_WORKER = Executors.newCachedThreadPool(new ThreadFactory() {
+        private final AtomicInteger seq = new AtomicInteger();
+
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread thread = new Thread(r, "hxtranslate-regex-" + seq.incrementAndGet());
+            thread.setDaemon(true); // 绝不能拦住 JVM 退出
+            return thread;
+        }
+    });
 
     /** 文本中是否包含汉字。 */
     public static boolean containsHan(String text) {
@@ -258,8 +299,14 @@ public final class LangUtils {
         StringBuilder builder = new StringBuilder(text.length());
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
-            if (c == '\u00A7' && i + 1 < text.length()) {
-                i++; // 连同后一个格式字符一起丢掉
+            if (c == '\u00A7') {
+                if (i + 1 < text.length()) {
+                    i++; // 连同后一个格式字符一起丢掉
+                }
+                // 末尾孤立的 § 也丢掉（v2.2.2）：它后面没有字符，在 Minecraft 里就是个裸字符、
+                // 没有任何格式含义，但留着会让「同一句话」出现两种形态 ——
+                // 实测后果：模型回一个 `gg§` 时，回显名单记成 `gg§` 而服务器回显是 `gg`，
+                // 于是自己的回显认不出来、被当成别人的消息再翻成中文。
                 continue;
             }
             builder.append(c);
@@ -305,17 +352,123 @@ public final class LangUtils {
         return compiled;
     }
 
-    /** 文本是否命中任意一条已编译的正则（子串语义，不区分大小写）。 */
+    /**
+     * 文本是否命中任意一条已编译的正则（子串语义，不区分大小写）。
+     *
+     * <p><b>带灾难性回溯（ReDoS）防护</b>：{@code ignorePatterns} 是用户在 json 里手写的正则，
+     * 而这个方法是在**渲染线程**（Fabric 事件回调）上对每条收到的消息调用的。
+     * 实测 {@code (.*a){20}$} 在仅 26 字符的输入下就要 4.4 秒 —— 而 {@code maxIncomingChars}
+     * 允许到 240 字符，等于每来一条消息就把游戏冻住一次。默认那几条正则都是安全的
+     * （只有字符类与固定次数重复），风险来自用户按网上示例抄进来的写法。
+     *
+     * <p>做法：逐条在守护线程上匹配，单条超过 {@link #REGEX_BUDGET_MS} 就放弃它、
+     * 把这条正则按**文本**记入熔断名单（之后直接跳过，不再每条消息都白等一次），并继续试下一条。
+     * 语义取舍很明确：超时 = 「这条规则不生效」= 消息照常翻译。宁可多花一次 API 请求，
+     * 也绝不能冻结主线程；用户会从日志里看到是哪条正则被停用了。
+     *
+     * @return true 表示命中（应当忽略这条消息）；false 表示没命中**或**匹配超时被放弃
+     */
     public static boolean matchesAny(String text, List<Pattern> patterns) {
-        if (text == null || patterns == null) {
+        if (text == null || patterns == null || patterns.isEmpty()) {
             return false;
         }
         for (Pattern pattern : patterns) {
-            if (pattern.matcher(text).find()) {
+            if (pattern == null || disabledRegexes.containsKey(pattern.pattern())) {
+                continue;
+            }
+            Boolean hit = matchWithBudget(pattern, text);
+            if (hit == null) {
+                // 超时：记一次「疑似」。**连续**两次才停用 —— 一次超时可能只是 GC 停顿，
+                // 而误停用会让用户的忽略规则静默失效（多花 API 请求），比多等一次更糟。
+                String regex = pattern.pattern();
+                int strikes = timeoutStrikes.merge(regex, 1, Integer::sum);
+                if (strikes >= REGEX_TIMEOUT_STRIKES) {
+                    disabledRegexes.put(regex, "连续 " + strikes + " 次匹配超过 " + REGEX_BUDGET_MS + " ms");
+                    Log.LOGGER.warn("ignorePatterns 里的正则「{}」连续 {} 次匹配超时，已停用。"
+                                    + "多半是灾难性回溯的写法（例如 (.*a){20}$ 这类嵌套量词）；"
+                                    + "改掉它并 /hxtranslate reload 即可恢复",
+                            regex, strikes);
+                } else {
+                    Log.LOGGER.warn("ignorePatterns 里的正则「{}」本次匹配超过 {} ms（第 {} 次，"
+                                    + "再超时一次就停用）。可能只是卡了一下，本次按「不命中」处理",
+                            regex, REGEX_BUDGET_MS, strikes);
+                }
+                continue;
+            }
+            // 匹配成功就清掉全部「疑似」计数（v2.2.2）：一条正则在同一条消息上连着两次超时
+            // 才说明它真的有问题；中间只要有**任何**一次匹配顺利完成，就说明这两次超时
+            // 之间系统没有持续卡顿，更可能只是 GC/加载造成的偶发停顿，不该累积成停用。
+            if (hit) {
+                timeoutStrikes.clear();
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * 在守护线程上跑一条正则，最多等 {@link #REGEX_BUDGET_MS}。
+     *
+     * @return true/false = 匹配结果；null = 超时（无法判定）
+     */
+    private static Boolean matchWithBudget(Pattern pattern, String text) {
+        Future<Boolean> future = null;
+        try {
+            future = REGEX_WORKER.submit(() -> pattern.matcher(text).find());
+            return future.get(REGEX_BUDGET_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            // 尽力取消；正则匹配不响应中断，那个线程会自己跑完（守护线程，不拦 JVM 退出）
+            if (future != null) {
+                future.cancel(true);
+            }
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Boolean.FALSE;
+        } catch (RuntimeException | java.util.concurrent.ExecutionException e) {
+            // 执行期异常（例如栈溢出）：按「不命中」处理，绝不影响翻译主流程
+            Log.LOGGER.warn("ignorePatterns 匹配出错，本条按「不命中」处理: {}", e.toString());
+            return Boolean.FALSE;
+        } catch (Error e) {
+            // Error（例如 OOM）不能让它穿到 Fabric 事件回调上：这不是「翻译失败」，
+            // 而是「这条忽略规则判不了」。
+            Log.LOGGER.warn("ignorePatterns 匹配时抛出 Error，本条按「不命中」处理: {}", e.toString());
+            return Boolean.FALSE;
+        }
+    }
+
+    /** 本次会话里连续超时次数（达到 {@link #REGEX_TIMEOUT_STRIKES} 才移入停用名单）。 */
+    private static final java.util.Map<String, Integer> timeoutStrikes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 因连续匹配超时被停用的正则（按正则文本 -> 原因）。
+     *
+     * <p>用文本而不是 Pattern 实例做键：{@code /hxtranslate reload} 会重新编译出**新的**
+     * Pattern 对象，用实例做键的话坏正则会在 reload 后复活，又冻一次主线程。
+     */
+    private static final java.util.Map<String, String> disabledRegexes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 清空熔断名单，让所有正则重新参与匹配。
+     *
+     * <p>{@code /hxtranslate reload} 会调用它 —— 用户改了正则（或只是想让被误停用的规则复活）
+     * 之后必须能恢复，否则唯一的办法就是重启游戏。
+     */
+    public static void resetRegexCircuit() {
+        disabledRegexes.clear();
+        timeoutStrikes.clear();
+    }
+
+    /** 当前被停用的正则条数（给 {@code /hxtranslate status} 与自检用）。 */
+    public static int disabledRegexCount() {
+        return disabledRegexes.size();
+    }
+
+    /** 被停用的正则文本（给状态命令列出原因用）。 */
+    public static List<String> disabledRegexes() {
+        return new ArrayList<>(disabledRegexes.keySet());
     }
 
     /** 去掉模型有时会自作主张加上的包裹引号。 */

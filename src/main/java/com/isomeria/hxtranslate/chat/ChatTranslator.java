@@ -47,6 +47,15 @@ public final class ChatTranslator {
     /** 调试输出里原文的截断长度。 */
     private static final int DEBUG_TEXT_LIMIT = 60;
 
+    /**
+     * 忽略正则最多看多少字符（v2.2.2）。
+     *
+     * <p>比 {@code maxIncomingChars} 的默认值（240）宽松得多，所以正常消息一字不少；
+     * 作用只是别把程序化注入的超长文本整条喂给用户写的正则（慢正则会因此跑很久，
+     * 而它在渲染线程上执行）。
+     */
+    private static final int MAX_REGEX_INPUT_CHARS = 1024;
+
     /** 「没配 Key」的统一提示。 */
     private static final String NO_KEY_HINT =
             "未配置 DeepSeek API Key（用 §f/hxtranslate key <你的Key>§c 配置）";
@@ -263,8 +272,23 @@ public final class ChatTranslator {
         return cut + "…";
     }
 
+    /**
+     * 这条消息是否命中用户配置的忽略正则。
+     *
+     * <p>v2.2.2：匹配前先把文本截到 {@code maxIncomingChars} 的长度 ——
+     * 忽略规则只对「本来会送去翻译的消息」有意义，而超过上限的消息在
+     * {@link IncomingFilter} 里本来就会被跳过；不截断的话，用户写了一条慢正则时，
+     * 一条上万字符的消息（插件/模组可以程序化注入聊天）会喂给正则跑很久。
+     * 截断只影响「超长消息是否命中忽略规则」，而那种消息本来就不翻译，语义无损失。
+     */
     private boolean isIgnored(String text) {
-        return LangUtils.matchesAny(text, patterns());
+        if (text == null) {
+            return false;
+        }
+        String bounded = text.length() > MAX_REGEX_INPUT_CHARS
+                ? text.substring(0, MAX_REGEX_INPUT_CHARS)
+                : text;
+        return LangUtils.matchesAny(bounded, patterns());
     }
 
     /**
@@ -434,7 +458,12 @@ public final class ChatTranslator {
                         // 记进去会让 15 秒内别人说的同一句被误判成「自己的回显」而漏翻。
                         return;
                     }
-                    rememberSent(outgoing);
+                    // 记进回显名单前先剥格式代码（v2.2.2）。这是实测出来的真缺口，不是理论问题：
+                    // 模型偶尔会回一个末尾带 § 的译文（`sanitizeOneLine` 只管「§ + 后一个字符」，
+                    // 末尾孤立的 § 会原样留下），那样入名单记的是 `gg§`，而服务器回显是 `gg`
+                    // （§ 只是客户端的格式指令，不占正文）→ 正文比对永远失配，
+                    // 「自己的回显不再翻回中文」恰好会在最需要它的时候失效。
+                    rememberSent(LangUtils.stripFormattingCodes(outgoing));
                     sentCount.incrementAndGet();
                     feedback.info(config.outgoingPrefix + outgoing);
                 }));

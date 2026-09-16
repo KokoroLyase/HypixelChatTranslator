@@ -42,6 +42,17 @@ public final class DeepSeekClient {
     /** 错误响应体的读取上限：反正最终只截 160 字符显示给玩家。 */
     private static final int MAX_ERROR_BYTES = 64 * 1024;
 
+    /**
+     * {@code /hxtranslate models} 最多列出多少个模型名（v2.2.2）。
+     *
+     * <p>模型名是**接口**给的，而 {@code apiBaseUrl} 可以指向任意第三方中转站。
+     * 正常 DeepSeek 只有个位数模型，所以这个上限纯属防「异常中转站刷屏」。
+     */
+    private static final int MAX_LISTED_MODELS = 12;
+
+    /** {@code models} 输出的字符上限（在 {@link #MAX_LISTED_MODELS} 之外再兜一层长名）。 */
+    private static final int MAX_MODELS_TEXT_CHARS = 400;
+
     /** 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。 */
     public record Result(boolean ok, String text, String error, boolean retryable) {
         public static Result success(String text) {
@@ -158,21 +169,39 @@ public final class DeepSeekClient {
                 return Result.failure("返回内容里没有模型列表");
             }
             StringBuilder names = new StringBuilder();
+            int listed = 0;
+            boolean more = false;
             for (JsonElement element : data) {
+                // 限量（v2.2.2）：模型名由**接口**给出，而 apiBaseUrl 可以指向任意第三方中转站，
+                // 响应体还允许到 1 MiB。以前这里把全部 id 拼起来直接进聊天栏 ——
+                // 异常或恶意（甚至只是配置错的）中转站返回成千上万条就能把聊天记录整屏顶掉。
+                // 正常 DeepSeek 只有个位数模型，12 条 / 400 字符对正常使用毫无影响。
+                if (listed >= MAX_LISTED_MODELS || names.length() >= MAX_MODELS_TEXT_CHARS) {
+                    more = true;
+                    break;
+                }
                 JsonObject model = element.getAsJsonObject();
                 if (!model.has("id")) {
                     continue;
                 }
-                // 模型名是不可信文本：先清洗再拼进我们自己的颜色代码里。
-                // 分隔符里的 §7 / §f 是本模组加的高亮，不属于接口内容，不能一起洗掉。
+                // 模型名是不可信文本：先清洗再拼。这里刻意不加任何 § 高亮 ——
+                // 显示的出口（GameFeedback）会把 § 一律剥掉（它按不可信文本处理），
+                // 在这里加色只会让人误以为颜色生效了。
                 String id = cleanApiText(model.get("id").getAsString());
                 if (id.isEmpty()) {
                     continue;
                 }
                 if (!names.isEmpty()) {
-                    names.append("§7, §f");
+                    names.append(", ");
                 }
                 names.append(id);
+                listed++;
+            }
+            if (listed == 0) {
+                return Result.failure("返回内容里没有可用的模型名");
+            }
+            if (more) {
+                names.append(" …");
             }
             return Result.success(names.toString());
         } catch (IOException e) {
@@ -355,7 +384,11 @@ public final class DeepSeekClient {
             }
             return Result.success(buffer.toString(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            return Result.retryableFailure("网络错误: " + e.getClass().getSimpleName());
+            // 与 attempt / listModels 走同一个出口（v2.2.1 漏了这一处，v2.2.2 补上）：
+            // 读超时恰恰最容易在这里抛出（服务端接了连接但响应慢），
+            // 而这条文案会经 warnThrottled 直接进聊天栏 —— 不能再把 Java 类名甩给玩家。
+            Log.LOGGER.warn("读取接口响应失败: {}", e.toString());
+            return Result.retryableFailure(describeNetworkError(e));
         }
     }
 
@@ -414,7 +447,9 @@ public final class DeepSeekClient {
             }
             return Result.success(content);
         } catch (RuntimeException e) {
-            return Result.failure("解析返回内容失败: " + e.getClass().getSimpleName());
+            // 异常类型写进日志给排错用，给玩家的文案里不带类名（v2.2.2 统一）
+            Log.LOGGER.warn("解析接口返回内容失败: {}", e.toString());
+            return Result.failure("解析接口返回的内容失败（详情见 logs/latest.log）");
         }
     }
 

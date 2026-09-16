@@ -157,7 +157,10 @@ public final class PromptGlossary {
 
     /** 取对照行里的中文说法（{@code " -> "} 左侧），用于去重。 */
     private static String chineseKeyOf(String pair) {
-        int arrow = pair.indexOf(" -> ");
+        // 用 lastIndexOf（v2.2.2）：中文说法**自身**可能含 " -> "（用户写 `aaa=a -> b`），
+        // 取第一个箭头会把键退化成半个说法，导致两条不同的说法被判成同一条而静默合并 ——
+        // 后写的那条（通常正是用户刚加的）会凭空消失。
+        int arrow = pair.lastIndexOf(" -> ");
         return arrow <= 0 ? pair : pair.substring(0, arrow);
     }
 

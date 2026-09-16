@@ -208,10 +208,18 @@ public final class TranslationService {
         }
     }
 
-    /** 给玩家看的失败原因：类型 + 消息，够定位就行。 */
+    /**
+     * 给玩家看的失败原因。
+     *
+     * <p>v2.2.2 改：以前返回的是 {@code 异常类名: 消息}（例如 {@code NoClassDefFoundError: ...}），
+     * 而这条文本会经 {@code ChatTranslator} 直接进聊天栏 —— 对玩家零信息量，
+     * 与 v2.2.1 统一网络错误文案的初衷也不一致。异常类型仍然完整写进日志（见上面的
+     * {@code Log.LOGGER.error(..., t)}），排错信息一点没少。
+     */
     private static String describeFailure(Throwable t) {
-        String message = t.getMessage();
-        return t.getClass().getSimpleName() + (message == null ? "" : ": " + message);
+        String message = t.getMessage() == null ? "" : t.getMessage();
+        // 消息本身是给开发者看的（可能带类名/堆栈片段），所以只留可读的那部分，并压成一行
+        return "翻译线程内部错误（详情见日志）" + (message.isBlank() ? "" : "：" + message);
     }
 
     /** 正在执行 + 排队中的翻译请求数，给状态命令用。 */

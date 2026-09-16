@@ -62,11 +62,19 @@ public final class TranslateCommand {
                     service.resetRateLimit();
                     // 重载往往是因为「刚换了 Key / 接口地址」，这时不该让之前攒下的熔断继续挡着
                     service.resetCircuit();
+                    // 正则熔断也要复位（v2.2.2）：被停用的 ignorePatterns 条目只能靠这里恢复，
+                    // 否则玩家唯一的办法是重启游戏 —— 而忽略规则失效在游戏内完全看不见。
+                    int revived = LangUtils.disabledRegexCount();
+                    LangUtils.resetRegexCircuit();
                     // 文件改坏了要当场说：否则玩家会以为「reload 没生效」而反复重试
                     String warning = config.loadWarning();
-                    context.getSource().sendFeedback(Component.literal(warning == null
+                    String message = warning == null
                             ? "§a配置已重新加载：缓存已清空、限流与熔断已复位"
-                            : "§c配置重新加载有问题：" + warning));
+                            : "§c配置重新加载有问题：" + warning;
+                    if (revived > 0) {
+                        message = message + "§a（另有 " + revived + " 条被停用的忽略正则已恢复）";
+                    }
+                    context.getSource().sendFeedback(Component.literal(message));
                     return 1;
                 }))
                 .then(ClientCommands.literal("debug")
@@ -126,7 +134,9 @@ public final class TranslateCommand {
                     Thread thread = new Thread(() -> {
                         DeepSeekClient.Result result = service.listModels();
                         if (result.ok()) {
-                            feedback.success("可用模型: §f" + result.text() + "§a ｜ 当前使用: §f" + config.model);
+                            // GameFeedback 会把 § 和高亮一起剥掉（那里的入口按不可信文本处理，
+                            // 见它的 javadoc），所以这里只拼纯文本。
+                            feedback.success("可用模型: " + result.text() + " ｜ 当前使用: " + config.model);
                         } else {
                             feedback.error("查询失败: " + result.error());
                         }
@@ -179,7 +189,19 @@ public final class TranslateCommand {
             source.sendFeedback(Component.literal("§c翻译服务连续失败，熔断中，还需 §f"
                     + service.circuitRemainingSeconds() + " §c秒"));
         }
-        source.sendFeedback(Component.literal("§7本分钟请求: §f" + service.usedRequestsThisMinute()
+        // 被停用的忽略正则必须可见（v2.2.2）：忽略规则失效是「静默少省钱、多翻译」，
+        // 玩家不主动看根本发现不了；这里告诉他怎么恢复（reload 就能复活）。
+        int disabledRegexes = LangUtils.disabledRegexCount();
+        if (disabledRegexes > 0) {
+            source.sendFeedback(Component.literal("§e有 §f" + disabledRegexes
+                    + " §e条 ignorePatterns 正则因匹配超时被停用（多半写了灾难性回溯的写法）。"
+                    + "改掉它并 §f/hxtranslate reload §e即可恢复。"));
+            for (String regex : LangUtils.disabledRegexes()) {
+                source.sendFeedback(Component.literal("§8  - §7" + LangUtils.sanitizeOneLine(regex)));
+            }
+        }
+        source.sendFeedback(Component.literal("§7输入长度上限: §f" + config.maxIncomingChars
+                + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()
                 + "§7/§f" + config.requestsPerMinute
                 + " §8| §7进行中: §f" + service.pendingTranslations()
                 + " §8| §7中文判定阈值: §f" + config.chineseRatioThreshold));
