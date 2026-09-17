@@ -280,8 +280,8 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   验字节码，并做三项反向验证（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
   这道门禁抓到过一个真实缺陷：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
   按斜杠内部名去比会导致 MCP 名永远匹配不上 —— 游戏里的表现是「发送方向完全不翻译」，
-  而编译、构建、702 项自检全是绿的。
+  而编译、构建、720 项自检全是绿的。
 - 注入失败**绝不能静默**：`HxTransformer` 的 catch 会往 `System.err` 打一行明确的
   失败说明（那条路径执行得极早，碰不得日志框架）。
 - 1.8.9 的 `IChatComponent.getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），
-  所以装配层统一先过一遍 `LangUtils.stripFormattingCodes`，保证两条线判定一致。
+  所以装配层先过一遍 `LangUtils.stripFormattingCodes`，保证两条线判定一致。

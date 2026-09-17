@@ -49,7 +49,7 @@
 
 **它当场抓到一个静默缺陷**：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
 而最初这里按字节码内部名（斜杠）比较，于是 MCP 名永远匹配不上 ——
-游戏里的表现是「发送方向完全不翻译」，而编译、构建、702 项自检**全是绿的**。
+游戏里的表现是「发送方向完全不翻译」，而编译、构建、720 项自检**全是绿的**。
 这类缺陷只有「用真数据 + 真校验器 + 反向验证」才抓得到。修复后已把教训写进注释与 RELEASING §10。
 
 另外，注入失败**绝不静默**：catch 会往 `System.err` 打一行明确的失败说明
@@ -65,9 +65,9 @@
 
 ### 验证
 
-- **Fabric 线**：702 项自检全绿；请求体 92/92 条 sha256 与降级前基线**完全一致**
+- **Fabric 线**：720 项自检全绿；请求体 92/92 条 sha256 与降级前基线**完全一致**
   （首条 `6986fe87…`，与 v2.3.0 发布前记录的哈希相同）→ 提示词一个字节没动。
-- **Forge 线**：`gradle clean build` 全绿 = **702 项自检 + 9 项核心插件验证**；
+- **Forge 线**：`gradle clean build` 全绿 = **720 项自检 + 9 项核心插件验证**；
   产物文件名 `hx-chat-translator-2.3.0+mc1.8.9-forge.jar`、class 版本 52、
   MANIFEST 含 `FMLCorePlugin` + `FMLCorePluginContainsFMLMod`。
 - **共享层单独用 JDK 8 + gson 2.2.4 编译通过**。这一步很关键：Java 25 编译会掩盖真实不兼容，
@@ -83,7 +83,7 @@
   **没有真正跑过 1.8.9 客户端**。第一次进游戏的验证清单见 Release 说明；
 - Forge 侧的事件注册面（`ClientChatReceivedEvent`、`InputEvent.KeyInputEvent`、
   `TickEvent.ClientTickEvent`、`ClientCommandHandler`）按 RELEASING §9 的人工清单核对，
-  不在自检范围内；判定逻辑全在共享层，由 702 项自检覆盖。
+  不在自检范围内；判定逻辑全在共享层，由 720 项自检覆盖。
 
 ## v2.3.0 — 2026-09-17（Fabric 线，Release 名 `v2.3.0-mc26.3-fabric`）
 
