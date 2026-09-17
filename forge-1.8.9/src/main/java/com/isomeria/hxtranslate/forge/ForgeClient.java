@@ -131,10 +131,16 @@ public final class ForgeClient implements ChatClientPort {
     }
 
     /**
-     * 1.8.9 有现成的 {@code Minecraft.isSingleplayer()}（MCP 名 {@code func_71356_B}，
-     * 已在 stable_22 映射表里核对）：它的原始说明正是「只有一个玩家在玩、而且当前服务器
-     * 是集成服务端」，与 Fabric 26.3 线上 {@code hasSingleplayerServer()} 的语义一致 ——
-     * 两条线的闸门必须同义，否则同一个人在两条线上会遇到不同的行为。
+     * 1.8.9 的判据是 {@code Minecraft.isSingleplayer()}（= 集成服务端在跑<b>且</b>对象已建立）
+     * <b>再排除「已对局域网开放」</b>，与 Fabric 26.3 线的语义逐条对齐。
+     *
+     * <p><b>2026-09-17 审计修正</b>：以前这里只有 {@code isSingleplayer()}，而
+     * 「对局域网开放」只把 {@code IntegratedServer.isPublic} 置 true（{@code shareToLAN}），
+     * {@code integratedServerIsRunning} 完全不动 —— 所以 LAN 存档被判成单人，
+     * 配合默认 {@code translateInSingleplayer=false} 会拦下收发两个方向，
+     * 与 README §5 / §8「对局域网开放的存档仍然翻译」的承诺相反。
+     * （字节码已核对：{@code isSingleplayer()} = {@code integratedServerIsRunning && theIntegratedServer != null}，
+     * 不看 {@code isPublic}；{@code IntegratedServer.getPublic()} 是 public。）
      *
      * <p>1.8.9 里还有 {@code isIntegratedServerRunning()}，那个只问「集成服务端在跑吗」，
      * 不保证「只有自己一个玩家」，所以不用它。
@@ -144,7 +150,12 @@ public final class ForgeClient implements ChatClientPort {
     @Override
     public boolean isSingleplayer() {
         Minecraft minecraft = Minecraft.getMinecraft();
-        return minecraft != null && minecraft.isSingleplayer();
+        if (minecraft == null || !minecraft.isSingleplayer()) {
+            return false;
+        }
+        net.minecraft.server.integrated.IntegratedServer server = minecraft.getIntegratedServer();
+        // 理论上 isSingleplayer() 为 true 时它必非 null；仍然判空，避免把「不可能」变成 NPE。
+        return server == null || !server.getPublic();
     }
 
     @Override

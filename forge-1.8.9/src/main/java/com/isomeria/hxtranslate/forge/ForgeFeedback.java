@@ -22,9 +22,10 @@ import net.minecraft.util.IChatComponent;
  *       1.8.9 没有可以改这个时长的公开 API，所以「⏳ 翻译中…」的存活时间与 Fabric 线一致。</li>
  * </ul>
  *
- * <p>文本清洗沿用同一份实现（{@link LangUtils#sanitizeOneLine}）：接口返回的错误正文、
- * 第三方中转站返回的模型名都是**不可信输入**，万一某个调用方忘了清洗，{@code §} 会变成
- * 颜色代码、换行会把一条提示拆成好几行。防线放在唯一出口最划算（v2.2.2 的结论）。
+ * <p>文本版式沿用同一份实现（{@link LangUtils#singleLineLayout}）：换行会把一条提示拆成好几行。
+ * <b>v3.0.4 起不再剥 {@code §}</b>（与 Fabric 线的 {@code GameFeedback} 一致）：
+ * 不可信内容（接口返回的错误正文、第三方中转站返回的模型名）在 {@code DeepSeekClient}
+ * 里已经清洗过，这里再对整行剥一次只会把调用方自己拼的颜色也剥掉。
  */
 public final class ForgeFeedback implements FeedbackPort {
 
@@ -68,8 +69,16 @@ public final class ForgeFeedback implements FeedbackPort {
         });
     }
 
+    /**
+     * 兜底版式：压成一行，但**保留** {@code §} 格式代码。
+     *
+     * <p>与 Fabric 线的 {@code GameFeedback#clean} 逐条对应，理由见那边与
+     * {@link LangUtils#singleLineLayout} 的 javadoc：整行清洗会把调用方自己拼的颜色
+     * （前缀、{@code §f}/{@code §c} 高亮）一起剥掉，而不可信内容在
+     * {@code DeepSeekClient} 里已经清过了。
+     */
     private static String clean(String text) {
-        return LangUtils.sanitizeOneLine(text);
+        return LangUtils.singleLineLayout(text);
     }
 
     private static void send(final IChatComponent component) {

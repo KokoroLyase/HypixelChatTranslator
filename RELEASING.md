@@ -58,12 +58,20 @@ git add -A && git commit -m "fix: ..."
 git push origin main
 
 # 4) 打 tag 并推送 —— CI 会自动构建并创建 Release
-git tag -a v<mod_version> -m "Server Chat Translator v<mod_version> (MC 26.2 / Fabric)"
-git push origin v<mod_version>
+#    tag 名格式是 v<版本>-mc<游戏版本>-<加载器>（§10.2），两条线各打一个：
+git tag -a v<mod_version>-mc<minecraft_version>-fabric -m "Server Chat Translator v<mod_version> (MC <minecraft_version> / Fabric)"
+git push origin v<mod_version>-mc<minecraft_version>-fabric
+git tag -a v<mod_version>-mc<forge_minecraft_version>-forge -m "Server Chat Translator v<mod_version> (MC 1.8.9 / Forge)"
+git push origin v<mod_version>-mc<forge_minecraft_version>-forge
 ```
 
-`v*` 标签会触发 `.github/workflows/build.yml`：用 JDK 25 + Gradle 构建，
-上传 jar 作为 artifact，并把 jar 附到同 tag 的 Release 上（已存在则覆盖上传）。
+两个 workflow 各盯自己的 tag glob：`build.yml` 只认 `v*-mc*-fabric`、
+`build-forge.yml` 只认 `v*-mc*-forge`。**裸 `v<版本>` 两个都不匹配，推上去不会有任何构建、
+也不会有 Release，而且完全静默** —— 所以 tag 名必须带上 `-mc<游戏版本>-<加载器>`。
+两条线都用 JDK 构建、上传 jar 作为 artifact，并把 jar 附到同 tag 的 Release 上（已存在则覆盖上传）。
+
+> 历史坑（v3.0.4 修）：这一节曾经写的是 `git tag -a v<mod_version>` ——
+> 那是 v2.3.0 双线并行之前的写法，照做就会静默不发版。
 
 推 tag 之后，再补一份写给人看的 Release 说明：改了什么、为什么改、升级后要做什么。
 
@@ -155,8 +163,10 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   Windows 上 clone 也不会产生「只改了行尾」的假 diff。
 - **不要提交生成物**：`build/`、`.gradle/`、`run/`、`logs/`、`config/server_chat_translator.json`
   （含 API Key）都已在 `.gitignore` 里。跑完自检会在根目录生成 `logs/`，那是运行期产物。
-- **依赖**：保持零第三方依赖（只用 Fabric API + JDK 自带的 `HttpURLConnection`）。
-  引入新依赖前先想清楚是否值得 —— 目前整包不到 70 KB。
+- **依赖**：不新增需要**打进 jar** 的依赖。唯一用到的第三方库是平台自带的 gson
+  （Fabric 线由加载器提供，1.8.9 线是游戏自带的 2.2.4，所以共享层只能用它俩都有的 API，见 §10.1）；
+  其余只用 Fabric API 与 JDK 自带的 `HttpURLConnection`（1.8.9 线连 Fabric API 都没有）。
+  引入新依赖前先想清楚是否值得 —— 目前整包约 110 KB（产物实测，别在这里写一个会漂移的数字）。
 - **日志**：一律用 `com.isomeria.hxtranslate.Log.LOGGER`，**不要**用入口类的
   `HxTranslateClient.LOGGER`。入口类实现 `ClientModInitializer`，引它会连带加载 Fabric
   加载器 API：万一那个类不可用（或以后挪了包名），打日志就会抛 `NoClassDefFoundError`，
@@ -293,7 +303,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   验字节码，并做三项反向验证（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
   这道门禁抓到过一个真实缺陷：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
   按斜杠内部名去比会导致 MCP 名永远匹配不上 —— 游戏里的表现是「发送方向完全不翻译」，
-  而编译、构建、当时那 720 项自检全是绿的（当时的基线；现为 810 项，见 CHANGELOG v3.0.0）。
+  而编译、构建、当时那 720 项自检全是绿的（当时的基线；断言数此后逐版增加，见 CHANGELOG）。
 - 注入失败**绝不能静默**：`HxTransformer` 的 catch 会往 `System.err` 打一行明确的
   失败说明（那条路径执行得极早，碰不得日志框架）。
 - 1.8.9 的 `IChatComponent.getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），

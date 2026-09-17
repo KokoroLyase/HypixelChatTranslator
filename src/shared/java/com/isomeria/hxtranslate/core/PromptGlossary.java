@@ -49,6 +49,15 @@ public final class PromptGlossary {
      */
     public static final int MAX_OUTGOING_PAIRS = 120;
 
+    /**
+     * 「英→中」方向最多列出多少条条目。
+     *
+     * <p>这个方向是**原样列出**（不做任何解析），所以以前完全没有上限：把上万字的文本粘进
+     * 术语表就会被整段塞进系统提示词（2026-09-17 审计发现，中→英方向早就有
+     * {@link #MAX_OUTGOING_PAIRS} 兜着）。正常术语表几百字，200 条对真实使用毫无影响。
+     */
+    private static final int MAX_INCOMING_ENTRIES = 200;
+
     private PromptGlossary() {
     }
 
@@ -66,9 +75,52 @@ public final class PromptGlossary {
         if (direction == Direction.OUTGOING) {
             return renderChineseToEnglish(glossary);
         }
+        // 接收方向是「原样列出」，但**必须逐组过一遍解析**（2026-09-17 审计修正）：
+        //
+        // 原来这里是 `String.join("；", glossary)`，把整条原文直接塞进提示词。后果有三条：
+        //   1. `"　　=　　"`（全角空格，中文输入法很容易打出来）这类「看着空、其实有字符」的
+        //      条目会被渲染成垃圾对照 —— 而 GlossaryAudit 用 LangUtils.isBlank() 判定它是空的，
+        //      两边对同一条目的结论正好相反；
+        //   2. 换行 / § 代码原样进请求体，能把对照表拆出一条假行（中→英方向早就防了）；
+        //   3. null 条目会被 String.join 渲染成字面量 "null"。
+        //
+        // 判据要与中→英方向共用同一套解析（PromptGlossary.parse）：
+        //   - 有 `=` 且任一侧为空 → 丢弃这一组（和中→英方向一致）；
+        //   - **没有 `=` 的条目仍然原样保留**：它可能是给模型的自由说明，
+        //     一直如此（自检里有「这不是对照表」的用例钉着），不属本次要修的问题。
+        StringBuilder listed = new StringBuilder();
+        int parts = 0;
+        for (String entry : glossary) {
+            if (LangUtils.isBlank(entry) || parts >= MAX_INCOMING_ENTRIES) {
+                continue;
+            }
+            String cleaned = LangUtils.sanitizeOneLine(entry);
+            // 逐组过滤：只在这里丢掉「等号存在但某一侧为空」的坏组
+            StringBuilder keep = new StringBuilder();
+            for (String part : splitParts(cleaned)) {
+                if (hasSeparator(part) && !parse(part).ok()) {
+                    continue;
+                }
+                if (keep.length() > 0) {
+                    keep.append('；');
+                }
+                keep.append(part);
+            }
+            if (keep.length() == 0) {
+                continue;
+            }
+            if (listed.length() > 0) {
+                listed.append('；');
+            }
+            listed.append(keep);
+            parts++;
+        }
+        if (listed.length() == 0) {
+            return null;
+        }
         return "Minecraft / Hypixel / Bed Wars 术语与缩写对照表（必须按含义翻译成中文，"
                 + "不要保留英文原样；同一缩写有多种含义时按上下文选择最合适的一个）：\n"
-                + String.join("；", glossary);
+                + listed;
     }
 
     /**
@@ -89,7 +141,7 @@ public final class PromptGlossary {
         Set<String> seen = new HashSet<>();
         int pairs = 0;
         for (String entry : glossary) {
-            if (entry == null) {
+            if (LangUtils.isBlank(entry)) {
                 continue;
             }
             // 一个条目里可能有多组对照：def=防守（defend）；"u def"=你来防守
@@ -128,13 +180,31 @@ public final class PromptGlossary {
      * <p>和渲染共用同一套规则：术语表体检（{@link GlossaryAudit}）也用这个拆法，
      * 否则「体检说没问题、渲染却把这条丢了」这种分叉会永远查不出来。
      *
+     * <p><b>limit 必须显式传 0</b>（2026-09-17 审计修正）：{@code split} 默认会丢掉**末尾**的
+     * 空串，于是 {@code ";".split("[；;]")} 得到的是**空数组** ——
+     * 「只打了一个分号」这种最典型的「加了词却没进提示词」反而完全静默
+     * （体检一条结论都不给）。传 0 后 {@code ";"} 得到 {@code [""]}，体检就能报「含空白的一组」。
+     * 末尾空串仍然丢掉（{@code "a=b;"} 与 {@code "a=b"} 等价），所以正常写法不受影响。
+     *
      * @param entry 一条配置；为 {@code null} 时返回空列表
      */
     static List<String> splitParts(String entry) {
         if (entry == null) {
             return Collections.emptyList();
         }
-        return Arrays.asList(entry.split(ENTRY_SEPARATOR));
+        String[] parts = entry.split(ENTRY_SEPARATOR, 0);
+        // `";"` 这种「整条都是分隔符」的输入会得到**空数组**（split 把末尾空串全丢了，
+        // 于是连第一个空组都不剩）—— 必须补一个空组回去，否则体检对它依然完全静默，
+        // 而那正是「玩家以为加了词、其实一个字都没进提示词」最典型的形态。
+        if (parts.length == 0) {
+            return Collections.singletonList("");
+        }
+        return Arrays.asList(parts);
+    }
+
+    /** 一组对照里有没有等号（判断「用户是想写对照，还是随手写的一段说明」）。 */
+    private static boolean hasSeparator(String part) {
+        return part != null && part.indexOf(KEY_SEPARATOR) >= 0;
     }
 
     /** 一组对照解析失败的原因，供术语表体检给出「哪里错、怎么改」的提示。 */
@@ -204,8 +274,17 @@ public final class PromptGlossary {
         }
         // 英文侧可能被用户加上引号（v2.1.4 前的默认表里就有一条 "u def"）。
         // 引号在这里没有任何意义，却会原样进提示词，和「不要加引号」的规则打架，所以剥掉。
-        String english = stripQuotes(part.substring(0, separator).trim());
-        if (english.isEmpty()) {
+        //
+        // 清洗用 sanitizeOneLine（与中文侧同一个出口）：英文侧同样由玩家手写，
+        // 一个换行就能把对照表拆出一条**假行**（`"a\nb=黑曜石"` 变成 `a` 与 `b -> 黑曜石` 两行），
+        // 而 § 代码会原样进请求体。2026-09-17 审计发现以前只有中文侧过了这道清洗。
+        //
+        // 空白判定用 LangUtils.strip() 而不是 trim()：trim() 只认 `<= ' '`，
+        // 全角空格（U+3000，中文输入法下很容易打出来）会被留下 —— 于是「　　=　　」
+        // 被当成合法条目渲染出垃圾对照，而 GlossaryAudit 用 LangUtils.isBlank()
+        // （按 Character.isWhitespace 判定）认为它是空条目，两边结论不一致。
+        String english = LangUtils.sanitizeOneLine(stripQuotes(part.substring(0, separator)));
+        if (LangUtils.isBlank(english)) {
             return new Parsed("", "", Problem.EMPTY_ENGLISH);
         }
         String chinese = chineseGloss(part.substring(separator + 1));
@@ -288,7 +367,9 @@ public final class PromptGlossary {
         if (bracket >= 0) {
             cleaned = cleaned.substring(0, bracket);
         }
-        return cleaned.trim();
+        // 同样用 strip()：全角空格既不是「内容」也不该留进对照表，
+        // 而 GlossaryAudit 的 isBlank() 判定按 Character.isWhitespace 走。
+        return LangUtils.strip(cleaned);
     }
 
     /** 第一个「（」或「(」的下标；没有则返回 -1。 */
@@ -315,6 +396,13 @@ public final class PromptGlossary {
             return render(glossary, direction);
         } catch (RuntimeException e) {
             Log.LOGGER.warn("拼装术语表失败（本条提示词不带术语表）: {}", e.toString());
+            return null;
+        } catch (Error e) {
+            // Error 也要接（2026-09-17 审计发现只接了 RuntimeException）：
+            // 这是 Log.java 的 javadoc 专门警告过的那一类 —— NoClassDefFoundError 是 Error，
+            // catch (RuntimeException) 接不住。上游 TranslationService 有 catch (Throwable)
+            // 兜着，所以不会弄死工作线程，但后果是**整条翻译失败**，而不是「这条提示词少一段术语表」。
+            Log.LOGGER.warn("拼装术语表出错（本条提示词不带术语表）: {}", e.toString());
             return null;
         }
     }

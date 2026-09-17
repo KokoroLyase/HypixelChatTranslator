@@ -61,7 +61,8 @@ public final class ForgeChatCommand extends CommandBase {
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/translator [status|on|off|incoming|outgoing|key|models|glossary|debug|reload|test]";
+        // 子命令清单必须与 processCommand 里真正注册的一致（2026-09-17 审计发现漏了 singleplayer）
+        return "/translator [status|on|off|incoming|outgoing|singleplayer|key|models|glossary|debug|reload|test]";
     }
 
     /** 客户端命令不需要权限等级（也避免被当成 op 命令而拒绝执行）。 */
@@ -92,7 +93,10 @@ public final class ForgeChatCommand extends CommandBase {
 
     @Override
     public void processCommand(ICommandSender sender, String[] args) throws CommandException {
-        String sub = args.length == 0 ? "status" : args[0].toLowerCase();
+        // Locale.ROOT 不能省（2026-09-17 审计修正）：土耳其语区域下
+        // "INCOMING".toLowerCase() 得到的是 "ıncomıng"（无点的 ı），与字面量比不中，
+        // 于是大写子命令会掉进「未知子命令」。仓库其它地方（CommandMessage）都用 Locale.ROOT。
+        String sub = args.length == 0 ? "status" : args[0].toLowerCase(java.util.Locale.ROOT);
 
         if (args.length == 0 || "status".equals(sub)) {
             status(sender);

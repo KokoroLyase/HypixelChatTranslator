@@ -19,12 +19,12 @@ labels: bug
 ## 环境
 
 - 我用的是哪条线（MC 26.3 + Fabric / MC 1.8.9 + Forge）：
-- 模组版本（照抄文件名里的版本号，如 `2.3.0`）：
+- 模组版本（照抄文件名里的版本号，如 `3.0.4`）：
 - 游戏与加载器版本（26.3 写 Fabric Loader + Fabric API；1.8.9 写 Forge 版本）：
 - 客户端语言（中文 / 英文）：
 - 服务器与场景（如 Hypixel Bed Wars 单排）：
 
-> 模组版本与 MC 版本必须对得上：**v2.x 支持 MC 26.3 与 1.8.9 两条线**，26.2 请用
+> 模组版本与 MC 版本必须对得上：**v2.x / 3.x 支持 MC 26.3 与 1.8.9 两条线**，26.2 请用
 > [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)。
 > 下载地址见 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)
 > （Release 名带 `-mc<游戏版本>-<加载器>`，与 jar 文件名一一对应）。

@@ -9,6 +9,7 @@ classes/
 /.jdk/
 /.gradle-home/
 /.tmp/
+**/.tmp/
 # 构建与反向验证时重定向出来的日志（曾经误提交过一次 .build-263.txt）
 /.build-*.txt
 /.reverse-*.txt
@@ -17,11 +18,15 @@ classes/
 # 本地配置（含 DeepSeek API Key），绝对不要提交
 config/server_chat_translator.json
 run/config/server_chat_translator.json
+# `**/` 前缀是防御性的第二道线：没有它，中间带斜杠的模式只相对仓库根解析，
+# 嵌套目录（例如 forge-1.8.9/config/…）里的同名文件不会被忽略。
+**/config/server_chat_translator.json
 # v3.0.0 更名前的老配置文件名也要继续忽略：它同样含明文 API Key，
 # 而玩家机器上那个文件还在（本轮不做搬迁）。这一行是第二道防线 ——
 # 万一谁把老文件复制进仓库，也不会把 Key 一起提上去。
 config/hxtranslate.json
 run/config/hxtranslate.json
+**/config/hxtranslate.json
 config/*.json.broken-*
 *.local.json
 

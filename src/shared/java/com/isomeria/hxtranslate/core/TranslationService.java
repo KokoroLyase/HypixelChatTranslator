@@ -52,6 +52,23 @@ public final class TranslationService {
     /** 滑动窗口限流用的时间戳。 */
     private final Deque<Long> requestWindow = new ArrayDeque<>();
 
+    /**
+     * 缓存「代际」。{@code invalidateCache()} 时 +1。
+     *
+     * <p><b>2026-09-17 审计修正的竞态</b>：{@code /translator reload} 会清空缓存
+     * （玩家刚改完术语表 / 提示词 / 模型，盼着新配置立刻生效），但**在途**的翻译任务不会被取消 ——
+     * 它拿的是旧配置生成的请求，回来之后照旧往缓存里写。于是一条用旧提示词翻出来的译文
+     * 会在 reload 之后被写进刚清空的缓存，并**长期命中**（直到被 LRU 挤出去），
+     * 玩家看到的是「reload 没生效」。
+     *
+     * <p>修法：提交任务时记下当时的代际，写完缓存前再比对一次 —— 代际变了就丢弃这次结果
+     * （回调照常执行，只是不落缓存）。不用 synchronized 包住「清空 + 回写」，
+     * 是因为清空与回写分别在主线程和 worker 线程上，加锁也挡不住「清空之后才开始写」这个顺序，
+     * 只有代际比较能表达「这条结果属于上一代配置」。
+     */
+    private final java.util.concurrent.atomic.AtomicLong cacheGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+
     private volatile boolean shutdown;
 
     public TranslationService(TranslatorConfig config) {
@@ -91,9 +108,23 @@ public final class TranslationService {
         return config.hasApiKey() && !shutdown;
     }
 
-    /** 清空缓存（换了模型 / 改了提示词之后用）。 */
+    /** 清空缓存（换了模型 / 改了提示词之后用）。同时推进代际，作废在途任务的回写。 */
     public synchronized void invalidateCache() {
         cache.clear();
+        cacheGeneration.incrementAndGet();
+    }
+
+    /**
+     * 写入缓存 —— 只在「提交时的代际 == 当前代际」时生效。
+     *
+     * <p>代际在 {@code invalidateCache()} 里 +1，所以配置重载之后回来的旧译文会被丢弃，
+     * 不会污染刚清空的缓存（见 {@code cacheGeneration} 的说明）。
+     */
+    private synchronized void putCached(String key, String value, long generation) {
+        if (generation != cacheGeneration.get()) {
+            return;
+        }
+        cache.put(key, value);
     }
 
     public synchronized void resetRateLimit() {
@@ -120,9 +151,10 @@ public final class TranslationService {
         }
 
         String key = direction.name() + '|' + LangUtils.normalizeKey(text);
+        // 记下提交时的缓存代际：回写时若已经 reload 过（代际变了），这次结果就不进缓存。
+        final long generation = cacheGeneration.get();
 
         // 缓存查找必须排在背压**之前**（v2.2.3 调整顺序）。
-        //
         // 原因：缓存命中是唯一「零网络、可立即完成」的出路 —— 它不需要接口，也不占限流配额。
         // 以前先查背压，于是接口变慢、队列积压时，连「这句我刚才已经翻过」的免费消息
         // 也会被当成「接口变慢」拒绝（默认 failureFallback=CANCEL 下直接不发出去）。
@@ -176,9 +208,7 @@ public final class TranslationService {
             try {
                 DeepSeekClient.Result result = client.translate(text, direction);
                 if (result.ok()) {
-                    synchronized (this) {
-                        cache.put(key, result.text());
-                    }
+                    putCached(key, result.text(), generation);
                     if (config.debugLog) {
                         Log.LOGGER.info("[translate] {} {} -> {}", direction.label(), text, result.text());
                     }
@@ -261,6 +291,7 @@ public final class TranslationService {
             return DeepSeekClient.Result.failure("未配置 API Key");
         }
         String key = direction.name() + '|' + LangUtils.normalizeKey(text);
+        final long generation = cacheGeneration.get();
         synchronized (this) {
             String cached = cache.get(key);
             if (cached != null) {
@@ -269,9 +300,8 @@ public final class TranslationService {
         }
         DeepSeekClient.Result result = client.translate(text, direction);
         if (result.ok()) {
-            synchronized (this) {
-                cache.put(key, result.text());
-            }
+            // 与 submit() 同一条规则：reload 之后回来的旧译文不写进新缓存
+            putCached(key, result.text(), generation);
         }
         return result;
     }

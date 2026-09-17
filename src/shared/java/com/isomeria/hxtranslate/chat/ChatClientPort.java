@@ -51,15 +51,20 @@ public interface ChatClientPort {
      * 装配层，而「拿到这个事实之后要不要翻译」的决策留在共享层 —— 这样单人闸门才能被离线
      * 自检直接测到（自检的假实现随便设这个值）。
      *
-     * <p>两条线的实现不同，但语义必须一致：**只有「本地开着集成服务端的单人世界」才算 true**。
+     * <p>两条线的实现不同，但语义必须一致：**只有「本地开着集成服务端的单人世界、
+     * 且还没开放到局域网」才算 true**。
      * <ul>
      *   <li>Fabric 26.3：{@code Minecraft.hasSingleplayerServer()}
-     *       （= 集成服务端已建立<b>且</b>单人世界已加载）；</li>
-     *   <li>Forge 1.8.9：{@code Minecraft.getMinecraft().isSingleplayer()}。</li>
+     *       <b>且</b> {@code !getSingleplayerServer().isPublished()}；</li>
+     *   <li>Forge 1.8.9：{@code Minecraft.isSingleplayer()}
+     *       <b>且</b> {@code !getIntegratedServer().getPublic()}。</li>
      * </ul>
      *
-     * <p><b>不要</b>改用 {@code isLocalServer()}：「对局域网开放」的存档在它眼里也是 true，
-     * 而那种情况属于多人场景，仍然应该翻译 —— 判据用错会让玩家在联机时莫名其妙不翻译。
+     * <p><b>为什么必须排除「对局域网开放」</b>（2026-09-17 审计修正）：两条线的
+     * {@code hasSingleplayerServer()} / {@code isSingleplayer()} 都**不看**开放标志
+     * （已用 {@code javap} 逐条核对字节码），于是 LAN 存档会被判成单人，配合默认
+     * {@code translateInSingleplayer=false} 就是整条链路全拦 —— 而 README §5 / §8
+     * 明写「对局域网开放的存档仍然翻译」。那种场景有别的玩家在说话，属于多人，必须翻译。
      *
      * <p>还没进入世界时返回 {@code false}（没进世界时本来就不会有消息要翻）。
      */

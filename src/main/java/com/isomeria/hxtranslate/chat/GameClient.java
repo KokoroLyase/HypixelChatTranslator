@@ -144,22 +144,37 @@ public final class GameClient implements ChatClientPort {
     }
 
     /**
-     * 26.3 的判据是 {@code hasSingleplayerServer()}：它 =「集成服务端已建立 <b>且</b>
-     * 单人世界已加载」。已在 26.3 的 remapped jar 上核对过方法确实存在。
+     * 26.3 的判据是 {@code hasSingleplayerServer()}（= 集成服务端已建立<b>且</b>单人世界已加载）
+     * <b>再排除「已对局域网开放」</b>。
      *
-     * <p><b>不要</b>改用 {@code isLocalServer()}：26.3 上它同样存在，但它对「对局域网开放」
-     * 的存档也返回 true —— 那种情况属于多人场景，仍然应该翻译。判据用错会让玩家开个局域网
-     * 就莫名其妙不翻译，而且编译期完全看不出来（两个方法都存在、都返回 boolean）。
+     * <p><b>2026-09-17 审计修正</b>：以前这里只有 {@code hasSingleplayerServer()}，
+     * 而那条注释声称「不要改用 {@code isLocalServer()}，它对 LAN 存档也返回 true」——
+     * 实测 {@code javap} 两条方法的字节码，这句话是错的：
+     * <pre>
+     * isLocalServer()          → return isLocalServer;
+     * hasSingleplayerServer()  → return isLocalServer &amp;&amp; singleplayerServer != null;
+     * </pre>
+     * 二者都不看 {@code IntegratedServer.isPublished()}，而「对局域网开放」只改那个标志。
+     * 所以 LAN 存档被判成单人，配合默认 {@code translateInSingleplayer=false} 就是
+     * <b>整条链路全拦</b>：README §5 与 §8 都明写「对局域网开放的存档仍然翻译」，
+     * 实际行为与文档承诺正好相反（LAN 房主自己打字也一样不翻译）。
      *
-     * <p>{@code getSingleplayerServer()} 也能用（判空即可），但那是「先取对象再判断」，
-     * 与 26.3 自己提供的这个布尔判据语义重复，没必要绕。
+     * <p>现在的判据：单人存档 <b>且</b> 没有开放到局域网才算「单人」。
+     * 开放后 {@code IntegratedServer.isPublished()} 为 true → 返回 false → 照常翻译，
+     * 与文档一致（代价是 LAN 房主开始产生 API 费用，这是文档已经承诺的行为）。
      *
      * <p>还没进入世界时返回 false（没进世界时本来就不会有消息要翻）。
      */
     @Override
     public boolean isSingleplayer() {
         Minecraft minecraft = Minecraft.getInstance();
-        return minecraft != null && minecraft.hasSingleplayerServer();
+        if (minecraft == null || !minecraft.hasSingleplayerServer()) {
+            return false;
+        }
+        net.minecraft.client.server.IntegratedServer server = minecraft.getSingleplayerServer();
+        // getSingleplayerServer() 在 hasSingleplayerServer() 为 true 时必非 null；
+        // 仍然判空，避免把「理论上不可能」变成 NPE 直接崩游戏。
+        return server == null || !server.isPublished();
     }
 
     @Override

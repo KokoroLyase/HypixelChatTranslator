@@ -544,12 +544,18 @@ public final class DeepSeekClient {
     /** 把 HTTP 状态码翻译成给用户看的原因，并标出哪些值得重试。 */
     private Result httpError(int status, String response) {
         String detail = extractErrorMessage(response);
+        // config.model 是**玩家自己填的字符串**，而 400 这条文案会把它原样拼进去给玩家看。
+        // 名字里带换行 / 控制字符时，这条错误提示会被原版拆成多行 —— 第二行没有 `[sct]` 前缀，
+        // 看起来就像别人/服务器说的话（2026-09-17 审计实测复现）。
+        // TranslatorConfig.normalize() 已经在读配置时清过一遍，这里再兜一次是因为
+        // API 也可能在响应里把模型名带回来，而这段文本同样会进聊天栏。
+        String shownModel = LangUtils.sanitizeOneLine(config.model == null ? "" : config.model);
 
         // Java 8 没有 switch 表达式（1.8.9 那条线编译不过），改成经典 switch。
         switch (status) {
             case 400:
                 return Result.failure("请求被拒绝 (400)，通常是模型名不对；"
-                        + "当前模型 §f" + config.model + "§c，可改成 deepseek-flash。" + detail);
+                        + "当前模型 §f" + shownModel + "§c，可改成 deepseek-flash。" + detail);
             // 401/402/429 都补上「下一步」（v2.2.3）：这三条以前只说「出错了」，
             // 而玩家看完最需要知道的就是该做什么 —— 对照 400 那条本来就给了动作。
             case 401:
@@ -587,6 +593,10 @@ public final class DeepSeekClient {
         // 这段内容来自接口（不少用户配的是第三方中转站），对模组来说是「不可信输入」：
         // 先压成一行、去掉 § 代码再截断，免得把颜色代码和换行带进聊天栏。
         detail = LangUtils.sanitizeOneLine(detail);
-        return detail.length() > 160 ? detail.substring(0, 160) + "..." : detail;
+        // 用 truncateForChat 而不是手工 substring(0,160)（2026-09-17 审计修正）：
+        // 手工截断会把代打对（emoji / 扩展汉字）劈成半个，留下孤立的高位代理 ——
+        // 那是非法 UTF-8，写进聊天栏是乱码方块，发给服务器可能直接被拒。
+        // truncateForChat 本来就带这层保护，全仓其它截断点用的都是它。
+        return detail.length() > 160 ? LangUtils.truncateForChat(detail, 160) : detail;
     }
 }

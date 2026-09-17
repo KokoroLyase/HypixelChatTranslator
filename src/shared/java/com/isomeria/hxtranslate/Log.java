@@ -67,7 +67,7 @@ public final class Log {
 
     /** 吞掉异常时统一用它，避免各处写 {@code e.toString()} 格式不一。 */
     public static void warn(String message, Throwable error) {
-        emit(Level.WARN, message, new Object[] {error});
+        emit(Level.WARN, message, new Object[] {error}, true);
     }
 
     /** slf4j 常用子集；占位符只认 {@code {}}。 */
@@ -87,6 +87,16 @@ public final class Log {
     }
 
     private static void emit(Level level, String format, Object[] args) {
+        emit(level, format, args, false);
+    }
+
+    /**
+     * @param lastArgIsError 调用方（{@link #warn(String, Throwable)}）已经明确说「最后一个参数是异常」。
+     *                       这条路**不能**走「参数比占位符多」的自动推断：消息里只要含 {@code {}}
+     *                       （例如把请求体或用户输入拼进消息），推断就会认为异常只是普通文本，
+     *                       于是异常对象被丢掉、只剩一行 {@code toString()}（2026-09-17 审计发现）。
+     */
+    private static void emit(Level level, String format, Object[] args, boolean lastArgIsError) {
         Sink current = sink;
         // 静默 sink（离线自检里的绝大多数日志）连字符串都不用拼
         if (current == SILENT) {
@@ -97,7 +107,9 @@ public final class Log {
             int slots = countSlots(format);
             Throwable error = null;
             // slf4j 的规矩：参数比占位符多、且最后一个参数是异常时，它当作异常而不是文本
-            if (values.length > slots && values[values.length - 1] instanceof Throwable) {
+            if (lastArgIsError && values.length > 0 && values[values.length - 1] instanceof Throwable) {
+                error = (Throwable) values[values.length - 1];
+            } else if (values.length > slots && values[values.length - 1] instanceof Throwable) {
                 error = (Throwable) values[values.length - 1];
             }
             current.log(level, format(format, values, slots, error), error);

@@ -85,30 +85,95 @@ public final class VerifyCoremod {
         check("反向验证：SRG 名（func_71165_d）也能命中", hasInjectedHook(srgPatched));
 
         // ---- 3c) 反向验证：换成混淆名 bew/e 也要命中 ----
-        byte[] obfNamed = renameMethod(renameClass(original, CLASS), "func_71165_d", "e");
-        byte[] obfPatched = transformer.transform("bew", "bew", obfNamed);
+        //
+        // 2026-09-17 审计：这里原来是
+        // `renameMethod(renameClass(original, CLASS), "func_71165_d", "e")`，
+        // 而 renameClass 已经把方法名原样留成 MCP 的 sendChatMessage，
+        // 所以那次 renameMethod **什么都没改** —— 这条用例实际验证的是
+        // 「bew 类名 + sendChatMessage」，TARGET_METHODS 里的混淆名 "e" 分支零覆盖。
+        // 正确的顺序是先改类名、再把 MCP 方法名改成混淆名（renameMethod 用的是 MCP 名）。
+        byte[] obfNamed = renameMethod(renameClass(original, CLASS), "sendChatMessage", "e");
+        check("反向验证：混淆类名/方法名改造成功（类=bew，方法名=e）",
+                "bew".equals(classNameOf(obfNamed)) && hasMethodNamed(obfNamed, "e"));
+        byte[] obfPatched = new HxTransformer().transform("bew", "bew", obfNamed);
         check("反向验证：混淆名（其他命名层的兜底）也能命中", hasInjectedHook(obfPatched));
+        check("混淆名命中后注入的确实是那个方法（方法名仍为 e）",
+                hasInjectedHookInMethodNamed(obfPatched, "e"));
 
         finish();
     }
 
+    /** 读一个类的内部名（斜杠形式）。 */
+    private static String classNameOf(byte[] bytes) {
+        ClassNode node = new ClassNode();
+        new ClassReader(bytes).accept(node, 0);
+        return node.name;
+    }
+
+    /** 类里是否存在名为 {@code name} 且描述符为 (String)V 的方法。 */
+    private static boolean hasMethodNamed(byte[] bytes, String name) {
+        ClassNode node = new ClassNode();
+        new ClassReader(bytes).accept(node, 0);
+        for (int i = 0; i < node.methods.size(); i++) {
+            MethodNode method = (MethodNode) node.methods.get(i);
+            if (name.equals(method.name) && "(Ljava/lang/String;)V".equals(method.desc)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 注入的钩子是否恰好出现在名为 {@code name} 的那个方法里（而不是同描述符的别的方法）。 */
+    private static boolean hasInjectedHookInMethodNamed(byte[] bytes, String name) {
+        if (bytes == null) {
+            return false;
+        }
+        ClassNode node = new ClassNode();
+        new ClassReader(bytes).accept(node, 0);
+        for (int i = 0; i < node.methods.size(); i++) {
+            MethodNode method = (MethodNode) node.methods.get(i);
+            if (name.equals(method.name) && "(Ljava/lang/String;)V".equals(method.desc)) {
+                return hasHookCalls(method);
+            }
+        }
+        return false;
+    }
+
     // ------------------------------------------------------------------
 
-    /** 用真正的 JVM 校验器验一遍改造后的类。 */
+    /**
+     * 用真正的 JVM 校验器验一遍改造后的类。
+     *
+     * <p><b>2026-09-17 审计修正</b>：这一步以前是**假的**。原来的写法对任何
+     * {@code Throwable} 都记「通过」，理由是「能走到解析阶段说明校验已经过了」——
+     * 但类路径里只有 deobf jar，{@code EntityPlayerSP} 在**加载**阶段就抛
+     * {@code NoClassDefFoundError: com/google/common/base/Predicate}（缺 guava），
+     * 校验器根本没执行。实测把目标方法的 {@code maxStack} 故意改成 0，这一项照样绿。
+     *
+     * <p>现在两件事一起改：
+     * <ol>
+     *   <li>{@code forge-1.8.9/build.gradle} 给 verifyCoremod 的运行时类路径补上了
+     *       Minecraft 运行库（{@code forgeGradleMcDepsClient}），类真的能加载；</li>
+     *   <li>判定改成「{@code getDeclaredMethods()} 成功返回才算通过」，
+     *       任何 Throwable（包括缺库）都**算失败**并打印原因 —— 宁可这道门禁响亮地红，
+     *       也不要它永远绿着骗人。</li>
+     * </ol>
+     */
     private static void verifyWithRealJvm(Path patchedJar, Path deobfJar) {
         try {
             URL[] urls = {patchedJar.toUri().toURL(), deobfJar.toUri().toURL()};
             URLClassLoader loader = new URLClassLoader(urls, VerifyCoremod.class.getClassLoader());
             Class<?> loaded = Class.forName(CLASS.replace('/', '.'), false, loader);
-            loaded.getDeclaredMethods();
-            check("反向验证：JVM 校验器接受改造后的字节码（无 VerifyError）", true);
+            // 走到这里说明：类被加载 + 字节码通过校验 + 方法表可读。缺任何一样都会抛。
+            int methods = loaded.getDeclaredMethods().length;
+            check("JVM 校验器接受改造后的字节码（已加载 " + CLASS + "，方法数 " + methods + "）", methods > 0);
         } catch (VerifyError e) {
-            check("反向验证：JVM 校验器接受改造后的字节码（无 VerifyError）—— 实际失败: " + e.getMessage(), false);
+            check("JVM 校验器接受改造后的字节码 —— 实际失败（VerifyError）: " + e.getMessage(), false);
         } catch (Throwable t) {
-            // 类能走到「解析/初始化」阶段就说明字节码校验已经过了：
-            // 这里失败是因为脱离游戏环境（缺 LWJGL / 静态初始化依赖），不是字节码问题。
-            check("反向验证：JVM 校验器接受改造后的字节码（校验通过，之后的 "
-                    + t.getClass().getSimpleName() + " 属于脱离游戏环境的预期现象）", true);
+            // 走到这里不是「预期现象」，而是这道门禁失去了意义：类都没加载起来，
+            // 校验器压根没验。原因（缺哪个库）直接打出来，便于修类路径。
+            check("JVM 校验器接受改造后的字节码 —— 类未能加载，校验未真正执行（"
+                    + t.getClass().getName() + ": " + t.getMessage() + "）", false);
         }
     }
 
@@ -123,34 +188,39 @@ public final class VerifyCoremod {
             if (!"(Ljava/lang/String;)V".equals(method.desc)) {
                 continue;
             }
-            boolean sawLoad = false;
-            boolean sawCall = false;
-            boolean sawJump = false;
-            boolean sawReturn = false;
-            boolean sawFrame = false;
-            for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-                if (insn instanceof VarInsnNode && insn.getOpcode() == Opcodes.ALOAD) {
-                    sawLoad = true;
-                } else if (insn instanceof MethodInsnNode) {
-                    MethodInsnNode call = (MethodInsnNode) insn;
-                    if ("com/isomeria/hxtranslate/forge/asm/HxHooks".equals(call.owner)
-                            && "onSendChatMessage".equals(call.name)) {
-                        sawCall = true;
-                    }
-                } else if (insn instanceof JumpInsnNode && insn.getOpcode() == Opcodes.IFEQ && sawCall) {
-                    sawJump = true;
-                } else if (insn instanceof InsnNode && insn.getOpcode() == Opcodes.RETURN && sawJump) {
-                    sawReturn = true;
-                } else if (insn instanceof FrameNode && sawReturn) {
-                    sawFrame = true;
-                    break;
-                }
-            }
-            if (sawLoad && sawCall && sawJump && sawReturn && sawFrame) {
+            if (hasHookCalls(method)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** 这个方法体里是否出现了「ALOAD 1 → 调 HxHooks → IFEQ → RETURN → 帧」这套注入序列。 */
+    private static boolean hasHookCalls(MethodNode method) {
+        boolean sawLoad = false;
+        boolean sawCall = false;
+        boolean sawJump = false;
+        boolean sawReturn = false;
+        boolean sawFrame = false;
+        for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
+            if (insn instanceof VarInsnNode && insn.getOpcode() == Opcodes.ALOAD) {
+                sawLoad = true;
+            } else if (insn instanceof MethodInsnNode) {
+                MethodInsnNode call = (MethodInsnNode) insn;
+                if ("com/isomeria/hxtranslate/forge/asm/HxHooks".equals(call.owner)
+                        && "onSendChatMessage".equals(call.name)) {
+                    sawCall = true;
+                }
+            } else if (insn instanceof JumpInsnNode && insn.getOpcode() == Opcodes.IFEQ && sawCall) {
+                sawJump = true;
+            } else if (insn instanceof InsnNode && insn.getOpcode() == Opcodes.RETURN && sawJump) {
+                sawReturn = true;
+            } else if (insn instanceof FrameNode && sawReturn) {
+                sawFrame = true;
+                break;
+            }
+        }
+        return sawLoad && sawCall && sawJump && sawReturn && sawFrame;
     }
 
     private static int methodSize(byte[] bytes) {

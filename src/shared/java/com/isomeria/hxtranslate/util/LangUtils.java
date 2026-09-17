@@ -566,27 +566,78 @@ public final class LangUtils {
             return "";
         }
         String stripped = stripFormattingCodes(text);
-        StringBuilder builder = new StringBuilder(stripped.length());
+        // 不可见 / 双向格式字符必须丢掉（v3.0.0 洁净度审计补）。
+        //
+        // 这里处理的是**接口返回的文本**（译文、模型名、错误正文），来源可能是第三方中转站，
+        // 对模组是不可信输入。旧实现只挡了 C0 控制字符，而下面这些都是「合法」字符、
+        // 能原样进聊天栏 —— 其中 U+202E 会把**整行剩余部分的显示顺序反过来**：
+        // 传入 "hello \u202Eworld" 时玩家看到的是被重排过的文本，可以用作视觉伪装。
+        // 零宽字符则能在看起来正常的句子里藏东西（复制出来才发现不一样）。
+        //
+        // 刻意**保留** U+200C/U+200D（零宽不连字/连字）：它们是 emoji 组合
+        // （👨‍👩‍👧）和部分文字连写所必需的，删掉会把玩家的 emoji 弄坏，
+        // 而它们本身不能重排文本、也不是可滥用的伪装手段。
+        StringBuilder visible = new StringBuilder(stripped.length());
+        for (int i = 0; i < stripped.length(); ) {
+            // 按**码位**遍历：TAG 区（U+E0000–U+E007F）与私用区补充平面都在 BMP 之外，
+            // 按 char 看会只看到两个代理，判定就漏了。
+            int cp = stripped.codePointAt(i);
+            i += Character.charCount(cp);
+            if (!isInvisibleFormat(cp)) {
+                visible.appendCodePoint(cp);
+            }
+        }
+        // 版式（压成一行、丢控制字符）与 sanitizeOneLine 共用同一份实现：
+        // 「什么算一行」在两处必须是同一个答案，否则其中一处迟早会漂移。
+        return singleLineLayout(visible.toString());
+    }
+
+    /**
+     * 只保住「一行」这个版式约束，<b>保留</b> {@code §} 格式代码。
+     *
+     * <p>与 {@link #sanitizeOneLine} 的分工必须分清楚，这是 2026-09-17 审计发现的一个真实缺陷：
+     *
+     * <ul>
+     *   <li>{@link #sanitizeOneLine} 处理的是<b>不可信内容</b>（接口返回的译文、模型名、错误正文），
+     *       它把 {@code §} 一并剥掉 —— 那些文本本来就不该带颜色。调用点是
+     *       {@code DeepSeekClient.cleanApiText} / {@code extractErrorMessage}、
+     *       {@code PromptGlossary}、{@code GlossaryAudit}；</li>
+     *   <li>本方法处理的是<b>要把前缀与正文拼起来的那一整行</b>。前缀是用户配置的
+     *       （{@code incomingPrefix} / {@code outgoingPrefix}，README 明确写着「支持 § 颜色代码」），
+     *       拼装层还会自己加 {@code §7}、{@code §c} 这类高亮。格式代码在这里是**有意的**。</li>
+     * </ul>
+     *
+     * <p><b>这个缺陷原来长什么样</b>：装配层的 {@code GameFeedback#clean} 对**整行**调
+     * {@code sanitizeOneLine}，于是自己拼的 {@code §8[§b译§8] §f} 前缀被整个剥掉 ——
+     * 聊天栏里每条译文都变成没有颜色的 {@code [译] …}，启动横幅、F6 开关提示、
+     * 状态命令里那些 {@code §f}/{@code §c} 高亮也全部失效。它由离线自检**测不出来**：
+     * 自检的 {@code FakeFeedback} 记的是拼装层交出来的原始字符串（还带着 {@code §}），
+     * 所以断言「译文带 [译] 前缀」照样是绿的，而玩家看到的那一行早就没有颜色了。
+     *
+     * <p>修法就是把「版式」和「颜色」拆成两件事：装配层只负责保证「恶意内容不能把一行拆成两行」，
+     * 颜色交回给调用方。{@code §} 本身既不能换行也不能重排文本，保留它不会削弱
+     * {@code sanitizeOneLine} 挡的那些东西（{@code U+202E} 重排、零宽字符、
+     * {@code §} 伪造成颜色代码）—— 那些字符在内容进入这里之前就已经被
+     * {@code DeepSeekClient.cleanApiText} 清掉了。
+     *
+     * <p>仍然丢弃 C0/C1 控制字符（含 {@code \n} {@code \r} {@code \t}）与 {@code DEL}：
+     * 换行会被原版 {@code StringSplitter.splitLines} 拆成多条聊天行，让译文那行丢掉
+     * {@code [译]} 前缀、看起来像服务器自己说的话 —— 这是必须由装配层兜住的最后一道。
+     * 连续的空白压成一个空格，理由同 {@link #sanitizeOneLine}。
+     *
+     * <p>Java 8 实现（共享层两个构建共编，不能用 Java 9+ 的 API）。
+     */
+    public static String singleLineLayout(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(text.length());
         boolean pendingSpace = false;
-        for (int i = 0; i < stripped.length(); i++) {
-            char c = stripped.charAt(i);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
             if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
                 pendingSpace = true;
             } else if (c >= 0x20 && c != 0x7F) {
-                // 不可见 / 双向格式字符必须丢掉（v3.0.0 洁净度审计补）。
-                //
-                // 这里处理的是**接口返回的文本**（译文、模型名、错误正文），来源可能是第三方中转站，
-                // 对模组是不可信输入。旧实现只挡了 C0 控制字符，而下面这些都是「合法」字符、
-                // 能原样进聊天栏 —— 其中 U+202E 会把**整行剩余部分的显示顺序反过来**：
-                // 传入 "hello \u202Eworld" 时玩家看到的是被重排过的文本，可以用作视觉伪装。
-                // 零宽字符则能在看起来正常的句子里藏东西（复制出来才发现不一样）。
-                //
-                // 刻意**保留** U+200C/U+200D（零宽不连字/连字）：它们是 emoji 组合
-                // （👨‍👩‍👧）和部分文字连写所必需的，删掉会把玩家的 emoji 弄坏，
-                // 而它们本身不能重排文本、也不是可滥用的伪装手段。
-                if (isInvisibleFormat(c)) {
-                    continue;
-                }
                 if (pendingSpace && builder.length() > 0) {
                     builder.append(' ');
                 }
@@ -602,15 +653,30 @@ public final class LangUtils {
      * 是否是「看不见、但能影响显示」的格式字符 —— 进聊天栏前一律丢弃。
      *
      * <p>保留 {@code U+200C} / {@code U+200D}（emoji 组合需要），理由见 {@link #sanitizeOneLine}。
+     *
+     * <p><b>2026-09-17 审计补齐</b>：原来只挡了 BMP 里的一小撮。补进来的是同类里会被滥用的
+     * 那几个 —— {@code U+061C}（阿拉伯字母标记，与已挡的 LRM/RLM 同类的双向控制符）、
+     * {@code U+2028}/{@code U+2029}（行/段分隔符：它们在 Unicode 里就是「换行」，
+     * 照样能把一行拆成两行）、{@code U+2060-U+2064}（零宽 / 不可见运算符）、
+     * {@code U+FFF9-U+FFFB}（不可见注释符）、以及 {@code U+E0000-U+E007F}（TAG 区，
+     * 完全不可见却能夹带一整段隐藏文本）与私用区补充平面。参数是**码位**而不是 char。
      */
-    private static boolean isInvisibleFormat(char c) {
-        return c == '\u00AD'                       // SOFT HYPHEN：看不见，复制出来却多一个字符
-                || c == '\u200B'                   // ZERO WIDTH SPACE
-                || c == '\u200E' || c == '\u200F'  // LRM / RLM：双向标记
-                || (c >= '\u202A' && c <= '\u202E')// LRE / RLE / PDF / LRO / RLO（能重排整行）
-                || (c >= '\u2066' && c <= '\u2069')// LRI / RLI / FSI / PDI：双向隔离
-                || c == '\uFEFF'                   // BOM / ZERO WIDTH NO-BREAK SPACE
-                || (c >= '\uE000' && c <= '\uF8FF');// 私用区：聊天字体没有字形，只会显示成方块
+    private static boolean isInvisibleFormat(int cp) {
+        return cp == 0x00AD                     // SOFT HYPHEN：看不见，复制出来却多一个字符
+                || cp == 0x061C                 // ARABIC LETTER MARK：与 LRM/RLM 同类的双向标记
+                || cp == 0x200B                 // ZERO WIDTH SPACE
+                || cp == 0x200E || cp == 0x200F // LRM / RLM：双向标记
+                || (cp >= 0x202A && cp <= 0x202E)// LRE / RLE / PDF / LRO / RLO（能重排整行）
+                || cp == 0x2028 || cp == 0x2029 // LINE / PARAGRAPH SEPARATOR：也是「换行」，能拆行
+                || cp == 0x2060                 // WORD JOINER：零宽
+                || (cp >= 0x2061 && cp <= 0x2064)// 不可见数学运算符
+                || (cp >= 0x2066 && cp <= 0x2069)// LRI / RLI / FSI / PDI：双向隔离
+                || (cp >= 0xFFF9 && cp <= 0xFFFB)// 不可见注释符（IAA / IAS / IAT）
+                || cp == 0xFEFF                 // BOM / ZERO WIDTH NO-BREAK SPACE
+                || (cp >= 0xE0000 && cp <= 0xE007F)// TAG 区：完全不可见，能夹带隐藏文本
+                || (cp >= 0xE000 && cp <= 0xF8FF)// 私用区：聊天字体没有字形，只会显示成方块
+                || (cp >= 0xF0000 && cp <= 0xFFFFD)// 私用区补充平面 A
+                || (cp >= 0x100000 && cp <= 0x10FFFD);// 私用区补充平面 B
     }
 
     // ------------------------------------------------------------------

@@ -63,6 +63,15 @@ public final class HxTransformer implements IClassTransformer {
     private static final String HOOK_NAME = "onSendChatMessage";
     private static final String HOOK_DESC = "(Ljava/lang/String;)Z";
 
+    /**
+     * 「目标类命中了、但一个方法都没注入」只大声说一次。
+     *
+     * <p>FML 在启动时会用多个命名层各转换一次（{@code bew} 与 MCP 名），所以同一条失败会
+     * 被重复报告；而玩家按文档去日志里搜 {@code [server_chat_translator]} 时，
+     * 满屏重复反而找不到重点。
+     */
+    private static volatile boolean patchFailureReported;
+
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
         if (basicClass == null) {
@@ -71,8 +80,13 @@ public final class HxTransformer implements IClassTransformer {
         if (!isTargetClass(name) && !isTargetClass(transformedName)) {
             return basicClass;
         }
+        // patchedFlag 是「是否真的注入了至少一个方法」的出参：类名命中但一个方法都没注入
+        // （映射层换了 / 签名变了）以前是**完全静默**的，表现和「注入抛异常」一样 ——
+        // 发送方向不翻译，而日志里一个字都没有（见下面 reportFailure 的说明）。
+        boolean[] patchedFlag = new boolean[1];
+        byte[] patched;
         try {
-            return patch(basicClass);
+            patched = patch(basicClass, patchedFlag);
         } catch (Throwable t) {
             // 注入失败必须原样放行：宁可「发送方向不翻译」，也绝不能让游戏启动就崩。
             // 这里刻意 catch Throwable 而不是 RuntimeException —— 链接期错误是 Error。
@@ -80,11 +94,26 @@ public final class HxTransformer implements IClassTransformer {
             // 但**绝不能静默**：核心插件失效时玩家只会看到「我打的中文没被翻译」，
             // 没有任何线索。用 System.err 而不是日志框架：这条路径执行得极早
             // （FML 还没初始化日志），碰任何游戏/日志类都可能再抛一次。
-            System.err.println("[server_chat_translator] EntityPlayerSP 字节码注入失败，"
-                    + "发送方向将不翻译（其余功能不受影响）: " + t);
+            reportFailure("EntityPlayerSP 字节码注入失败", "异常: " + t);
             t.printStackTrace();
             return basicClass;
         }
+        if (!patchedFlag[0] || patched == null) {
+            reportFailure("目标类里没有找到可注入的 sendChatMessage(String)",
+                    "发送方向将不翻译（若游戏已更新，请检查 TARGET_METHODS / TARGET_DESC）");
+            return basicClass;
+        }
+        return patched;
+    }
+
+    /** 注入失败/找不到注入点时统一往 {@code System.err} 打一行可被文档关键词搜到的说明。 */
+    private static void reportFailure(String what, String detail) {
+        if (patchFailureReported) {
+            return;
+        }
+        patchFailureReported = true;
+        System.err.println("[server_chat_translator] " + what + "，" + detail
+                + "（其余功能不受影响）");
     }
 
     /**
@@ -106,7 +135,16 @@ public final class HxTransformer implements IClassTransformer {
         return TARGET_CLASS_MCP.equals(className.replace('/', '.'));
     }
 
-    private byte[] patch(byte[] basicClass) {
+    /**
+     * 给目标方法插入早退分支并返回改造后的字节码。
+     *
+     * @param patchedFlag 长度 1 的数组，用作「是否真的注入了至少一个方法」的出参
+     *                    （Java 8 没有 record / 多返回值；这是 2026-09-17 审计加的，
+     *                    因为以前外界无法区分「注入成功」与「类名命中了但没找到目标方法」，
+     *                    而后者是完全静默的失效）
+     * @return 改造后的字节码；一个方法都没注入时返回 {@code null}（调用方原样放行）
+     */
+    private static byte[] patch(byte[] basicClass, boolean[] patchedFlag) {
         ClassNode node = new ClassNode();
         // EXPAND_FRAMES 让帧以可编辑的形式读入（我们只加不改，但保持一致更安全）
         new ClassReader(basicClass).accept(node, ClassReader.EXPAND_FRAMES);
@@ -125,17 +163,17 @@ public final class HxTransformer implements IClassTransformer {
             injectHead(method, node.name);
             patched = true;
         }
+        patchedFlag[0] = patched;
         if (!patched) {
             // 没找到目标方法就别动这个类（原样返回，省得白白多一次写回）
-            return basicClass;
+            return null;
         }
-
         ClassWriter writer = new ClassWriter(0);
         node.accept(writer);
         return writer.toByteArray();
     }
 
-    private void injectHead(MethodNode method, String ownerInternalName) {
+    private static void injectHead(MethodNode method, String ownerInternalName) {
         LabelNode original = new LabelNode();
         InsnList injected = new InsnList();
         injected.add(new VarInsnNode(Opcodes.ALOAD, 1));

@@ -11,7 +11,7 @@ body:
         1. **说清你玩的是哪条线** —— 本模组从 v2.3.0 起同时提供
            **MC 26.3 + Fabric**（`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`）与
            **MC 1.8.9 + Forge**（`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`）两条线，功能一致、配置通用；
-        2. **模组版本与 MC 版本对得上** —— v2.x 只支持 26.3 或 1.8.9；还在玩 26.2 请用
+        2. **模组版本与 MC 版本对得上** —— v2.x / 3.x 支持 26.3 或 1.8.9；还在玩 26.2 请用
            [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)；
         3. **已经是最新版** —— 很多问题在更新里修掉了，见
            [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)（Release 名带 `-mc<版本>-<加载器>`）。
@@ -35,8 +35,8 @@ body:
     id: mod-version
     attributes:
       label: 模组版本
-      description: 照抄文件名里的版本号，例如 Server-Chat-Translator_3.0.0_mc26.3-fabric.jar 就填 3.0.0
-      placeholder: "2.3.0"
+      description: 照抄文件名里的版本号，例如 Server-Chat-Translator_3.0.4_mc26.3-fabric.jar 就填 3.0.4
+      placeholder: "3.0.4"
     validations:
       required: true
 

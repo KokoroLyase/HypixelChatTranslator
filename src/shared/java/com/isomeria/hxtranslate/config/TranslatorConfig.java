@@ -97,6 +97,19 @@ public final class TranslatorConfig {
     public static final int MAX_OUTGOING_CHARS_LIMIT = 256;
 
     /**
+     * 两个超时字段的硬上限（秒）。
+     *
+     * <p><b>2026-09-17 审计修正</b>：这两个字段以前只有下界。而
+     * {@code DeepSeekClient} 消费时写的是 {@code config.httpTimeoutSeconds * 1000}（int 乘法），
+     * 于是配置里手滑写 {@code 2147484} 以上就会**溢出成负数**，
+     * {@code HttpURLConnection.setReadTimeout(负数)} 抛 {@code IllegalArgumentException}，
+     * 结果是**每一个请求都直接失败**，而且给玩家看的提示里还带着英文异常原文
+     * （违反本仓库「不许把 Java 异常名甩给玩家」的规矩）。
+     * 1 小时对任何真实网络都远远够用，所以夹在这里既安全又不会误伤。
+     */
+    public static final int MAX_TIMEOUT_SECONDS = 3_600;
+
+    /**
      * v1.1.1 及之前的默认 {@code ignorePatterns}。
      *
      * <p>用来判断用户有没有动过这个列表：一条都没删，说明还是默认值，v6 迁移才会把新的
@@ -1271,6 +1284,18 @@ public final class TranslatorConfig {
         }
         if (model == null || LangUtils.isBlank(model)) {
             model = DEFAULT_MODEL;
+        } else {
+            // 模型名会被拼进**给玩家看的错误文案**（400 那条：「当前模型 §f<model>§c」），
+            // 也会写回 json 文件。带换行 / 控制字符的名字会顺着这两条路漏出去
+            // （2026-09-17 审计实测：`"deepseek-flash\n§cFAKE admin: …"` 让那条错误提示
+            // 在聊天栏里被拆成两行，第二行看起来就像别人说的话）。
+            // 模型名是纯技术标识、没有任何理由带格式代码，所以按不可信文本整份清洗：
+            // 去掉 § 代码、压成一行、丢掉零宽与双向字符（`§` 会破坏 `§c` 的配对，
+            // 让后面所有自己的高亮都变成正文）。
+            model = LangUtils.sanitizeOneLine(model);
+            if (model.isEmpty()) {
+                model = DEFAULT_MODEL;
+            }
         }
         minLatinLetters = Math.max(1, minLatinLetters);
         chineseRatioThreshold = Math.min(1.0, Math.max(0.05, chineseRatioThreshold));
@@ -1287,8 +1312,8 @@ public final class TranslatorConfig {
         // 每条译文都留着，长时间游玩内存持续上涨。1 万条对聊天翻译来说早已远超够用
         // （按每条 100 字符算约 1 MB），所以夹到这里不影响任何正常配置。
         cacheSize = Math.min(MAX_CACHE_SIZE_LIMIT, Math.max(MIN_CACHE_SIZE, cacheSize));
-        connectTimeoutSeconds = Math.max(1, connectTimeoutSeconds);
-        httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
+        connectTimeoutSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(1, connectTimeoutSeconds));
+        httpTimeoutSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(3, httpTimeoutSeconds));
         maxTokens = Math.min(MAX_TOKENS_LIMIT, Math.max(32, maxTokens));
         temperature = Math.min(2.0, Math.max(0.0, temperature));
         if (failureFallback == null || LangUtils.isBlank(failureFallback)) {
@@ -1345,6 +1370,11 @@ public final class TranslatorConfig {
         this.enabled = o.enabled;
         this.translateIncoming = o.translateIncoming;
         this.translateOutgoing = o.translateOutgoing;
+        // 2026-09-17 审计：这一行以前漏了 —— `/translator reload` 对 translateInSingleplayer
+        // 是空操作（磁盘改了、内存没变），而之后任何一次 save() 都会把内存里的旧值写回文件，
+        // 于是「按 README 改 json 再 reload」这条官方路径**永久抹掉**用户的手改值。
+        // 自检里加了一条反射用例盯着「copyFrom 必须覆盖全部实例字段」，防止再次漏项。
+        this.translateInSingleplayer = o.translateInSingleplayer;
         this.translateCommandMessages = o.translateCommandMessages;
         this.skipOwnEcho = o.skipOwnEcho;
         this.failureFallback = o.failureFallback;

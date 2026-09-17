@@ -104,7 +104,17 @@ sourceSets {
             include 'VerifyCoremod.java'
         }
         compileClasspath = sourceSets.main.output + configurations.verifyCoremodCompile
-        runtimeClasspath = output + compileClasspath
+        // 运行时**额外**要一份 Minecraft 运行库，理由见下面 verifyCoremod 任务的注释：
+        // 没有它，EntityPlayerSP 在「加载」阶段就抛 NoClassDefFoundError（缺 guava 等），
+        // 真 JVM 校验器根本没轮到执行 —— 那一项会变成永远绿灯的假门禁。
+        //
+        // 用 forgeGradleMcDeps（全量：guava / authlib / netty / log4j / commons-lang3 / lwjgl …）
+        // 而不是 forgeGradleMcDepsClient —— 后者只含 LWJGL 那几个**客户端**库，
+        // 实测缺 guava，类照样加载不起来。
+        //
+        // 只影响任务运行时类路径，不进 compileClasspath、也绝不会打进 jar
+        // （jar 的内容由 sourceSets.main 决定，这里动的是 verifyCoremod 源集）。
+        runtimeClasspath = output + compileClasspath + configurations.forgeGradleMcDeps
     }
 }
 
@@ -137,8 +147,14 @@ dependencies {
     // 离线自检用：1.8.9 自带的 gson 版本（刻意不用更新的，免得掩盖兼容问题）
     verifyCompile 'com.google.code.gson:gson:2.2.4'
 
-    // 核心插件验证用：只放 ASM 与 launchwrapper（IClassTransformer 的宿主），
-    // 同样**不放 Minecraft / Forge** —— 验证要能在脱离游戏环境时跑
+    // 核心插件验证用：编译期只放 ASM 与 launchwrapper（IClassTransformer 的宿主）。
+    // Minecraft / Forge 不进 **compileClasspath** —— VerifyCoremod 只碰 ASM 与字节数组。
+    //
+    // 但**运行时**要给一份 Minecraft 运行库（见上面 verifyCoremod 源的 runtimeClasspath）：
+    // 2026-09-17 审计发现，缺了它时 `Class.forName(EntityPlayerSP)` 会在加载阶段就抛
+    // NoClassDefFoundError（第一个缺的是 guava 的 Predicate），真校验器根本没执行，
+    // 而原来的 catch-all 会把这种情况记成「校验通过」—— 那道门禁其实一直是假的。
+    // 它只进 verifyCoremod 的运行时类路径，不进产物 jar。
     verifyCoremodCompile 'org.ow2.asm:asm-all:5.0.3'
     verifyCoremodCompile 'net.minecraft:launchwrapper:1.12'
 }
