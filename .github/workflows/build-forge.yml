@@ -1,0 +1,65 @@
+# MC 1.8.9 + Forge 构建线（双版本里的另一条）。约定见 RELEASING.md 的「双版本」一节。
+#
+# 工具链必须是 **JDK 8 + Gradle 2.14.1 + ForgeGradle 2.1**：
+#   - Gradle 2.x 跑不了 Java 9+；
+#   - ForgeGradle 2.1 跑不了 Gradle 3+。
+# Gradle 版本由 forge-1.8.9/gradlew 固定，这里只负责把 JDK 换成 8。
+#
+# 刻意不用 gradle/actions/setup-gradle：它是给现代 Gradle 用的，2.14.1 不在支持范围。
+# 依赖下载交给 wrapper 自己处理即可。
+name: Build (Forge 1.8.9)
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*-forge' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: forge-1.8.9
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      # build 会顺带跑完两道离线门禁，失败即构建失败：
+      #   1) 702 项共享自检（与 Fabric 线同一份 tools/VerifyCore.java）
+      #   2) 9 项核心插件验证（真实 EntityPlayerSP + 真 JVM 字节码校验）
+      - name: Build
+        run: ./gradlew build --no-daemon --console=plain
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: hx-chat-translator-forge-1.8.9
+          # 注意：upload-artifact 的 path 相对仓库根目录，不受上面的 working-directory 影响
+          path: |
+            forge-1.8.9/build/libs/*.jar
+            !forge-1.8.9/build/libs/*-sources.jar
+          if-no-files-found: error
+
+      # 推 v*-forge 标签时自动发布 Release 并附上 jar；已存在则覆盖上传
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          JAR=$(ls build/libs/*.jar | grep -v -- '-sources' | head -1)
+          echo "发布产物: $JAR"
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            && gh release upload "$GITHUB_REF_NAME" "$JAR" --clobber \
+            || gh release create "$GITHUB_REF_NAME" "$JAR" \
+                 --title "$GITHUB_REF_NAME" --generate-notes

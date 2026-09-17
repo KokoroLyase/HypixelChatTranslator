@@ -184,3 +184,66 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
    发送/接收行为（降级五条路径、切服保护、单线程顺序、缓存命中、告警节流）。
 6. 打 tag 前确认产物文件名里的 `mc<版本>` 已变（`archiveFileName` 用的是
    `project.minecraft_version`，所以只要第 2 步改对就会对）。
+
+## 10. 双版本并行（v2.3.0 起）
+
+从 v2.3.0 起仓库同时维护两条线，**共用同一份纯逻辑源码**：
+
+| 线 | 构建目录 | MC / 加载器 | 工具链 | 产物名 |
+| --- | --- | --- | --- | --- |
+| Fabric | 仓库根目录 | 26.3 / Fabric | Gradle 9 + Loom + JDK 25 | `hx-chat-translator-<版本>+mc26.3-fabric.jar` |
+| Forge | `forge-1.8.9/` | 1.8.9 / Forge 11.15.1.2318 | Gradle 2.14.1 + ForgeGradle 2.1 + **JDK 8** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` |
+
+### 10.1 共享层是硬约束
+
+`src/shared/java` 由**两个构建编译同一份文件**，因此锁定在 **Java 8**：
+
+- **不许**出现 Java 9+ 的语法与 API：`record`、文本块、`List.of` / `Map.of` / `Set.of`、
+  switch 表达式、`String.isBlank` / `strip*`、`Files.readString/writeString`、
+  `StringBuilder.isEmpty`、`InputStream.readAllBytes`、`Optional.isEmpty`、
+  菱形 + 匿名类、`ByteArrayOutputStream.toString(Charset)`。
+- 需要 Java 11 语义的地方用 `LangUtils` 的**语义精确复刻**（`isBlank` / `strip` /
+  `stripLeading` / `stripTrailing` / `lines` / `repeat`）。**不要用 `trim()` 顶替**：
+  `isBlank`/`strip` 按 `Character.isWhitespace` 判定，`trim()` 只认 `<= ' '`，
+  两者对全角空格等输入结论不同，会让两条线对同一句话给出不同判断。
+- 第三方库只有 **gson**，而且只能用 **1.8.9 自带的 2.2.4** 也有的 API：
+  `JsonParser.parseString` 是 Java 11 的静态方法（2.2.4 没有），要用 `new JsonParser().parse(...)`；
+  `JsonArray.add(String)` 重载 2.2.4 也没有，要显式包 `JsonPrimitive`。
+- 日志一律走 `Log`（自己实现的加载器无关门面，接口是 slf4j 的常用子集）。
+  **不许**在共享层直接 import slf4j 或 log4j：Fabric 有 slf4j，1.8.9 只有 log4j。
+- 配置目录由装配层通过 `TranslatorConfig.setConfigDir` 注入（共享层不许 import 加载器 API）。
+
+两道门禁合起来才成立，改动共享层后**两个构建都要跑**：
+
+1. `sharedLayerPurity()`：共享层不许出现任何游戏/加载器 import；
+2. Forge 构建用 JDK 8 编译共享层 —— 所有 Java 9+ 语法与 API 会在这里直接编译失败。
+
+### 10.2 版本号与标签
+
+- `mod_version` 只有**一个来源**：仓库根目录的 `gradle.properties`；
+  `forge-1.8.9/build.gradle` 从那里读，两条线永远同号。
+- **标签按线区分**：Fabric 用 `v<版本>`（如 `v2.3.0`），Forge 用 `v<版本>-forge`（如 `v2.3.0-forge`）。
+  两条线各建自己的 Release —— 已发布的 Release 一律不动（§4），所以不给旧 Release 追加附件。
+- 根目录 `build.yml` 已排除 `-forge` 结尾的标签，Forge 线由 `build-forge.yml` 负责。
+  **改标签约定时两处都要改**，否则同一个标签会被两条线各建一次 Release。
+- Forge 线的 Release 说明同样必须写三段（§3），并且要写明它是 coremod。
+
+### 10.3 给 1.8.9 线加东西时
+
+- 决策逻辑仍然只能写在共享层；Forge 侧只放「把游戏对象翻译成朴素类型」的装配代码。
+- 1.8.9 的三个平台事实（改之前先看一眼，别再重新踩）：
+  - **没有 Brigadier**（1.13 才有）→ 命令写 `ICommand` + `ClientCommandHandler`；
+  - **没有签名聊天**（`S02PacketChat` 只带 `IChatComponent` + `type`）→ 拿不到发送者，
+    `isLocalPlayer` 恒 false、发送者传 null；
+  - **没有 `ClientChatEvent`**（1.11 才加入；`ServerChatEvent` 只在集成服务端触发）→
+    拦「自己发的聊天」只能靠 `forge-1.8.9/.../asm/` 里的核心插件。
+- 核心插件的每次改动**必须**通过 `verifyCoremod`（`forge-1.8.9` 的 `check` 已自动带上）：
+  它拿真实 deobf `EntityPlayerSP` 跑一遍转换器，再用**真 JVM 校验器**（`-Xverify:all`）
+  验字节码，并做三项反向验证（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
+  这道门禁抓到过一个真实缺陷：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
+  按斜杠内部名去比会导致 MCP 名永远匹配不上 —— 游戏里的表现是「发送方向完全不翻译」，
+  而编译、构建、702 项自检全是绿的。
+- 注入失败**绝不能静默**：`HxTransformer` 的 catch 会往 `System.err` 打一行明确的
+  失败说明（那条路径执行得极早，碰不得日志框架）。
+- 1.8.9 的 `IChatComponent.getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），
+  所以装配层统一先过一遍 `LangUtils.stripFormattingCodes`，保证两条线判定一致。

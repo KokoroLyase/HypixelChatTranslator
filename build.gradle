@@ -75,7 +75,12 @@ sourceSets {
 		java.srcDirs = ['src/main/java', 'src/shared/java']
 	}
 	verify {
-		java.srcDir 'tools'
+		java {
+			srcDir 'tools'
+			// 只编译 VerifyCore：tools/ 下还有 VerifyCoremod.java（要 ASM 与 Forge 装配类，
+			// 它由 forge-1.8.9 的构建单独编译并运行），不加过滤会把它也拉进来。
+			include 'VerifyCore.java'
+		}
 		// 只保留 slf4j 之类「不是游戏也不是加载器」的库；gson 来自 Minecraft 的传递依赖，
 		// 所以要按名放行。要用的新库记得在这里补一条。
 		def pureLibraries = configurations.compileClasspath.filter { file ->

@@ -2931,6 +2931,52 @@ public class VerifyCore {
             check("Fabric 专属层没有混进共享层：" + fabricOnly,
                     readRepoFile("src/shared/java/com/isomeria/hxtranslate/" + fabricOnly) == null);
         }
+
+        // 1.8.9 + Forge 线的结构：漏了这些文件这条线就构建不起来，但 Fabric 线照样全绿，
+        // 所以必须由自检盯着（两个构建跑的是同一份断言）。
+        String forgeBuild = readRepoFile("forge-1.8.9/build.gradle");
+        check("Forge 构建脚本存在", forgeBuild != null);
+        if (forgeBuild != null) {
+            check("Forge 构建把共享层纳入编译（../src/shared/java）",
+                    forgeBuild.contains("../src/shared/java"));
+            check("Forge 构建要求 Java 8", forgeBuild.contains("VERSION_1_8"));
+            check("Forge 构建声明了核心插件入口（FMLCorePlugin）",
+                    forgeBuild.contains("FMLCorePlugin"));
+            check("Forge 构建声明了「核心插件 jar 同时是普通模组」（FMLCorePluginContainsFMLMod）",
+                    forgeBuild.contains("FMLCorePluginContainsFMLMod"));
+            check("Forge 构建挂了核心插件验证（verifyCoremod）",
+                    forgeBuild.contains("verifyCoremod"));
+        }
+        check("Forge 构建有独立的 settings.gradle（否则会向上找到仓库根的 settings）",
+                readRepoFile("forge-1.8.9/settings.gradle") != null);
+        check("Forge 线有 mcmod.info", readRepoFile("forge-1.8.9/src/main/resources/mcmod.info") != null);
+        check("Forge 线有核心插件类",
+                readRepoFile("forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/asm/HxTransformer.java") != null);
+        check("核心插件验证程序已入库（tools/VerifyCoremod.java）",
+                readRepoFile("tools/VerifyCoremod.java") != null);
+
+        // 标签约定：两条线分属两个 workflow，这里把「别把 -forge 标签交给 Fabric 那套」钉死
+        String forgeWorkflow = readRepoFile(".github/workflows/build-forge.yml");
+        check("Forge 线有独立 CI workflow", forgeWorkflow != null);
+        if (forgeWorkflow != null) {
+            check("Forge CI 用 JDK 8", forgeWorkflow.contains("java-version: '8'"));
+            check("Forge CI 只在 v*-forge 标签上发 Release",
+                    forgeWorkflow.contains("'v*-forge'"));
+        }
+        String fabricWorkflow = readRepoFile(".github/workflows/build.yml");
+        check("Fabric 的 CI 已排除 -forge 结尾的标签（否则同一标签会被两条线各建一次 Release）",
+                fabricWorkflow != null && fabricWorkflow.contains("endsWith(github.ref, '-forge')"));
+
+        // 文档：双版本说明必须真的写在 README 里
+        String readme = readRepoFile("README.md");
+        check("README 写明了两条线的产物名（+mc1.8.9-forge.jar）",
+                readme != null && readme.contains("+mc1.8.9-forge.jar"));
+        check("README 写明了 1.8.9 版是核心插件（coremod）",
+                readme != null && readme.contains("核心插件"));
+        String releasing = readRepoFile("RELEASING.md");
+        check("RELEASING 有双版本章节（§10）", releasing != null && releasing.contains("## 10. 双版本并行"));
+        check("RELEASING 写明了 Forge 线的标签约定（-forge）",
+                releasing != null && releasing.contains("-forge"));
     }
 
     /**

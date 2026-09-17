@@ -1,5 +1,90 @@
 # 更新日志
 
+## v2.3.0-forge — 2026-09-17（MC 1.8.9 + Forge 线首次发布）
+
+与 Fabric 版**同一个版本号**（2.3.0），只是产物名不同：
+`hx-chat-translator-2.3.0+mc1.8.9-forge.jar`。从这一版起双版本并行维护。
+
+### 新增：MC 1.8.9 + Forge 11.15.1.2318 线
+
+仓库结构改成「一份共享逻辑 + 两个构建」：
+
+- `src/shared/java`（15 个纯逻辑类）由**两个构建编译同一份文件**；
+- `src/main/java` 是 Fabric 装配面，`forge-1.8.9/src/main/java` 是 Forge 装配面；
+- 模组版本号只有一个来源（根目录 `gradle.properties`），两条线永远同号。
+
+**共享层因此锁定在 Java 8**（1.8.9 只支持 Java 8），这是一次性的、有意付出的代价：
+换掉了 7 个 record、4 个承载提示词的文本块、33 处 `isBlank`/`strip*`、
+以及 `List.of` / `Map.ofEntries` / switch 表达式 / `Files.readString` 等。
+提示词那 4 个文本块的值不是重新实现的，而是**从已编译的类里反射导出**再生成字面量，
+改完复核 sha256 完全一致（`incoming` 2038 字符 / `outgoing` 1584 字符）。
+
+### 为什么 1.8.9 必须写核心插件（本次最关键的事实）
+
+子代理用真实 Forge 1.8.9 源码 + 编译探针证实：**`ClientChatEvent` 是 1.11 才加入的**，
+1.8.9 根本没有；服务端 `ServerChatEvent` 在 Hypixel 这类远程服上永远不会触发。
+而「拦下自己发的聊天、译成英文再发」是本模组的核心功能 —— 所以 1.8.9 上只能注入字节码。
+
+注入点只有一个：`EntityPlayerSP.sendChatMessage(String)`。玩家敲回车、`/shout` 这类命令、
+其它模组程序化发送，**全都经过它**，所以一处注入就覆盖全部发送路径。
+注入语义与 Fabric 线的 `ALLOW_CHAT` 一模一样：方法头问一句要不要拦，要拦就直接 `RETURN`
+（原版指令一个字节都不动），翻译完成后由模组自己重发，那一次由 ThreadLocal 闸门放行。
+
+三个刻意的实现选择：
+
+- **匹配「三种命名层 + 描述符」**：混淆名 `bew/e`、SRG 名 `func_71165_d`、
+  MCP 名 `sendChatMessage`；主判据是描述符 `(Ljava/lang/String;)V`，它在任何命名层下都不变。
+  生产环境走 SRG 层、开发环境走 MCP 层，只认一种就会静默失效。
+- **不重写方法体**，只在头部插入早退分支 —— 不拦的时候原版逻辑一字不动，
+  也避免把原版逻辑抄一份到自己这边。
+- **不用 `COMPUTE_FRAMES`**：它会重算整个方法的栈帧，一旦 `getCommonSuperClass`
+  拿不到准确的类层次就会产出错误的帧（核心插件最经典的 `VerifyError` 来源）。
+  这里保留原有栈帧，只给新分支目标手写一个 `FrameNode`，并把 `maxStack` 加 1。
+
+### 新增门禁：核心插件离线验证（`tools/VerifyCoremod.java`，9 项）
+
+由 Forge 构建的 `check` 自动带上：拿**真实的** deobf `EntityPlayerSP` 跑转换器，
+再用**真 JVM 的校验器**（`-Xverify:all`）验字节码，另有三项反向验证
+（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
+
+**它当场抓到一个静默缺陷**：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
+而最初这里按字节码内部名（斜杠）比较，于是 MCP 名永远匹配不上 ——
+游戏里的表现是「发送方向完全不翻译」，而编译、构建、702 项自检**全是绿的**。
+这类缺陷只有「用真数据 + 真校验器 + 反向验证」才抓得到。修复后已把教训写进注释与 RELEASING §10。
+
+另外，注入失败**绝不静默**：catch 会往 `System.err` 打一行明确的失败说明
+（这条路径执行得极早，碰不得日志框架）。
+
+### 平台能力降级（已确认接受，README 有对照表）
+
+1.8.9 聊天不签名、事件不携带发送者，所以 `isLocalPlayer` 恒为 false、发送者一律传 null。
+**这不是缺陷**：Hypixel 是代理服，Fabric 线上走的也正是这条「没有发送者」的路径，
+判断「是不是自己」本来就靠正文比对与说话人名字（`EchoMatcher`），所以体验无差别。
+另外 1.8.9 的 `getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），
+装配层统一先 `stripFormattingCodes`，保证两条线判定一致。
+
+### 验证
+
+- **Fabric 线**：702 项自检全绿；请求体 92/92 条 sha256 与降级前基线**完全一致**
+  （首条 `6986fe87…`，与 v2.3.0 发布前记录的哈希相同）→ 提示词一个字节没动。
+- **Forge 线**：`gradle clean build` 全绿 = **702 项自检 + 9 项核心插件验证**；
+  产物文件名 `hx-chat-translator-2.3.0+mc1.8.9-forge.jar`、class 版本 52、
+  MANIFEST 含 `FMLCorePlugin` + `FMLCorePluginContainsFMLMod`。
+- **共享层单独用 JDK 8 + gson 2.2.4 编译通过**。这一步很关键：Java 25 编译会掩盖真实不兼容，
+  实测抓到 10 处 —— `JsonArray.isEmpty()` / `JsonObject.keySet()`（gson 2.2.4 没有）、
+  `JsonArray.add(String)`（2.8 才有）、`StringBuilder.isEmpty()`（Java 15）、
+  `ByteArrayOutputStream.toString(Charset)`（Java 10）、菱形 + 匿名类（Java 9 才允许）等。
+- CI 新增 `build-forge.yml`（JDK 8 + wrapper 固定的 Gradle 2.14.1），
+  根 `build.yml` 已排除 `-forge` 结尾的标签，避免同一个标签被两条线各建一次 Release。
+
+### 没有自动化覆盖的部分
+
+- 核心插件的**游戏内实际效果**只有离线字节码验证：本机没有图形环境，
+  **没有真正跑过 1.8.9 客户端**。第一次进游戏的验证清单见 Release 说明；
+- Forge 侧的事件注册面（`ClientChatReceivedEvent`、`InputEvent.KeyInputEvent`、
+  `TickEvent.ClientTickEvent`、`ClientCommandHandler`）按 RELEASING §9 的人工清单核对，
+  不在自检范围内；判定逻辑全在共享层，由 702 项自检覆盖。
+
 ## v2.3.0 — 2026-09-17
 
 一次「术语表长期可维护性」版本：新增**术语表体检**，把术语表里那些**不会生效**或
