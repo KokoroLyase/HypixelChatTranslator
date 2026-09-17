@@ -2960,24 +2960,33 @@ public class VerifyCore {
         check("Forge 线有独立 CI workflow", forgeWorkflow != null);
         if (forgeWorkflow != null) {
             check("Forge CI 用 JDK 8", forgeWorkflow.contains("java-version: '8'"));
-            check("Forge CI 只在 v*-forge 标签上发 Release",
-                    forgeWorkflow.contains("'v*-forge'"));
         }
         String fabricWorkflow = readRepoFile(".github/workflows/build.yml");
         check("Fabric 线有 CI workflow", fabricWorkflow != null);
         if (fabricWorkflow != null) {
-            // 双版本并行后 Release 名按加载器加后缀（RELEASING §10.2）：
-            // Fabric 只认 v*-fabric，Forge 只认 v*-forge。两边都写死在这里，
-            // 免得以后改了一处忘了另一处 —— 那会导致同一个标签被两条线各建一次 Release，
-            // 或者某条线压根不发版。
-            check("Fabric CI 只在 v*-fabric 标签上发 Release",
-                    fabricWorkflow.contains("'v*-fabric'"));
+            // 双版本并行后 tag / Release 名的格式是 v<版本>-mc<游戏版本>-<加载器>（RELEASING §10.2），
+            // 刻意与产物文件名对齐。两边都写死在这里，免得以后改了一处忘了另一处 ——
+            // 那会导致同一个标签被两条线各建一次 Release，或者某条线压根不发版。
+            //
+            // 注意用的是 v*-mc*-fabric 而不是笼统的 v*-fabric：漏了 mc 段的名字
+            // （v2.4.0-fabric、裸 v2.4.0）必须**不会**自动发版，让人工发现名字写错。
+            check("Fabric CI 只在 v*-mc*-fabric 标签上发 Release",
+                    fabricWorkflow.contains("'v*-mc*-fabric'"));
             check("Fabric CI 不再用「匹配所有 v* 再排除 -forge」的旧写法",
                     !fabricWorkflow.contains("tags: [ 'v*' ]"));
+            check("Fabric CI 也不再接受没有 mc 段的旧格式（v*-fabric）",
+                    !fabricWorkflow.contains("'v*-fabric'"));
         }
-        check("两条线的标签后缀互不重叠（Fabric=-fabric / Forge=-forge）",
+        if (forgeWorkflow != null) {
+            check("Forge CI 只在 v*-mc*-forge 标签上发 Release",
+                    forgeWorkflow.contains("'v*-mc*-forge'"));
+            check("Forge CI 也不再接受没有 mc 段的旧格式（v*-forge）",
+                    !forgeWorkflow.contains("'v*-forge'"));
+        }
+        check("两条线的标签格式互不重叠（Fabric=-mc*-fabric / Forge=-mc*-forge）",
                 fabricWorkflow != null && forgeWorkflow != null
-                        && fabricWorkflow.contains("v*-fabric") && forgeWorkflow.contains("v*-forge"));
+                        && fabricWorkflow.contains("v*-mc*-fabric")
+                        && forgeWorkflow.contains("v*-mc*-forge"));
 
         // 文档：双版本说明必须真的写在 README 里
         String readme = readRepoFile("README.md");
@@ -2985,14 +2994,19 @@ public class VerifyCore {
                 readme != null && readme.contains("+mc1.8.9-forge.jar"));
         check("README 写明了 1.8.9 版是核心插件（coremod）",
                 readme != null && readme.contains("核心插件"));
+        check("README 的 Release 名与产物名对齐（v<版本>-mc26.3-fabric）",
+                readme != null && readme.contains("v<版本>-mc26.3-fabric"));
         String releasing = readRepoFile("RELEASING.md");
         check("RELEASING 有双版本章节（§10）", releasing != null && releasing.contains("## 10. 双版本并行"));
-        check("RELEASING 写明了 Forge 线的标签约定（-forge）",
-                releasing != null && releasing.contains("v<版本>-forge"));
-        check("RELEASING 写明了 Fabric 线的标签约定（-fabric）",
-                releasing != null && releasing.contains("v<版本>-fabric"));
-        check("RELEASING 记下了 v2.3.0 改名这件事（免得以后被当成「违规动过已发布内容」）",
-                releasing != null && releasing.contains("v2.3.0` → `v2.3.0-fabric"));
+        check("RELEASING 写明了 Forge 线的命名格式（v<版本>-mc<游戏版本>-forge）",
+                releasing != null && releasing.contains("v<版本>-mc<游戏版本>-forge"));
+        check("RELEASING 写明了 Fabric 线的命名格式（v<版本>-mc<游戏版本>-fabric）",
+                releasing != null && releasing.contains("v<版本>-mc<游戏版本>-fabric"));
+        check("RELEASING 记下了 v2.3.0 两个 Release 的定名经过（免得以后被当成「违规动过已发布内容」）",
+                releasing != null && releasing.contains("v2.3.0-mc26.3-fabric")
+                        && releasing.contains("v2.3.0-mc1.8.9-forge"));
+        check("RELEASING 写明了「先建新的、验完再删旧的」这个顺序要求",
+                releasing != null && releasing.contains("先**在原提交上建新 tag 与新 Release"));
     }
 
     /**

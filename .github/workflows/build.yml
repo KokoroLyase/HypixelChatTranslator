@@ -1,16 +1,19 @@
 # 构建与发布流程见仓库根目录的 RELEASING.md
-# push/PR 会构建并上传 jar；推 v*-fabric 标签会额外创建/更新对应的 Release
-# 1.8.9 + Forge 线是独立的 workflow（build-forge.yml），各盯自己的后缀。
+# push/PR 会构建并上传 jar；推 v*-mc*-fabric 标签会额外创建/更新对应的 Release
+# 1.8.9 + Forge 线是独立的 workflow（build-forge.yml），各盯自己的标签格式。
 name: Build
 
 on:
   push:
     branches: [ main ]
-    # 双版本并行后，Release 名按加载器加后缀（RELEASING §10.2）：
-    #   Fabric 线 v<版本>-fabric，Forge 线 v<版本>-forge
-    # 所以这里只认 -fabric；没有后缀的裸 v2.4.0 不会自动发 Release
-    # （宁可什么都不发、让人工发现名字写错了，也不要发一个名字不符合约定的版）。
-    tags: [ 'v*-fabric' ]
+    # 双版本并行后，tag / Release 名的格式是 v<版本>-mc<游戏版本>-<加载器>（RELEASING §10.2），
+    # 刻意与产物文件名对齐：
+    #   Fabric 线 v2.3.0-mc26.3-fabric   （产物 ...-2.3.0+mc26.3-fabric.jar）
+    #   Forge  线 v2.3.0-mc1.8.9-forge  （产物 ...-2.3.0+mc1.8.9-forge.jar）
+    # 这里只认 -fabric。写成 v*-mc*-fabric 而不是笼统的 v*-fabric，
+    # 是为了让「漏了 mc 段」的名字（v2.4.0-fabric、裸 v2.4.0）**不会**自动发版 ——
+    # 宁可什么都不发、让人工发现名字写错，也不要发一个名字不符合约定的版。
+    tags: [ 'v*-mc*-fabric' ]
   pull_request:
   workflow_dispatch:
 

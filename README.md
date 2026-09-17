@@ -34,14 +34,15 @@
 >
 > | 你玩的版本 | 下载哪个 | 加载器 | Release 名 |
 > | --- | --- | --- | --- |
-> | Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric | `v<版本>-fabric` |
-> | Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge | `v<版本>-forge` |
+> | Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric | `v<版本>-mc26.3-fabric` |
+> | Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge | `v<版本>-mc1.8.9-forge` |
 >
 > 两条线的功能、配置格式、配置文件位置、命令**完全一致**（编译的是同一份核心逻辑），
 > 所以 1.8.9 的配置文件可以直接拿去 26.3 用，反之亦然。
 >
-> 加 `-fabric` / `-forge` 后缀是**从 v2.3.0 起**的规矩；更早的版本（`v2.2.3`、`v1.1.3` …
-> 全是 Fabric 版）保留原来的名字，不重命名。
+> Release 名刻意与产物文件名对齐（只差一个字符：产物用 `+`、Release 名用 `-`），
+> 所以「看到 jar 的名字就知道该找哪个 Release」。这套命名是**从 v2.3.0 起**的规矩；
+> 更早的版本（`v2.2.3`、`v1.1.3` … 全是 Fabric 版）保留原来的名字，不重命名。
 
 ### 1.8.9 + Forge 的额外说明
 
@@ -70,7 +71,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
-3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-fabric` 的那一条）放进同一个 `mods` 文件夹：
+3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc26.3-fabric` 的那一条）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
