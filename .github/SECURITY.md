@@ -23,7 +23,7 @@
 改用 GitHub 的 [私密漏洞报告](https://docs.github.com/zh/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability)
 （仓库的 **Security → Report a vulnerability**）。
 
-普通 bug、翻译质量问题、功能建议走 [Issues](https://github.com/KokoroLyase/HypixelChatTranslator/issues) 即可。
+普通 bug、翻译质量问题、功能建议走 [Issues](https://github.com/KokoroLyase/ServerChatTranslator/issues) 即可。
 
 ## 本模组已有的相关防线（供参考）
 

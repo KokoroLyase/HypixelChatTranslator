@@ -72,7 +72,7 @@ public final class TranslationService {
     }
 
     /**
-     * LRU 上限每次都从配置里读，这样 {@code /server_chat_translator reload} 改了 {@code cacheSize} 就能立刻生效。
+     * LRU 上限每次都从配置里读，这样 {@code /translator reload} 改了 {@code cacheSize} 就能立刻生效。
      * （以前是在构造时把数值固化进闭包，改配置必须重启游戏才生效。）
      */
     private Map<String, String> createCache() {
@@ -255,7 +255,7 @@ public final class TranslationService {
         return client.listModels();
     }
 
-    /** 同步翻译，仅供游戏内 /server_chat_translator test 这类需要立刻拿结果的场景使用。 */
+    /** 同步翻译，仅供游戏内 /translator test 这类需要立刻拿结果的场景使用。 */
     public DeepSeekClient.Result translateBlocking(String text, Direction direction) {
         if (!isReady()) {
             return DeepSeekClient.Result.failure("未配置 API Key");

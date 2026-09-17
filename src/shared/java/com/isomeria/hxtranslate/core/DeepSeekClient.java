@@ -43,7 +43,7 @@ public final class DeepSeekClient {
     private static final int MAX_ERROR_BYTES = 64 * 1024;
 
     /**
-     * {@code /server_chat_translator models} 最多列出多少个模型名（v2.2.2）。
+     * {@code /translator models} 最多列出多少个模型名（v2.2.2）。
      *
      * <p>模型名是**接口**给的，而 {@code apiBaseUrl} 可以指向任意第三方中转站。
      * 正常 DeepSeek 只有个位数模型，所以这个上限纯属防「异常中转站刷屏」。
@@ -294,7 +294,7 @@ public final class DeepSeekClient {
      */
     public static String describeNetworkError(IOException e) {
         if (e instanceof java.net.SocketTimeoutException) {
-            return "连接 DeepSeek 超时（网络太慢或接口太拥挤，可调大 httpTimeoutSeconds 后 /server_chat_translator reload）";
+            return "连接 DeepSeek 超时（网络太慢或接口太拥挤，可调大 httpTimeoutSeconds 后 /translator reload）";
         }
         if (e instanceof java.net.UnknownHostException) {
             return "找不到接口域名（检查网络与 apiBaseUrl）";
@@ -306,7 +306,7 @@ public final class DeepSeekClient {
             return "连不上接口服务器（检查网络与 apiBaseUrl）";
         }
         // 兜底：代理拦截、连接被中断等都会落到这里，同样要给「该检查什么」而不是异常类名
-        return "网络错误（连接接口失败，检查网络后 /server_chat_translator reload 重试）";
+        return "网络错误（连接接口失败，检查网络后 /translator reload 重试）";
     }
 
     private Result attempt(String text, Direction direction) {
@@ -534,7 +534,7 @@ public final class DeepSeekClient {
             // 401/402/429 都补上「下一步」（v2.2.3）：这三条以前只说「出错了」，
             // 而玩家看完最需要知道的就是该做什么 —— 对照 400 那条本来就给了动作。
             case 401:
-                return Result.failure("API Key 无效或已过期 (401)。用 §f/server_chat_translator key <你的Key>§c 重新设置。" + detail);
+                return Result.failure("API Key 无效或已过期 (401)。用 §f/translator key <你的Key>§c 重新设置。" + detail);
             case 402:
                 return Result.failure("DeepSeek 账户余额不足 (402)，需要去 platform.deepseek.com 充值。" + detail);
             case 429:

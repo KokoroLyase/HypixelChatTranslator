@@ -90,6 +90,10 @@ debug 模式下被拦下的消息会打印原因（不再是静默跳过）：
 
 ### 验证
 
+> 本节记录的是 **v3.0.0 tag 当时**的状态（两个 Release 及其说明就对应这个状态）。
+> 发布之后又做了一轮洁净度审计，自检项数与产物内容都有变化，见下面「洁净度审计」一节 ——
+> 810 与 820 两个数字都不是错的，只是**对应的提交不同**（这正是交接提示词 §11.5 强调的规矩）。
+
 - **Fabric 线**：`./gradlew clean build` 全绿，离线自检 **810 项通过 / 0 失败**
   （v2.3.0 在同一个提交上是 753 项，**+57**）。产物名 `Server-Chat-Translator_3.0.0_mc26.3-fabric.jar`。
 - **Forge 线**：`gradle clean build` 全绿 = **810 项自检 + 9 项核心插件验证**，0 失败。
@@ -123,6 +127,67 @@ debug 模式下被拦下的消息会打印原因（不再是静默跳过）：
 mod id 两条线一致且是小写+下划线、资源目录名 = mod id、语言键以 mod id 为前缀、
 三处显示名逐字一致且纯英文、**入口类/coremod 类/`HOOKS` 常量指向的源文件必须真实存在**。
 另有一条门禁把「日志前缀」在代码与四份文档之间钉死（见 [RELEASING.md](RELEASING.md) §8、§10.5）。
+
+### 洁净度审计（发布后追加的一轮，修掉更名留下的 6 处旧名残留）
+
+v3.0.0 发布之后又完整审计了一遍代码与工程，抓到一批**不会让构建变红**的问题 —— 全部已修：
+
+**1. 玩家可见文案里的命令名是错的（最严重）**
+
+上一轮全局替换把大段用户文案里的 `/translator` 也换成了 `/server_chat_translator`
+（**59 处**），于是玩家会被提示去执行一个**不存在的命令**。受影响的是最需要指引的那几句：
+「未配置 API Key…用 /server_chat_translator key 配置」、连接超时/网络错误的排查建议、
+401 的「用 …key 重新设置」、术语表体检的「输入 …glossary 查看」、发送失败时的提示等。
+原门禁只盯 README 与 `ChatTranslator` 的常量，没覆盖这条链 —— 现在补了断言。
+
+**2. 仓库标识：GitHub 仓库名还是 `HypixelChatTranslator`**
+
+模组改名了，仓库名没改，于是 19 处文档/元数据 URL（含 `mcmod.info` 里打包进 jar 的那一处）
+全部指向旧名。这类错误连人工点开都「能用」——GitHub 会重定向旧地址，只有旧名被占用才会一次性全断。
+本轮把仓库改名为 **`ServerChatTranslator`** 并全仓统一。
+
+**3. LICENSE 合规**
+
+- **Forge jar 里根本没有 LICENSE**（Fabric 有）—— MIT 要求随分发附带许可副本，两条线不一致。
+  顺带记一个坑：`from('../LICENSE')` 与 `rootProject.file('LICENSE')` 在本套工具链上
+  **都静默什么都不做**（本目录自有 `settings.gradle`，`rootProject` 就是它自己），
+  必须写 `project.file('../LICENSE')`。构建成功**不能**当作证据，要解开 jar 看条目。
+- Fabric 那边把 LICENSE 重命名成了 `LICENSE_Server-Chat-Translator`（无扩展名、带项目名），
+  现已统一成标准的 `LICENSE`。
+
+**4. 代码洁度**
+
+删掉两个未使用的 import（`ForgeChatCommand` 的 `java.util.Arrays`、`VerifyCore` 的 `JsonParser`）、
+一个从 v2.1.4 起就没人引用的死常量（`TranslatorConfig.LEGACY_QUOTED_DEF_ENTRY`），
+修掉一处漏掉的换行；`getCommandAliases()` 空表改用 `Collections.emptyList()`。
+
+**5. 工程一致性**
+
+两个 workflow 头部注释里的产物名格式、README 开篇「专门针对 Hypixel」（与更名矛盾）、
+Forge sources jar 的名字（`Server-Chat-Translator-3.0.0-sources.jar` → 对齐 Fabric 的
+`Server-Chat-Translator_3.0.0_mc1.8.9-forge-sources.jar`）、`.gitattributes` 漏掉嵌套的
+`forge-1.8.9/gradlew`、RELEASING §10.4 里未标注为历史数字的「720 项」。
+
+**6. 供应链与仓库设置**
+
+两个 Gradle wrapper 补上 `distributionSha256Sum`（此前只有 `distributionUrl`，
+中间人换掉分发包就能在我们的构建里跑任意代码）。两个哈希都用**本机实测**核对过：
+2.14.1 与缓存里那份已用过的 zip 完全一致，9.5.1 与重新下载的官方包完全一致；
+并做了反向验证 —— 故意写错哈希时 wrapper 会硬失败
+（`Verification of Gradle distribution failed!`）。GitHub 侧同时开启
+`delete_branch_on_merge`。
+
+**新增门禁**（都做了反向验证）：
+
+| 门禁 | 中和它 | 变红断言数 |
+| --- | --- | --- |
+| 仓库标识一致性 `repoIdentityConsistency()`（owner/repo 全仓一致、不含旧品牌、mcmod.info 与其余文档同源） | 只改 `mcmod.info` 的 url | 2 |
+| 同上 | 只改 README 的 7 处 url（多数派检出） | 2 |
+| LICENSE 打包（两个构建都必须显式声明；判据只看 `jar` 块内部） | 删掉 Fabric 的 `from("LICENSE")` | 1 |
+
+> 这一轮的教训与上一轮同源：**能用**不等于**正确**。旧 URL 会被重定向、缺 LICENSE 不影响运行、
+> 玩家文案里的错命令要等到真出错时才被看到 —— 而构建和当时那 810 项自检对这些全都保持沉默（本轮补完门禁后是 820 项）。
+> 所以每修一处都要问一句「下次谁替我盯着它」，答不上来就补一条门禁。
 
 ### 没有自动化覆盖的部分
 
@@ -1005,7 +1070,7 @@ LWJGL / authlib 全部剔除。现在「纯逻辑类误引用游戏 API」会在
 
 `fabric.mod.json` 的依赖声明同步收紧为 `minecraft ~26.3` / `fabricloader >=0.19.5`。
 **装到 26.2 上会被加载器直接拒绝**——这是有意的：本版不再兼容 26.2，想继续玩 26.2 请用
-[v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)（它仍在 Releases 里）。
+[v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)（它仍在 Releases 里）。
 
 ### 修复：术语表只服务「英→中」，自己打中文时完全没用上
 

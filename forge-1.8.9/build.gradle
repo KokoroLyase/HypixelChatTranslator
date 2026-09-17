@@ -199,5 +199,24 @@ jar {
                 'FMLCorePluginContainsFMLMod': 'true'
         )
     }
+
+    // MIT 要求「随软件分发时附带许可副本」。v3.0.0 的洁净度审计发现这一侧**根本没有**：
+    // Fabric 线一直在打包 LICENSE，Forge 线漏了 —— 两条线的产物内容因此不一致。
+    //
+    // 路径必须写成 project.file('../LICENSE')，两个坑都实测过（都属于「不报错的静默漏打包」）：
+    //  · rootProject.file('LICENSE') 是**错的**：本目录有独立的 settings.gradle，
+    //    因此 rootProject 就是 forge-1.8.9 自己，那个 LICENSE 根本不存在，Gradle 直接跳过；
+    //  · 只写 from('../LICENSE') 在本套工具链（Gradle 2.14 + ForgeGradle 2.1）上同样什么都不做。
+    //    project.file() 的相对路径是相对**本项目目录**解析的，显式写出来才可靠。
+    // 改完务必用「解开 jar 看有没有 LICENSE 条目」来验证，构建成功**不能**当作证据。
+    from project.file('../LICENSE')
+}
+
+// 源码包的名字与 Fabric 线对齐（v3.0.0 洁净度审计）：
+// 默认是 <archivesBaseName>-<version>-sources.jar（Server-Chat-Translator-3.0.0-sources.jar），
+// 既没有 mc 段也没有加载器段 —— 下载页上两个 sources 包一看不出是给哪条线的。
+// 任务名是 ForgeGradle 2.1 提供的 sourceJar（不是 Fabric 那边的 sourcesJar）。
+tasks.matching { it.name == 'sourceJar' }.all { task ->
+    task.archiveName = "${archivesBaseName}_${modVersion}_mc${mcVersion}-${loaderTag}-sources.jar"
 }
 

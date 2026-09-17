@@ -149,10 +149,10 @@ public final class HxTranslateClient implements ClientModInitializer {
             feedback.error(config.loadWarning());
         }
         if (!config.hasApiKey()) {
-            feedback.error("未配置 DeepSeek API Key！请执行 §f/server_chat_translator key <你的Key> §c或编辑配置文件。");
+            feedback.error("未配置 DeepSeek API Key！请执行 §f/translator key <你的Key> §c或编辑配置文件。");
             feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
-            feedback.hint("F6 开关翻译，/server_chat_translator status 查看状态，/server_chat_translator debug on 排错");
+            feedback.hint("F6 开关翻译，/translator status 查看状态，/translator debug on 排错");
         }
         reportGlossaryFindings();
     }

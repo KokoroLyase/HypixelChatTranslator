@@ -58,10 +58,10 @@ public final class ChatTranslator {
 
     /** 「没配 Key」的统一提示。 */
     private static final String NO_KEY_HINT =
-            "未配置 DeepSeek API Key（用 §f/server_chat_translator key <你的Key>§c 配置）";
+            "未配置 DeepSeek API Key（用 §f/translator key <你的Key>§c 配置）";
     /** 聊天方向多给一条退路：干脆关掉发送翻译。 */
     private static final String NO_KEY_HINT_WITH_OFF =
-            NO_KEY_HINT + "，或 §f/server_chat_translator outgoing off§c 关掉发送翻译";
+            NO_KEY_HINT + "，或 §f/translator outgoing off§c 关掉发送翻译";
 
     /**
      * 单人闸门在 debug 模式下给出的原因（收发两个方向共用同一句）。
@@ -229,7 +229,7 @@ public final class ChatTranslator {
                 break;
             case NOT_READY:
                 skipIncoming("未配置 API Key", text);
-                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/server_chat_translator key <你的Key> §c配置。");
+                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/translator key <你的Key> §c配置。");
                 break;
             case RATE_LIMITED:
                 skipIncoming("超出每分钟限流", text);
@@ -449,13 +449,13 @@ public final class ChatTranslator {
         }
     }
 
-    /** 给 /server_chat_translator status 用的统计信息（收到方向）。 */
+    /** 给 /translator status 用的统计信息（收到方向）。 */
     public String counters() {
         return "§7收到 §f" + receivedCount.get() + " §7条 §8| §a译 §f" + translatedCount.get()
                 + " §8| §e跳过 §f" + skippedCount.get() + " §8| §c失败 §f" + failedCount.get();
     }
 
-    /** 给 /server_chat_translator status 用的统计信息（发出方向）。 */
+    /** 给 /translator status 用的统计信息（发出方向）。 */
     public String sendCounters() {
         return "§7发出 §a译文 §f" + sentCount.get() + " §7条 §8| §c未能翻译 §f"
                 + sendFailedCount.get() + " §7条";

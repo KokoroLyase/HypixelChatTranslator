@@ -110,16 +110,14 @@ tasks.named('check') {
 }
 
 jar {
-	def projectName = project.name
-	inputs.property "projectName", projectName
-
 	// 文件名带上游戏版本与模组加载器，和主流模组一致：
 	// Server-Chat-Translator_3.0.0_mc26.3-fabric.jar
 	archiveFileName = "${project.archives_base_name}_${project.mod_version}_mc${project.minecraft_version}-fabric.jar"
 
-	from("LICENSE") {
-		rename { "${it}_$projectName" }
-	}
+	// MIT 要求「随软件分发时附带许可副本」。这里刻意**不改名**：
+	// 以前写成 LICENSE_<项目名>（无扩展名、还带项目名），既不像标准许可文件、
+	// 也让两条线的产物不一致 —— 审计时两个 jar 一个有一个没有，很难一眼看出是缺了。
+	from("LICENSE")
 }
 
 tasks.matching { it.name == "sourcesJar" }.configureEach {

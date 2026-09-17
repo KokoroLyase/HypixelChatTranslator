@@ -237,19 +237,19 @@ public final class GlossaryAudit {
     }
 
     /**
-     * 一行摘要，给启动提示与 {@code /server_chat_translator status} 用。
+     * 一行摘要，给启动提示与 {@code /translator status} 用。
      *
      * @return 摘要文本；没有问题（或没有术语表）时返回 {@code null}，调用方据此决定不打扰玩家
      */
     public static String summarize(List<Finding> findings) {
         String counts = countsText(findings);
-        return counts == null ? null : "术语表体检：" + counts + "（输入 /server_chat_translator glossary 查看详情）";
+        return counts == null ? null : "术语表体检：" + counts + "（输入 /translator glossary 查看详情）";
     }
 
     /**
      * 只统计「几条写错、几条有风险」，不带指路后缀。
      *
-     * <p>给已经处在 {@code /server_chat_translator glossary} 里的场景用 —— 那时再提示「输入该命令」很滑稽。
+     * <p>给已经处在 {@code /translator glossary} 里的场景用 —— 那时再提示「输入该命令」很滑稽。
      *
      * @return 形如 {@code "2 条写错或不会生效、1 条有风险"}；没有问题时返回 {@code null}
      */
@@ -282,7 +282,7 @@ public final class GlossaryAudit {
      *
      * <p>返回值已经过 {@link LangUtils#sanitizeOneLine} 与长度截断：条目文本是用户内容，
      * 里面可能有 {@code §} 或换行，直接进聊天栏会变成颜色代码、把一行拆成好几行
-     * （{@code /server_chat_translator glossary} 走的是命令反馈，不经过 {@code GameFeedback} 的统一清洗）。
+     * （{@code /translator glossary} 走的是命令反馈，不经过 {@code GameFeedback} 的统一清洗）。
      *
      * @param maxLines 最多几条明细；不足时按实际数量返回
      * @return 可直接显示的行；没有问题或 {@code maxLines <= 0} 时返回空列表
@@ -297,7 +297,7 @@ public final class GlossaryAudit {
             lines.add(oneLine(findings.get(i).describe()));
         }
         if (findings.size() > shown) {
-            lines.add("…另有 " + (findings.size() - shown) + " 条，输入 /server_chat_translator glossary 查看全部");
+            lines.add("…另有 " + (findings.size() - shown) + " 条，输入 /translator glossary 查看全部");
         }
         return lines;
     }

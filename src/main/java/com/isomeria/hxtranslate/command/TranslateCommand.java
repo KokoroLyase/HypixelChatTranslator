@@ -18,7 +18,7 @@ import net.minecraft.network.chat.Component;
 import java.util.List;
 
 /**
- * 客户端命令 /server_chat_translator（别名 /hxt）。
+ * 客户端命令 /translator（v3.0.0 起不再注册旧别名 /hxtranslate 与 /hxt）。
  * 这些命令只在本地执行，不会发到 Hypixel 服务器。
  */
 public final class TranslateCommand {
@@ -82,7 +82,7 @@ public final class TranslateCommand {
                     // 重载往往就是「刚改完术语表」：顺手体检一次，写反 / 漏等号的条目当场说清楚
                     String suspicious = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
                     if (suspicious != null) {
-                        message = message + "§e（术语表体检：" + suspicious + "，输入 /server_chat_translator glossary 查看）";
+                        message = message + "§e（术语表体检：" + suspicious + "，输入 /translator glossary 查看）";
                     }
                     context.getSource().sendFeedback(Component.literal(message));
                     return 1;
@@ -183,7 +183,7 @@ public final class TranslateCommand {
     }
 
     /**
-     * 术语表体检报告（{@code /server_chat_translator glossary}）。
+     * 术语表体检报告（{@code /translator glossary}）。
      *
      * <p>术语表是玩家长期维护的资产，而「写反了」「漏了等号」这类错误是**完全静默**的：
      * 前者让两个方向的含义都反过来，后者会被渲染直接丢掉（加了词却一个字都没进提示词）。
@@ -206,14 +206,14 @@ public final class TranslateCommand {
             source.sendFeedback(Component.literal("§7  - " + line));
         }
         source.sendFeedback(Component.literal(
-                "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/server_chat_translator reload §7即可生效"));
+                "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/translator reload §7即可生效"));
     }
 
     /** 测试翻译要发网络请求，必须放到后台线程，否则会卡住游戏。 */
     private static void runTest(TranslationService service, FeedbackPort feedback, String text) {
         // 方向按内容自动判断，规则和实际收发时一致：含汉字 = 你想发出去的中文（中→英），
         // 否则当作收到的英文（英→中）。
-        // 以前这里固定用「英→中」，于是 `/server_chat_translator test 你好` 会得到「你好」原样返回，
+        // 以前这里固定用「英→中」，于是 `/translator test 你好` 会得到「你好」原样返回，
         // 看着像模组坏了，其实是根本没测到发送方向 —— 而发送方向才是会影响服务器里别人的那个。
         Direction direction = LangUtils.containsHan(text) ? Direction.OUTGOING : Direction.INCOMING;
         Thread thread = new Thread(() -> {
@@ -252,7 +252,7 @@ public final class TranslateCommand {
         if (disabledRegexes > 0) {
             source.sendFeedback(Component.literal("§e有 §f" + disabledRegexes
                     + " §e条 ignorePatterns 正则因匹配超时被停用（多半写了灾难性回溯的写法）。"
-                    + "改掉它并 §f/server_chat_translator reload §e即可恢复。"));
+                    + "改掉它并 §f/translator reload §e即可恢复。"));
             for (String regex : LangUtils.disabledRegexes()) {
                 source.sendFeedback(Component.literal("§8  - §7" + LangUtils.sanitizeOneLine(regex)));
             }
@@ -262,7 +262,7 @@ public final class TranslateCommand {
         String glossaryCounts = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (glossaryCounts != null) {
             source.sendFeedback(Component.literal("§e术语表体检发现 " + glossaryCounts
-                    + "，输入 §f/server_chat_translator glossary §e查看并修改"));
+                    + "，输入 §f/translator glossary §e查看并修改"));
         }
         source.sendFeedback(Component.literal("§7输入长度上限: §f" + config.maxIncomingChars
                 + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()

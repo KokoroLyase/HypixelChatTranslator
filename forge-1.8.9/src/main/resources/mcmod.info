@@ -5,7 +5,7 @@
   "description": "Hypixel 等英文服务器的聊天翻译：别人打的英文自动译成中文，你打的中文自动译成英文再发出去（调 DeepSeek API）。纯客户端，服务器无需安装。",
   "version": "${version}",
   "mcversion": "${mcversion}",
-  "url": "https://github.com/KokoroLyase/HypixelChatTranslator",
+  "url": "https://github.com/KokoroLyase/ServerChatTranslator",
   "updateUrl": "",
   "authorList": ["Isomeria"],
   "credits": "",

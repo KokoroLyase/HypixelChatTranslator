@@ -12,8 +12,10 @@
 *.gif binary
 *.ogg binary
 
-# Linux start script should use lf
-/gradlew        text eol=lf
+# Linux start script should use lf（两条线各有一份 wrapper，都要钉；
+# 只写 /gradlew 是根目录专属路径，嵌套的那份会落到全局的 text=auto 上）
+gradlew         text eol=lf
+forge-1.8.9/gradlew text eol=lf
 
 # These are Windows script files and should use crlf
 *.bat           text eol=crlf

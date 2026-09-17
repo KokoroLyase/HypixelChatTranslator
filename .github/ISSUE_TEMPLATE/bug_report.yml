@@ -12,9 +12,9 @@ body:
            **MC 26.3 + Fabric**（`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`）与
            **MC 1.8.9 + Forge**（`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`）两条线，功能一致、配置通用；
         2. **模组版本与 MC 版本对得上** —— v2.x 只支持 26.3 或 1.8.9；还在玩 26.2 请用
-           [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)；
+           [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)；
         3. **已经是最新版** —— 很多问题在更新里修掉了，见
-           [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)（Release 名带 `-mc<版本>-<加载器>`）。
+           [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)（Release 名带 `-mc<版本>-<加载器>`）。
 
         > **1.8.9 的玩家请特别注意**：那一条线是核心插件（coremod）。
         > 如果「打中文没被翻译」而其它功能（收消息翻译、F6、命令）都正常，

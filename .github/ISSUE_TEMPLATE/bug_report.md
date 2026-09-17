@@ -25,8 +25,8 @@ labels: bug
 - 服务器与场景（如 Hypixel Bed Wars 单排）：
 
 > 模组版本与 MC 版本必须对得上：**v2.x 支持 MC 26.3 与 1.8.9 两条线**，26.2 请用
-> [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)。
-> 下载地址见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)
+> [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)。
+> 下载地址见 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)
 > （Release 名带 `-mc<游戏版本>-<加载器>`，与 jar 文件名一一对应）。
 >
 > **1.8.9 的玩家请注意**：那一条线是核心插件（coremod）。如果「打中文没被翻译」

@@ -122,13 +122,12 @@ public final class TranslatorConfig {
             "n=不",
             "def=防守（defend）；\"u def\"=你来防守");
 
-    /**
-     * v7 默认术语表里那条带引号的写法，v8 换成不带引号的 {@code you def=你来防守}。
-     *
-     * <p>术语表的格式是 {@code 英文=中文}，英文侧的字面引号没有任何意义，
-     * 却会被反查成 {@code 你来防守 -> "u def"} 进提示词，和「不要加引号」的规则打架。
+    /*
+     * 这里原本还有一个 LEGACY_QUOTED_DEF_ENTRY 常量（v7 那条带引号的 def 写法）。
+     * v3.0.0 的洁净度审计确认它是**死代码**：那串字面量已经直接内联在上面那份
+     * LEGACY_DEFAULT_GLOSSARY 列表里，迁移的判据用的是「列表里含不含带引号的条目」，
+     * 从来不读这个常量 —— 于是它从 v2.1.4 起就一直没人引用。已删除。
      */
-    private static final String LEGACY_QUOTED_DEF_ENTRY = "def=防守（defend）；\"u def\"=你来防守";
 
     /** 横幅分隔线（{@code ▬▬▬▬} 这类）开头的消息。 */
     private static final String BANNER_SEPARATOR_PATTERN = "^[\\u25AC\\u2500\\u2014\\u2550=\\uff1d~*_\\-]{4,}";
@@ -240,7 +239,7 @@ public final class TranslatorConfig {
     // 开关
     // ------------------------------------------------------------------
 
-    /** 总开关，可用游戏内按键或 /server_chat_translator on|off 切换。 */
+    /** 总开关，可用游戏内按键或 /translator on|off 切换。 */
     public boolean enabled = true;
 
     /** 是否翻译收到的消息（英文 → 中文）。 */
@@ -746,7 +745,7 @@ public final class TranslatorConfig {
     /**
      * 本次读取配置时遇到的问题；正常读取时为 {@code null}。
      *
-     * <p>调用方（启动提示、{@code /server_chat_translator reload}）应该把它转达给玩家 ——
+     * <p>调用方（启动提示、{@code /translator reload}）应该把它转达给玩家 ——
      * 「Key 没了 / 设置变回默认」如果只写在日志里，玩家只会以为模组坏了。
      */
     public String loadWarning() {
@@ -767,10 +766,10 @@ public final class TranslatorConfig {
         }
         if (backup == null) {
             return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
-                    + "原文件未被改动，修好后执行 /server_chat_translator reload。";
+                    + "原文件未被改动，修好后执行 /translator reload。";
         }
         return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
-                + "原文件已备份为 " + backup.getFileName() + "，修好后改回原名并执行 /server_chat_translator reload。";
+                + "原文件已备份为 " + backup.getFileName() + "，修好后改回原名并执行 /translator reload。";
     }
 
     /**
@@ -1332,7 +1331,7 @@ public final class TranslatorConfig {
 
     private void copyFrom(TranslatorConfig o) {
         this.configVersion = o.configVersion;
-        // 重载失败的原因也要跟着过来，否则 /server_chat_translator reload 之后提示就丢了
+        // 重载失败的原因也要跟着过来，否则 /translator reload 之后提示就丢了
         this.loadWarning = o.loadWarning;
         this.apiKey = o.apiKey;
         this.apiBaseUrl = o.apiBaseUrl;

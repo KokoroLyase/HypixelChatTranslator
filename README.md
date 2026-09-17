@@ -7,12 +7,12 @@
 - **你打的中文 → 自动翻成英文再发出去**，服务器里的外国人看到的是正常英文；
 - **你打英文 → 完全不干预**，原样发送（不消耗任何 API 请求）。
 
-> 专门针对 Hypixel 这类英文服务器设计，客户端安装即用，服务器无需安装任何东西。
+> 面向**任何英文服务器**（Hypixel、其它外服、朋友开的英文服都行），客户端安装即用，服务器无需安装任何东西。
 
-> 仓库：<https://github.com/KokoroLyase/HypixelChatTranslator>
-> 下载：见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)（也可以点 [Actions](https://github.com/KokoroLyase/HypixelChatTranslator/actions) 里任意一次成功构建，在 Artifacts 里下载）。
+> 仓库：<https://github.com/KokoroLyase/ServerChatTranslator>
+> 下载：见 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)（也可以点 [Actions](https://github.com/KokoroLyase/ServerChatTranslator/actions) 里任意一次成功构建，在 Artifacts 里下载）。
 > 更新记录：[CHANGELOG.md](CHANGELOG.md)。
-> 第一次用请**直接看 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)**，
+> 第一次用请**直接看 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases)**，
 > 按下表的文件名挑对应你游戏版本的那一个 —— `latest` 只是「最近发布的那条线」，不一定是你要的线。
 
 ---
@@ -45,7 +45,7 @@
 | 系统 | Windows / macOS / Linux 均可 |
 
 > **2.0.0 起不再支持 26.2**。游戏升到 26.3 后请用 26.3 线；
-> 还想继续玩 26.2 的话，用 [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)
+> 还想继续玩 26.2 的话，用 [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)
 > （旧版 Release 一律保留）。
 
 ### 1.2 1.8.9 + Forge 线
@@ -78,7 +78,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
-3. 把本模组 **`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc26.3-fabric` 的那一条）放进同一个 `mods` 文件夹：
+3. 把本模组 **`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases) 里找 `v<版本>-mc26.3-fabric` 的那一条）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
@@ -90,7 +90,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 
 1. 安装 **Forge 11.15.1.2318 for 1.8.9**（[官方下载页](https://files.minecraftforge.net/net/minecraftforge/forge/index_1.8.9.html)，
    选 `11.15.1.2318` 的 Installer）。用启动器时记得选 **Java 8**。
-2. 把本模组 **`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc1.8.9-forge` 的那一条）丢进同一个 `mods` 文件夹（路径同上）。
+2. 把本模组 **`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`**（在 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases) 里找 `v<版本>-mc1.8.9-forge` 的那一条）丢进同一个 `mods` 文件夹（路径同上）。
 3. 启动游戏，进入 Hypixel。
 
 > 1.8.9 线不依赖 Forge 之外的任何模组（**不需要** Fabric API 之类的东西）。
@@ -371,7 +371,7 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 >   漏翻；关掉 `showErrorsInChat` 时失败会彻底静默（消息凭空消失）；术语表里的单字母条目
 >   （`u=你` 等）会污染玩家名 → **v2.2.0 全部修复**；
 > - v2.0.0：仍是**不兼容变更** —— 换到 **Minecraft 26.3** 并结束对 26.2 的支持；
->   还在玩 26.2 的话要用 [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)；
+>   还在玩 26.2 的话要用 [v1.1.3](https://github.com/KokoroLyase/ServerChatTranslator/releases/tag/v1.1.3)；
 > - v2.0.x：`glossary` 术语表只对「收到的英文」生效，你自己打中文时一个字都没用上（「我们有黑曜石」
 >   会译成 `we have black obsidian` 而不是 `we have obby`）→ **v2.0.0 起两个方向都用**；
 > - v2.0.x：日志出口引用了模组入口类，等于「打一行日志」也要加载 Fabric 的加载器 API。

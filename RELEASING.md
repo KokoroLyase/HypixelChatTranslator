@@ -83,7 +83,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 ## 4. 保留旧版
 
 - **旧版本的 Release 与附件一律保留**，不删除、不覆盖、不改 tag 指向。
-- 新版本走新 tag、新 Release；旧版说明里加一行指向 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 即可
+- 新版本走新 tag、新 Release；旧版说明里加一行指向 [Releases](https://github.com/KokoroLyase/ServerChatTranslator/releases) 即可
   —— 注意**不要**再写 `releases/latest`：两条线并行之后，「最新」只代表最近发布的那条线，
   不一定是读者要的那条。
 - 涉及旧附件改名时，重新上传同内容的新名字附件再删旧名，**不要删掉整个 Release**。
@@ -293,7 +293,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   验字节码，并做三项反向验证（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
   这道门禁抓到过一个真实缺陷：`IClassTransformer.transform` 传进来的类名是**点号分隔**的，
   按斜杠内部名去比会导致 MCP 名永远匹配不上 —— 游戏里的表现是「发送方向完全不翻译」，
-  而编译、构建、720 项自检全是绿的。
+  而编译、构建、当时那 720 项自检全是绿的（当时的基线；现为 810 项，见 CHANGELOG v3.0.0）。
 - 注入失败**绝不能静默**：`HxTransformer` 的 catch 会往 `System.err` 打一行明确的
   失败说明（那条路径执行得极早，碰不得日志框架）。
 - 1.8.9 的 `IChatComponent.getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），

@@ -15,12 +15,11 @@ import net.minecraft.command.ICommandSender;
 import net.minecraft.util.BlockPos;
 import net.minecraft.util.ChatComponentText;
 
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 /**
- * 客户端命令 {@code /server_chat_translator}（别名 {@code /hxt}）的 1.8.9 实现。
+ * 客户端命令 {@code /translator} 的 1.8.9 实现（v3.0.0 起不再注册旧别名）。
  *
  * <p>1.8.9 <b>没有 Brigadier</b>（那是 1.13 才进的），所以命令要写成
  * {@link ICommand} 并注册到 {@code ClientCommandHandler}。这里把 Fabric 线
@@ -55,13 +54,14 @@ public final class ForgeChatCommand extends CommandBase {
 
     @Override
     public List<String> getCommandAliases() {
-        // v3.0.0 起只保留 /translator：旧的 /server_chat_translator 与 /hxt 不再注册（用户已确认「只换不留」）。
-        return new ArrayList<String>();
+        // v3.0.0 起只保留 /translator：旧的 /hxtranslate 与 /hxt 都不再注册（用户已确认「只换不留」）。
+        // 返回空表而不是 null —— 1.8.9 的 ClientCommandHandler 会直接遍历这个返回值。
+        return Collections.emptyList();
     }
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/server_chat_translator [status|on|off|incoming|outgoing|key|models|glossary|debug|reload|test]";
+        return "/translator [status|on|off|incoming|outgoing|key|models|glossary|debug|reload|test]";
     }
 
     /** 客户端命令不需要权限等级（也避免被当成 op 命令而拒绝执行）。 */
@@ -131,7 +131,7 @@ public final class ForgeChatCommand extends CommandBase {
 
     private void setToggle(ICommandSender sender, String[] args, boolean incoming) {
         if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
-            reply(sender, "§c用法: /server_chat_translator " + (incoming ? "incoming" : "outgoing") + " on|off");
+            reply(sender, "§c用法: /translator " + (incoming ? "incoming" : "outgoing") + " on|off");
             return;
         }
         boolean on = "on".equalsIgnoreCase(args[1]);
@@ -157,7 +157,7 @@ public final class ForgeChatCommand extends CommandBase {
      */
     private void setSingleplayer(ICommandSender sender, String[] args) {
         if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
-            reply(sender, "§c用法: /server_chat_translator singleplayer on|off");
+            reply(sender, "§c用法: /translator singleplayer on|off");
             return;
         }
         boolean on = "on".equalsIgnoreCase(args[1]);
@@ -170,7 +170,7 @@ public final class ForgeChatCommand extends CommandBase {
 
     private void setDebug(ICommandSender sender, String[] args) {
         if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
-            reply(sender, "§c用法: /server_chat_translator debug on|off");
+            reply(sender, "§c用法: /translator debug on|off");
             return;
         }
         boolean on = "on".equalsIgnoreCase(args[1]);
@@ -186,7 +186,7 @@ public final class ForgeChatCommand extends CommandBase {
 
     private void setKey(ICommandSender sender, String[] args) {
         if (args.length < 2) {
-            reply(sender, "§c用法: /server_chat_translator key <你的Key>");
+            reply(sender, "§c用法: /translator key <你的Key>");
             return;
         }
         StringBuilder value = new StringBuilder();
@@ -227,7 +227,7 @@ public final class ForgeChatCommand extends CommandBase {
     /** 测试翻译要发网络请求，同样放后台线程。 */
     private void runTest(ICommandSender sender, String[] args) {
         if (args.length < 2) {
-            reply(sender, "§c用法: /server_chat_translator test <文本>");
+            reply(sender, "§c用法: /translator test <文本>");
             return;
         }
         StringBuilder value = new StringBuilder();
@@ -274,7 +274,7 @@ public final class ForgeChatCommand extends CommandBase {
         }
         String suspicious = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (suspicious != null) {
-            message = message + "§e（术语表体检：" + suspicious + "，输入 /server_chat_translator glossary 查看）";
+            message = message + "§e（术语表体检：" + suspicious + "，输入 /translator glossary 查看）";
         }
         reply(sender, message);
     }
@@ -293,7 +293,7 @@ public final class ForgeChatCommand extends CommandBase {
         for (String line : GlossaryAudit.detailLines(findings, GLOSSARY_DETAIL_LIMIT)) {
             reply(sender, "§7  - " + line);
         }
-        reply(sender, "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/server_chat_translator reload §7即可生效");
+        reply(sender, "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/translator reload §7即可生效");
     }
 
     private void status(ICommandSender sender) {
@@ -316,14 +316,14 @@ public final class ForgeChatCommand extends CommandBase {
         if (disabledRegexes > 0) {
             reply(sender, "§e有 §f" + disabledRegexes
                     + " §e条 ignorePatterns 正则因匹配超时被停用（多半写了灾难性回溯的写法）。"
-                    + "改掉它并 §f/server_chat_translator reload §e即可恢复。");
+                    + "改掉它并 §f/translator reload §e即可恢复。");
             for (String regex : LangUtils.disabledRegexes()) {
                 reply(sender, "§8  - §7" + LangUtils.sanitizeOneLine(regex));
             }
         }
         String glossaryCounts = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (glossaryCounts != null) {
-            reply(sender, "§e术语表体检发现 " + glossaryCounts + "，输入 §f/server_chat_translator glossary §e查看并修改");
+            reply(sender, "§e术语表体检发现 " + glossaryCounts + "，输入 §f/translator glossary §e查看并修改");
         }
         reply(sender, "§7输入长度上限: §f" + config.maxIncomingChars
                 + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()

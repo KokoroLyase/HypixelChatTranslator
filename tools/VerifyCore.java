@@ -1,6 +1,5 @@
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.chat.ChatClientPort;
 import com.isomeria.hxtranslate.chat.ChatTranslator;
@@ -691,7 +690,7 @@ public class VerifyCore {
                     !dirty.ok() && dirty.error().contains("网关坏了 请稍后重试"));
             server.status = 200;
 
-            // 5) 熔断后复位要能立刻重试（/server_chat_translator reload 会调用它）
+            // 5) 熔断后复位要能立刻重试（/translator reload 会调用它）
             server.status = 500;
             for (int i = 0; i < 5; i++) {
                 client.translate("trip" + i, Direction.INCOMING);
@@ -710,7 +709,7 @@ public class VerifyCore {
             sized.requestsPerMinute = 1000;
             sized.cacheSize = 100;                 // 构造时是大容量
             TranslationService service = new TranslationService(sized);
-            sized.cacheSize = 16;                  // 模拟 /server_chat_translator reload 把它改小
+            sized.cacheSize = 16;                  // 模拟 /translator reload 把它改小
             server.delayMs = 0;
             server.response = ok("cached value");
             // 必须用发送方向：它是单线程 FIFO，写入缓存的先后是确定的。
@@ -938,7 +937,7 @@ public class VerifyCore {
             checkEq("坏配置：生成了备份", 1, backups.size());
             // 用例本身要抗「备份没生成」：否则一条断言失败会以异常收场，后面的用例全都跑不到
             checkEq("坏配置：备份内容就是原件（Key 还在）", brokenText, readIfExists(backups));
-            // 之后任何一次 save()（按 F6、/server_chat_translator on|key|debug…）都会写新文件，
+            // 之后任何一次 save()（按 F6、/translator on|key|debug…）都会写新文件，
             // 但备份必须还在 —— 这就是「配置不会永久丢」的底线。
             fallback.save(brokenFile);
             checkEq("坏配置：保存之后备份仍在，内容可恢复", brokenText, readIfExists(backups));
@@ -1210,7 +1209,8 @@ public class VerifyCore {
     }
 
     /** v1.0.1 修复的两个 bug 的回归用例，样本直接取自玩家反馈的截图。 */
-    private static void hypixelSamples() {        System.out.println("== Hypixel 真实聊天样本回归 ==");
+    private static void hypixelSamples() {
+        System.out.println("== Hypixel 真实聊天样本回归 ==");
         TranslatorConfig config = new TranslatorConfig();
 
         // bug 1：中文客户端的英文喊话带本地化队伍名 [红队]，以前「见汉字就跳过」导致整条不翻译
@@ -1699,7 +1699,7 @@ public class VerifyCore {
             h.client.flushTasks();
             check("切回主线程后才真正发送", h.client.sentChats.contains(FAKE_EN));
 
-            check("统计会清零（/server_chat_translator debug on 用它）", true);
+            check("统计会清零（/translator debug on 用它）", true);
             h.translator.resetCounters();
             check("resetCounters 之后计数归零",
                     h.translator.counters().contains("收到 §f0") && h.translator.sendCounters().contains("发出 §a译文 §f0"));
@@ -2072,7 +2072,7 @@ public class VerifyCore {
      *
      * <p>三条都来自 2026-09-16 的深度审计：
      * <ol>
-     *   <li>{@code /server_chat_translator models} 的输出没有长度上限 —— 模型名由**接口**给出，
+     *   <li>{@code /translator models} 的输出没有长度上限 —— 模型名由**接口**给出，
      *       {@code apiBaseUrl} 可以指向任意第三方中转站，异常/恶意中转站返回上万条 id
      *       就能把聊天记录整屏顶掉；</li>
      *   <li>「清洗」原本只靠调用方自觉，接口返回的错误正文一旦漏洗，{@code §} 会变成颜色代码、
@@ -2290,7 +2290,7 @@ public class VerifyCore {
         checkEq("连续第二次超时才停用", 1, LangUtils.disabledRegexCount());
         check("停用后第二条消息立即返回、不再等预算", true);
 
-        // ---- 2) /server_chat_translator reload 能恢复（这是玩家唯一的自救手段）----
+        // ---- 2) /translator reload 能恢复（这是玩家唯一的自救手段）----
         check("被停用的正则能列出（给状态命令显示）", LangUtils.disabledRegexes().size() == 1);
         LangUtils.resetRegexCircuit();
         checkEq("resetRegexCircuit 后熔断名单清空", 0, LangUtils.disabledRegexCount());
@@ -2403,6 +2403,89 @@ public class VerifyCore {
                 !contains(readme, "服务器提示音效"));
         check("README 不再有指向不存在小节的死链「为什么需要这个阈值」",
                 !contains(readme, "为什么需要这个阈值"));
+
+        // ---- 仓库标识一致性（v3.0.0 洁净度审计新增）----
+        //
+        // 这一组来自一个真实的疏漏：模组改名成 Server Chat Translator 之后，
+        // **GitHub 仓库名还是 HypixelChatTranslator**，于是 19 处文档/元数据 URL 全部指向旧名。
+        // 这类错误永远不会让构建变红 —— GitHub 会重定向旧地址，所以连人工点开都「能用」，
+        // 只有等旧名被别人占用才会一次性全断。所以必须把判据钉死在自检里。
+        repoIdentityConsistency();
+    }
+
+    /**
+     * v3.0.0：仓库标识（owner/repo）在全部文档与元数据里必须一致，且与显示名对得上。
+     *
+     * <p>判据取「多数派」而不是写死一个常量：仓名将来还会改，写死常量只会让下一个人
+     * 顺手把断言改成新名字（等于没保护）。多数派的好处是——**任何一处不一致都会被抓到**，
+     * 而改名的正确做法是全局替换，天然满足多数派。
+     *
+     * <p>历史叙述（CHANGELOG 里的旧链接）也一并纳入：GitHub 重定向旧地址只是权宜之计，
+     * 改名时就该全仓统一，没有理由留一半旧地址。
+     */
+    private static void repoIdentityConsistency() {
+        System.out.println("-- 仓库标识一致性（owner/repo）--");
+
+        String[] files = {
+                "README.md", "RELEASING.md", "CONTRIBUTING.md", "CHANGELOG.md",
+                ".github/SECURITY.md",
+                ".github/ISSUE_TEMPLATE/bug_report.md",
+                ".github/ISSUE_TEMPLATE/bug_report.yml",
+                ".github/ISSUE_TEMPLATE/config.yml",
+                ".github/pull_request_template.md",
+                "forge-1.8.9/src/main/resources/mcmod.info",
+                "src/main/resources/fabric.mod.json",
+        };
+        java.util.regex.Pattern repoUrl = java.util.regex.Pattern.compile(
+                "github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)");
+        java.util.Map<String, Integer> seen = new java.util.LinkedHashMap<String, Integer>();
+        int total = 0;
+        for (String f : files) {
+            String text = readRepoFile(f);
+            if (text == null) {
+                continue;
+            }
+            java.util.regex.Matcher m = repoUrl.matcher(text);
+            while (m.find()) {
+                // 只关心本仓库；别人家的仓库（依赖下载页、文档站）不参与判据
+                if (!"KokoroLyase".equalsIgnoreCase(m.group(1))) {
+                    continue;
+                }
+                String repo = m.group(1) + "/" + m.group(2);
+                Integer prev = seen.get(repo);
+                seen.put(repo, prev == null ? 1 : prev + 1);
+                total++;
+            }
+        }
+
+        check("文档/元数据里提到了本仓库的 URL（至少一处）", total > 0);
+        checkEq("本仓库的 owner/repo 在所有文档里完全一致（共 " + total + " 处）", 1, seen.size());
+        if (seen.isEmpty()) {
+            return;
+        }
+        String majority = null;
+        int best = -1;
+        for (java.util.Map.Entry<String, Integer> e : seen.entrySet()) {
+            if (e.getValue() > best) {
+                best = e.getValue();
+                majority = e.getKey();
+            }
+        }
+
+        // mcmod.info 的 url 是打包进 jar 的那一处，单独钉一次（它最容易被漏）
+        check("mcmod.info 的 url 与其余文档指向同一个仓库（" + majority + "）",
+                contains(readRepoFile("forge-1.8.9/src/main/resources/mcmod.info"),
+                        "github.com/" + majority));
+        check("README 写明了仓库地址（" + majority + "）",
+                contains(readRepoFile("README.md"), "github.com/" + majority));
+
+        // 仓库名不能还带着已经去掉的旧品牌（这是本次审计的直接教训）
+        String repoName = majority.substring(majority.indexOf('/') + 1);
+        check("仓库名不含已弃用的旧品牌 Hypixel（当前 " + repoName + "）",
+                repoName.toLowerCase(java.util.Locale.ROOT).indexOf("hypixel") < 0);
+        check("仓库名与产物名是同一套词（Server-Chat-Translator / ServerChatTranslator，当前 "
+                        + repoName + "）",
+                repoName.replace("-", "").replace("_", "").equalsIgnoreCase("ServerChatTranslator"));
     }
 
     // ------------------------------------------------------------------
@@ -2840,7 +2923,7 @@ public class VerifyCore {
         String summary = GlossaryAudit.summarize(mixed);
         check("摘要区分「写错或不会生效」与「有风险」",
                 contains(summary, "2 条写错或不会生效") && contains(summary, "2 条有风险"));
-        check("摘要指路到 /server_chat_translator glossary", contains(summary, "/server_chat_translator glossary"));
+        check("摘要指路到 /translator glossary", contains(summary, "/translator glossary"));
         List<String> limited = GlossaryAudit.detailLines(mixed, 2);
         checkEq("明细受上限约束（2 条明细 + 1 行省略说明）", 3, limited.size());
         check("省略说明写清还有几条", contains(at(limited, 2), "另有 2 条"));
@@ -3225,7 +3308,27 @@ public class VerifyCore {
         // 这里把它们钉死：**元数据里出现的类名必须是磁盘上真实存在的源文件**。
         metadataSelfConsistency();
 
+        // ---- LICENSE 必须随产物分发（MIT 合规，v3.0.0 洁净度审计新增）----
+        //
+        // 实测踩到：Fabric 线一直在打包 LICENSE，Forge 线**根本没有**（解开 jar 数条目才发现），
+        // 而两条线的构建都是绿的。这里做**静态**断言（自检的类路径被刻意收窄成 gson/slf4j，
+        // 看不到产物），只钉「两个构建脚本都必须显式声明打包 LICENSE」——
+        // 它正好能拦住本轮踩过的两个坑：漏打包、以及把 LICENSE 重命名成 LICENSE_<项目名>。
+        // 产物级核对（解开 jar 看条目）由发布流程的人工核对步骤负责，见 RELEASING §10.3。
+        String fabricBuild = readRepoFile("build.gradle");
+        check("Fabric 构建把 LICENSE 打进产物", contains(fabricBuild, "from(\"LICENSE\")"));
+        // 判据只看 jar 块**内部**：整份文件里 grep 会被注释里的例子误伤
+        // （第一版就是这么写的，结果被自己注释里的「LICENSE_<项目名>」判红了 —— 门禁也要抗自己的误报）。
+        String fabricJarBlock = blockOf(fabricBuild, "jar {");
+        check("Fabric 的 LICENSE 没有被重命名（jar 块里不再出现 rename）",
+                fabricJarBlock != null && !contains(fabricJarBlock, "rename"));
+        String forgeBuildText = readRepoFile("forge-1.8.9/build.gradle");
+        check("Forge 构建把 LICENSE 打进产物（必须是显式绝对路径）",
+                contains(forgeBuildText, "from project.file('../LICENSE')"));
+        check("Forge 构建没有误用 rootProject.file('LICENSE')（本目录自有 settings.gradle，会静默漏打包）",
+                !contains(forgeBuildText, "from rootProject.file('LICENSE')"));
 
+        // ---- 日志前缀一致性（v3.0.0）----
         //
         // 为什么值得一条门禁：核心插件注入失败时只往 System.err 打一行
         // `[<前缀>] EntityPlayerSP 字节码注入失败…`，而 README / CONTRIBUTING / issue 模板
@@ -3650,6 +3753,36 @@ public class VerifyCore {
                 "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/asm/HxTransformer.java"), "HOOKS = \"", "\"");
         check("HxTransformer 里的 HOOKS 常量指向真实存在的类（" + hooksConst + "）",
                 hooksConst != null && sourceClassExists(hooksConst.replace('/', '.')));
+    }
+
+    /**
+     * 取出以 {@code header}（例如 {@code "jar {"}）开头、到**同缩进层级**的收尾 {@code "}"} 为止的整块文本。
+     *
+     * <p>用途：门禁要判「某段配置里有没有做某件事」时，必须在**块内部**看，不能对整份文件 grep ——
+     * 文件里往往有解释性的注释举着同样的字符串（本轮就被自己注释里的例子误判过一次）。
+     * 找不到 header 或找不到收尾时返回 {@code null}（调用方据此判红，而不是抛异常）。
+     */
+    private static String blockOf(String text, String header) {
+        if (text == null) {
+            return null;
+        }
+        int start = text.indexOf(header);
+        if (start < 0) {
+            return null;
+        }
+        int depth = 0;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return text.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
     }
 
     /** 取 {@code text} 里 {@code start} 与随后第一个 {@code end} 之间的内容；找不到返回 null。 */
