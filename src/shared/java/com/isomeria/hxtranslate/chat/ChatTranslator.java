@@ -58,10 +58,19 @@ public final class ChatTranslator {
 
     /** 「没配 Key」的统一提示。 */
     private static final String NO_KEY_HINT =
-            "未配置 DeepSeek API Key（用 §f/hxtranslate key <你的Key>§c 配置）";
+            "未配置 DeepSeek API Key（用 §f/server_chat_translator key <你的Key>§c 配置）";
     /** 聊天方向多给一条退路：干脆关掉发送翻译。 */
     private static final String NO_KEY_HINT_WITH_OFF =
-            NO_KEY_HINT + "，或 §f/hxtranslate outgoing off§c 关掉发送翻译";
+            NO_KEY_HINT + "，或 §f/server_chat_translator outgoing off§c 关掉发送翻译";
+
+    /**
+     * 单人闸门在 debug 模式下给出的原因（收发两个方向共用同一句）。
+     *
+     * <p>必须同时说清「为什么」与「怎么打开」—— 否则玩家在单机里打了一大段中文却什么都没发生，
+     * 只能以为是模组坏了。配置项名与打开方式都写全，因为这句提示是玩家唯一的线索。
+     */
+    private static final String SINGLEPLAYER_SKIP_REASON =
+            "单人世界，且 translateInSingleplayer=false（用 /translator singleplayer on 可打开）";
 
     private final TranslatorConfig config;
     private final TranslationService service;
@@ -151,6 +160,16 @@ public final class ChatTranslator {
         if (!config.enabled || !config.translateIncoming) {
             return;
         }
+        // 闸门放在最前面（越早越好）：单人世界里默认整条链路都不走。
+        //
+        // 这里刻意不调 skipIncoming(...)：那个方法会先 shorten(text)，而闸门必须在 null 检查
+        // **之前**就成立（闸门只看世界类型，与正文无关）。「单人世界跳过」这件事本身已经足够定位，
+        // 不需要正文，所以直接自己加计数 + 打一行 debug。
+        if (singleplayerBlocked()) {
+            skippedCount.incrementAndGet();
+            debug("跳过（" + SINGLEPLAYER_SKIP_REASON + "）");
+            return;
+        }
         if (plain == null) {
             return;
         }
@@ -210,7 +229,7 @@ public final class ChatTranslator {
                 break;
             case NOT_READY:
                 skipIncoming("未配置 API Key", text);
-                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
+                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/server_chat_translator key <你的Key> §c配置。");
                 break;
             case RATE_LIMITED:
                 skipIncoming("超出每分钟限流", text);
@@ -227,6 +246,50 @@ public final class ChatTranslator {
                 skipIncoming("空消息", text);
                 break;
         }
+    }
+
+    /**
+     * 单人世界里是否应该**拦下**翻译（v3.0.0）。
+     *
+     * <p>规则只有一条：<b>在单人世界、且 {@code translateInSingleplayer=false}（默认）时拦下</b>。
+     * 玩家把那个开关打开后，单人世界的行为与多人完全一致。
+     *
+     * <p>为什么这个判断放在共享层而不是各线的装配层：装配层只负责回答事实
+     * （{@link ChatClientPort#isSingleplayer()}），「这个事实要不要拦」是决策，
+     * 必须留在共享层才能被离线自检覆盖。历史上所有「装配层自己写了一段判断逻辑」的地方
+     * 都是自检够不到、只能靠人肉 review 的盲区。
+     *
+     * <p>收发两个方向共用一个出口，理由与 {@code fallbackToOriginal} 相同：规则只写一遍，
+     * 以后新增入口也必须从这里过 —— 否则「接收方向拦了、发送方向忘了」这类分叉会以
+     * 「单机里打中文还是被译成英文发出去」的形式出现在玩家面前。
+     */
+    private boolean singleplayerBlocked() {
+        return !config.translateInSingleplayer && client.isSingleplayer();
+    }
+
+    /**
+     * 当前是不是单人世界（把装配层的事实转发出来）。
+     *
+     * <p>给 {@code status} 显示用：玩家看到「单人世界：是，而 singleplayer 翻译是关的」
+     * 才能理解「为什么单机里不翻」，否则只会以为模组坏了。
+     * 状态显示必须与闸门走同一个出口（同一个 {@link ChatClientPort#isSingleplayer()}），
+     * 不然显示的可能与实际行为不一致。
+     */
+    public boolean isSingleplayer() {
+        return client.isSingleplayer();
+    }
+
+    /**
+     * {@code /translator status} 里那行「单人世界 / 单人翻译」，文本由共享层生成。
+     *
+     * <p>为什么把文案放在共享层：两条线的 status 是各自装配的，但这句话的判据
+     * （{@code isSingleplayer} 与 {@code translateInSingleplayer}）在共享层 ——
+     * 文案留在这里，「显示的口径」与「闸门的口径」就永远不会漂移。两条线直接打印这行即可。
+     */
+    public String singleplayerStatusLine() {
+        return "§7单人世界: " + (isSingleplayer() ? "§e是" : "§7否")
+                + " §8| §7单人里翻译: " + (config.translateInSingleplayer ? "§a开" : "§c关")
+                + (singleplayerBlocked() ? " §8(§7当前单人消息不翻译，用 §f/translator singleplayer on §7打开§8)" : "");
     }
 
     private void skipIncoming(String reason, String text) {
@@ -386,13 +449,13 @@ public final class ChatTranslator {
         }
     }
 
-    /** 给 /hxtranslate status 用的统计信息（收到方向）。 */
+    /** 给 /server_chat_translator status 用的统计信息（收到方向）。 */
     public String counters() {
         return "§7收到 §f" + receivedCount.get() + " §7条 §8| §a译 §f" + translatedCount.get()
                 + " §8| §e跳过 §f" + skippedCount.get() + " §8| §c失败 §f" + failedCount.get();
     }
 
-    /** 给 /hxtranslate status 用的统计信息（发出方向）。 */
+    /** 给 /server_chat_translator status 用的统计信息（发出方向）。 */
     public String sendCounters() {
         return "§7发出 §a译文 §f" + sentCount.get() + " §7条 §8| §c未能翻译 §f"
                 + sendFailedCount.get() + " §7条";
@@ -418,7 +481,21 @@ public final class ChatTranslator {
         if (!config.enabled || !config.translateOutgoing) {
             return true;
         }
-        if (message == null || LangUtils.isBlank(message) || message.startsWith("/")) {
+        if (message == null) {
+            return true;
+        }
+        // 单人闸门：返回 true = 放行原消息（原样发出去），与「不翻译」的其它路径同义。
+        //
+        // 位置在 null 检查之后：闸门本身与正文无关，但 debug 那行要用 shorten(message)，
+        // 而 shorten 不接 null（它直接对 text 调 replace）。为了「最早」而把闸门提到 null
+        // 检查之前，就会在「单人世界 + message 为 null」时抛 NPE —— 那正是这道闸门要避免的
+        // 「莫名其妙崩」。
+        if (singleplayerBlocked()) {
+            skippedCount.incrementAndGet();
+            debug("跳过（" + SINGLEPLAYER_SKIP_REASON + "）: " + shorten(message));
+            return true;
+        }
+        if (LangUtils.isBlank(message) || message.startsWith("/")) {
             return true;
         }
         // 去掉 § 格式代码后再判断/翻译；但真要原样放行时发的还是原始字符串
@@ -551,7 +628,17 @@ public final class ChatTranslator {
         if (!config.enabled || !config.translateCommandMessages) {
             return true;
         }
-        if (command == null || LangUtils.isBlank(command)) {
+        if (command == null) {
+            return true;
+        }
+        // 单人闸门（与 onSendChat 同一条规则、同一个出口）。命令也走它：
+        // 否则单机里 `/shout 大家好` 仍会被翻译后当命令发出去。
+        if (singleplayerBlocked()) {
+            skippedCount.incrementAndGet();
+            debug("跳过（" + SINGLEPLAYER_SKIP_REASON + "）: /" + shorten(command));
+            return true;
+        }
+        if (LangUtils.isBlank(command)) {
             return true;
         }
 

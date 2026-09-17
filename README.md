@@ -1,4 +1,4 @@
-# Hypixel 聊天翻译 (hx-chat-translator)
+# Server Chat Translator (Server-Chat-Translator)
 
 面向 **Minecraft Java 版**的纯客户端聊天翻译模组，调用 **DeepSeek API** 做 AI 翻译。
 同时支持 **26.3 + Fabric** 与 **1.8.9 + Forge** 两条线（功能一致、配置通用，按你的游戏版本选一个装）：
@@ -24,10 +24,10 @@
 
 | 你玩的版本 | 下载哪个 | 需要什么 | Release 名 |
 | --- | --- | --- | --- |
-| Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric Loader ≥ 0.19.5 + Fabric API 0.160.5+26.3 + Java 25 | `v<版本>-mc26.3-fabric` |
-| Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge 11.15.1.2318 + Java 8 | `v<版本>-mc1.8.9-forge` |
+| Minecraft **26.3** | `Server-Chat-Translator_<版本>_mc26.3-fabric.jar` | Fabric Loader ≥ 0.19.5 + Fabric API 0.160.5+26.3 + Java 25 | `v<版本>-mc26.3-fabric` |
+| Minecraft **1.8.9** | `Server-Chat-Translator_<版本>_mc1.8.9-forge.jar` | Forge 11.15.1.2318 + Java 8 | `v<版本>-mc1.8.9-forge` |
 
-> 两条线**共用同一个配置文件**（`.minecraft/config/hxtranslate.json`，格式一字不差），
+> 两条线**共用同一个配置文件**（`.minecraft/config/server_chat_translator.json`，格式一字不差），
 > 所以 1.8.9 的配置可以直接拿去 26.3 用，反之亦然。
 >
 > Release 名刻意与产物文件名对齐（只差一个字符：产物用 `+`、Release 名用 `-`），
@@ -78,7 +78,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
-3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc26.3-fabric` 的那一条）放进同一个 `mods` 文件夹：
+3. 把本模组 **`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc26.3-fabric` 的那一条）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`
@@ -90,7 +90,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 
 1. 安装 **Forge 11.15.1.2318 for 1.8.9**（[官方下载页](https://files.minecraftforge.net/net/minecraftforge/forge/index_1.8.9.html)，
    选 `11.15.1.2318` 的 Installer）。用启动器时记得选 **Java 8**。
-2. 把本模组 **`hx-chat-translator-<版本>+mc1.8.9-forge.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc1.8.9-forge` 的那一条）丢进同一个 `mods` 文件夹（路径同上）。
+2. 把本模组 **`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc1.8.9-forge` 的那一条）丢进同一个 `mods` 文件夹（路径同上）。
 3. 启动游戏，进入 Hypixel。
 
 > 1.8.9 线不依赖 Forge 之外的任何模组（**不需要** Fabric API 之类的东西）。
@@ -102,14 +102,14 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 2. 进游戏后，在聊天栏输入：
 
    ```
-   /hxtranslate key sk-你的Key
+   /translator key sk-你的Key
    ```
 
    提示「已保存」即生效（该命令只在本地执行，**不会**发到 Hypixel，Key 也不会回显在聊天栏）。
 
-   也可以直接编辑配置文件 `config/hxtranslate.json` 里的 `apiKey` 字段，保存后 `/hxtranslate reload` 热重载。
+   也可以直接编辑配置文件 `config/server_chat_translator.json` 里的 `apiKey` 字段，保存后 `/translator reload` 热重载。
 
-> 配置文件首次启动时自动生成在 `.minecraft/config/hxtranslate.json`，Key 以**明文**保存，请注意不要把这个文件分享给别人。
+> 配置文件首次启动时自动生成在 `.minecraft/config/server_chat_translator.json`，Key 以**明文**保存，请注意不要把这个文件分享给别人。
 
 ## 4. 使用
 
@@ -118,22 +118,23 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | 直接打字 | 含中文 → 自动翻译成英文发送；纯英文 → 原样发送 |
 | 收到英文 | 自动在下面追加一行 `[译] 中文` |
 | `F6` | 一键开关翻译（可在「选项 → 控制 → 按键绑定 → 多人游戏」里改键） |
-| `/hxtranslate` 或 `/hxt` | 查看状态 |
+| `/translator` 或 `/translator` | 查看状态 |
 
 ### 游戏内命令
 
 ```
-/hxtranslate                 查看当前状态（含收发两个方向的消息统计）
-/hxtranslate status          同上（写法更明确，方便脚本/习惯）
-/hxtranslate on|off          开关总闸
-/hxtranslate incoming on|off 只控制「收消息翻译」
-/hxtranslate outgoing on|off 只控制「发消息翻译」
-/hxtranslate key <Key>       设置 DeepSeek API Key
-/hxtranslate test <文本>      测试翻译一段文本（方向按内容判断：含中文＝中→英，结果打印在聊天栏）
-/hxtranslate models          查询 DeepSeek 当前可用的模型名（最多列 12 条；接口改版时自查）
-/hxtranslate glossary        体检术语表：列出「写反 / 格式错 / 重复」的条目，并给出怎么改
-/hxtranslate debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
-/hxtranslate reload          重新读取配置文件，并清空缓存、复位限流与熔断
+/translator                 查看当前状态（含收发两个方向的消息统计）
+/translator status          同上（写法更明确，方便脚本/习惯）
+/translator on|off          开关总闸
+/translator incoming on|off 只控制「收消息翻译」
+/translator outgoing on|off 只控制「发消息翻译」
+/translator singleplayer on|off 单人（单机）世界里是否也翻译（默认关，见 FAQ）
+/translator key <Key>       设置 DeepSeek API Key
+/translator test <文本>      测试翻译一段文本（方向按内容判断：含中文＝中→英，结果打印在聊天栏）
+/translator models          查询 DeepSeek 当前可用的模型名（最多列 12 条；接口改版时自查）
+/translator glossary        体检术语表：列出「写反 / 格式错 / 重复」的条目，并给出怎么改
+/translator debug on|off    排错模式：打印每条消息是「翻译」还是「跳过（原因）」
+/translator reload          重新读取配置文件，并清空缓存、复位限流与熔断
 ```
 
 ### 快捷指令里的中文也会被翻译
@@ -162,7 +163,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 想增删命令，改配置里的 `translateCommandArgs`：命令名（小写、不含斜杠）→ 正文前面还有几个参数。
 例如 `/msg <玩家> <正文>` 是 `1`，`/shout <正文>` 是 `0`。
 
-## 5. 主要配置项（`config/hxtranslate.json`）
+## 5. 主要配置项（`config/server_chat_translator.json`）
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -176,6 +177,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | `enabled` | `true` | 总开关 |
 | `translateIncoming` | `true` | 翻译收到的英文 |
 | `translateOutgoing` | `true` | 翻译自己发的中文（直接打出来的聊天；`/shout` 这类命令正文由 `translateCommandMessages` 控制） |
+| `translateInSingleplayer` | `false` | **单人（单机）世界里是否也翻译**。默认关：单机里的聊天多半是自己看的，而且 NPC 对话、告示牌、命令输出逐条送去翻译既费钱又刷屏。要用就 `/translator singleplayer on`，或把这里改成 `true` 再 `/translator reload`。**多人服务器完全不受这一项影响**：判据是「本地开着集成服务端的单人存档」，不是「连的是不是本地地址」——所以对局域网开放的存档仍然翻译 |
 | `translateCommandMessages` | `true` | 是否翻译 `/msg` 之类命令的正文 |
 | `translateCommandArgs` | 16 条 | 命令名 → 正文前有几个参数；按 Hypixel 官方命令表预置了所有聊天命令，可自行增删 |
 | `guardedCommands` | `p`/`party`/`g`/`guild` | 既是管理又是聊天的命令，看第一个参数决定（`chat` → 聊天，`invite` 等 → 管理） |
@@ -187,20 +189,20 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | `includeOriginalInIncoming` | `false` | 译文里是否再带上原文 |
 | `minLatinLetters` | `2` | 至少几个拉丁字母才认为“像英文” |
 | `chineseRatioThreshold` | `0.4` | 正文里汉字占比达到多少就认为「本来就是中文」而跳过（见下方「收到消息要不要翻译，是怎么判断的」） |
-| `glossary` | 约 100 条 | Hypixel / Bed Wars 术语表，格式 `英文写法=中文含义`（**英文在等号左边**）。**两个方向都用**：收到英文时要求模型按含义翻成中文（不要保留 `obby`/`dia`/`u def` 这类缩写）；你打中文时反过来当「中文说法 → 英文写法」的对照，让译文用英文服里真正在用的说法。清空即可关闭。写错（写反、漏等号）时启动会在聊天栏提示，`/hxtranslate glossary` 会逐条告诉你哪里错 |
+| `glossary` | 约 100 条 | Hypixel / Bed Wars 术语表，格式 `英文写法=中文含义`（**英文在等号左边**）。**两个方向都用**：收到英文时要求模型按含义翻成中文（不要保留 `obby`/`dia`/`u def` 这类缩写）；你打中文时反过来当「中文说法 → 英文写法」的对照，让译文用英文服里真正在用的说法。清空即可关闭。写错（写反、漏等号）时启动会在聊天栏提示，`/translator glossary` 会逐条告诉你哪里错 |
 | `maxIncomingChars` | `240` | 超过这个长度不翻译 |
 | `maxOutgoingChars` | `256` | 译文最大长度（原版聊天框上限 256，超长会被服务器拒绝），超出会按词边界截断并加省略号。**只能调小**：调大也不会真的发出去，反而可能被服务器踢（配置会被自动夹到 256） |
 | `requestsPerMinute` | `60` | 每分钟最多请求次数（防刷屏烧钱）；超限时会在聊天栏提醒一次 |
 | `maxPendingTranslations` | `20` | 排队中的翻译请求上限（背压）：接口变慢时超过这个数就先跳过新消息，避免延迟越滚越大 |
 | `cacheSize` | `500` | 重复消息走缓存，不再花钱（**最小 16、最大 10000**，超出会被夹到边界；上限是为防止手滑写成无界缓存把内存吃光） |
 | `httpTimeoutSeconds` | `30` | 读取响应超时（建立连接超时是 `connectTimeoutSeconds`，默认 5）。v2.2.1 起从 15 调到 30：15 秒对跨国线路偏紧，网络一波动整条消息就翻不出来。真实 API 正常耗时约 0.5–0.9 秒，30 秒余量很足 |
-| `ignorePatterns` | 若干正则 | 命中的消息不翻译：经验/代币刷屏、玩家加入/离开、切服提示、**横幅分隔线与游戏名**（`▬▬▬▬`、`Bed Wars` 这类，翻了没用还多花请求）。可自行增删。**正则别写嵌套量词**（如 `(.*a){20}`）：那类写法的匹配时间会指数级增长，模组检测到连续两次超时会停用这条规则并在 `/hxtranslate status` 里列出，改好后 `/hxtranslate reload` 即恢复 |
+| `ignorePatterns` | 若干正则 | 命中的消息不翻译：经验/代币刷屏、玩家加入/离开、切服提示、**横幅分隔线与游戏名**（`▬▬▬▬`、`Bed Wars` 这类，翻了没用还多花请求）。可自行增删。**正则别写嵌套量词**（如 `(.*a){20}`）：那类写法的匹配时间会指数级增长，模组检测到连续两次超时会停用这条规则并在 `/translator status` 里列出，改好后 `/translator reload` 即恢复 |
 | `skipOwnEcho` | `true` | 自己发出（含直接打英文）的消息被服务器回显时不再翻回中文 |
 | `failureFallback` | `CANCEL` | 发送方向翻译失败时：`CANCEL` = 不发送、只在聊天栏提示（默认）；`SEND_ORIGINAL` = 按中文原文发出去 |
 | `blacklistedPlayers` | `[]` | 永不翻译这些玩家的消息（写游戏名即可），朋友是中国人时很有用 |
 | `connectTimeoutSeconds` | `5` | 建立连接超时 |
 | `showErrorsInChat` | `true` | 出错时在聊天栏提示。**关掉只是把红字降为灰色提示，不会静默**：出错/取消时仍会告诉你这条有没有发出去（v2.2.0 起） |
-| `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/hxtranslate debug on`） |
+| `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/translator debug on`） |
 | `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词（内含少样本示例），可自行微调语气 |
 | `configVersion` | 当前版本号 | 配置结构版本，请勿手改；升级模组时会自动把老版提示词/术语表升级到新默认值，你自定义过的内容不会被覆盖 |
 
@@ -281,12 +283,12 @@ v1.0.7 起再加了一道 **15 秒时间窗**：只有 15 秒内自己发过的�
 ## 8. 常见问题
 
 **聊天栏提示「未配置 DeepSeek API Key」**
-执行 `/hxtranslate key sk-xxx`，或编辑 `config/hxtranslate.json` 后 `/hxtranslate reload`。
+执行 `/translator key sk-xxx`，或编辑 `config/server_chat_translator.json` 后 `/translator reload`。
 
 **我明明配过 Key，提示却说没配 / 设置全变回默认了**
 多半是配置文件被改坏了（手改 json 漏个逗号、写错类型）。模组会在聊天栏告诉你原因，
-并把原文件**另存**为同目录下的 `hxtranslate.json.broken-<日期-时间>`，然后按默认设置运行 ——
-把备份改名回 `hxtranslate.json`、修好里面的语法，再 `/hxtranslate reload` 就能恢复。
+并把原文件**另存**为同目录下的 `server_chat_translator.json.broken-<日期-时间>`，然后按默认设置运行 ——
+把备份改名回 `server_chat_translator.json`、修好里面的语法，再 `/translator reload` 就能恢复。
 （v1.1.3 起才有备份；更早的版本遇到坏配置会直接按默认值覆盖掉原文件。）
 
 **提示 401 / 402 / 429**
@@ -294,7 +296,7 @@ v1.0.7 起再加了一道 **15 秒时间窗**：只有 15 秒内自己发过的�
 
 **提示 400 / 模型不可用**
 DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek-flash`）。执行
-`/hxtranslate models` 看当前可用的模型名，再把配置里的 `model` 改成列表里的名字，然后 `/hxtranslate reload`。
+`/translator models` 看当前可用的模型名，再把配置里的 `model` 改成列表里的名字，然后 `/translator reload`。
 
 **聊天栏一直提示「连接 DeepSeek 超时」/ 网络错误，全都不翻译了**
 说明你的网络到 `api.deepseek.com` 不通或不稳定（走代理、跨境线路抖动都会这样）。
@@ -302,15 +304,27 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 
 按顺序排查：
 
-1. `/hxtranslate status` 看 API Key 是否「已配置」、模型名对不对；
-2. 把 `httpTimeoutSeconds` 调大（默认 **30** 秒，网络特别差可以试 60），`/hxtranslate reload`；
+1. `/translator status` 看 API Key 是否「已配置」、模型名对不对；
+2. 把 `httpTimeoutSeconds` 调大（默认 **30** 秒，网络特别差可以试 60），`/translator reload`；
 3. 如果你用了中转站，检查 `apiBaseUrl` 能不能在浏览器里打开；
-4. 代理/加速器换线路，或先 `/hxtranslate incoming off` 把接收方向关掉，避免每条消息都白等一轮；
+4. 代理/加速器换线路，或先 `/translator incoming off` 把接收方向关掉，避免每条消息都白等一轮；
 5. 仍然不行就看 `logs/latest.log` 里的 `翻译请求失败:` 那一行 —— **具体的异常类型只有日志里有**
    （聊天栏里为了让你看得懂，已经换成中文说明与建议了）。
 
 > v2.2.1 起聊天栏不再显示 `SocketTimeoutException` 这类 Java 异常类名。如果你看到的是那种
 > 原始类名，说明模组版本低于 v2.2.1，升级即可（顺带把读超时默认值从 15 秒提到了 30 秒）。
+
+**1.8.9 线：打中文完全没被翻译，其它功能却正常**
+多半是**核心插件（coremod）的字节码注入没生效**。这种情况日志里会有一行明确的说明，
+在 `logs/latest.log` 里搜 `[server_chat_translator]` 就能找到：
+
+```
+[server_chat_translator] EntityPlayerSP 字节码注入失败，发送方向将不翻译（其余功能不受影响）: …
+```
+
+注入失败**绝不静默**（这条路径执行得极早，用不了日志框架，所以写进 `System.err`）。
+常见原因是**装了别的核心插件也在改聊天发送路径**（见 §1.2）—— 两个 coremod 改同一个类时可能互相干扰。
+把那行连同后面的堆栈一起贴进 issue 即可定位。
 
 **我发中文后要等一秒才发出去**
 正常现象：模组先取消原发送，等翻译结果回来再发，期间物品栏上方会显示「⏳ 翻译中…」。
@@ -331,15 +345,15 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 **物品栏上方一直显示「⏳ 翻译中…」，然后再没下文 / 打了中文什么都没发生**
 这是 **v2.0.x 的一个 bug，v2.1.0 已修复**：模组的日志出口引用了入口类，等于「打一行日志」
 也要去加载 Fabric 的加载器 API；万一加载失败，翻译线程会直接死掉且**不报任何错**
-（连 `/hxtranslate status` 里的失败计数都不会涨）。
+（连 `/translator status` 里的失败计数都不会涨）。
 **先确认模组是 v2.1.0 或更新**；如果升级后仍然复现，请按 [Bug 模板](.github/ISSUE_TEMPLATE/bug_report.yml)
-贴出 `/hxtranslate status` 与 `debug on` 的输出，那能直接定位到具体分支。
+贴出 `/translator status` 与 `debug on` 的输出，那能直接定位到具体分支。
 
 **服务器里出现的消息太多，翻译刷屏 / 太费钱**
-把“收到的消息翻译”关掉：`/hxtranslate incoming off`，或调低 `requestsPerMinute`、往 `ignorePatterns` 里加正则。
+把“收到的消息翻译”关掉：`/translator incoming off`，或调低 `requestsPerMinute`、往 `ignorePatterns` 里加正则。
 
 **玩家喊话没被翻译 / 有些消息没有译文**
-先 `/hxtranslate debug on`，模组会逐条打印是「正在翻译」还是「跳过（原因）」。常见原因：
+先 `/translator debug on`，模组会逐条打印是「正在翻译」还是「跳过（原因）」。常见原因：
 
 - 提示「未配置 API Key」→ 去配置 Key；
 - 提示「超出每分钟限流」→ 调大 `requestsPerMinute`（同时也会在聊天栏提醒一次）；
@@ -347,9 +361,9 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 - 提示「自己消息的回显」→ 它认为这条是你刚发过的；提示里会带上匹配到的原文，便于核对；
 - 提示「命中 ignorePatterns」→ 你的忽略正则把它挡了。
 
-> 想确认自己的配置真的生效，用 `/hxtranslate status`：它会显示超时、失败策略、命令正文翻译、
+> 想确认自己的配置真的生效，用 `/translator status`：它会显示超时、失败策略、命令正文翻译、
 > 缓存条数等关键项，以及**被停用的忽略正则**（正则写错导致匹配卡住时会被自动停用，改好后
-> `/hxtranslate reload` 恢复）。
+> `/translator reload` 恢复）。
 
 > 历史 bug（均已修复，请确保用最新版）：
 > - v2.1.3：**发送方向的汉字闸门只按「占比 ≥ 50%」**，于是 `打他 mid` 这类半中半英的译文
@@ -395,7 +409,7 @@ v1.0.3 起，你直接打英文（含 `/shout`、`/msg` 正文）也会被记入
 **`obby` / `dia` / `u def` / `inc` 这类缩写没有被翻译**
 v1.0.1 起内置了 Bed Wars 术语表并要求模型按含义翻译，v1.0.3 扩充到约 70 条并加了少样本示例。
 如果还有不认识的缩写，直接往配置的 `glossary` 里加一条（例如 `"gapple=金苹果"`），
-然后 `/hxtranslate reload` 即可生效。
+然后 `/translator reload` 即可生效。
 
 **我打中文时，译文没用上 `obby` / `rush` / `u def` 这些缩写**
 v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成「中文说法 → 英文写法」交给模型，
@@ -415,7 +429,7 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 **我加了术语表却像没生效 / 聊天栏提示「术语表体检发现 N 条…」**
 先看格式：必须是 `英文写法=中文含义`，**英文在等号左边**。术语表是长期维护的东西，
 而写错时原来**没有任何提示**（要么整条被丢掉，要么两个方向含义一起反过来），所以 v2.3.0 起
-模组会自己体检，`/hxtranslate glossary` 逐条列出问题与改法：
+模组会自己体检，`/translator glossary` 逐条列出问题与改法：
 
 - **「疑似写反」**：中文写到了左边（`黑曜石=obby`）。提示里会给出交换后的正确写法，复制过去即可；
 - **「不会生效」**：漏了等号、某一侧是空的、或者用了中文输入法的**全角等号** `＝`
@@ -423,8 +437,8 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 - **「有风险」**：单字母英文写法（`u=你`，会和玩家名、普通英文撞车），或同一个英文写法写了两种
   中文说法（模型会同时看到两条，自己挑）。
 
-体检只做提示，**不会自动改你的配置**；改完 `/hxtranslate reload` 生效。
-启动时如果发现问题会提示一次，`/hxtranslate status` 里也能看到当前状态。
+体检只做提示，**不会自动改你的配置**；改完 `/translator reload` 生效。
+启动时如果发现问题会提示一次，`/translator status` 里也能看到当前状态。
 
 **在 Hypixel 用会被封号吗？**
 本模组只做「读取聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏，属于常见的聊天辅助类客户端模组。但 Hypixel 的模组政策由服务器单方面解释，请自行阅读其 *Allowed Modifications* 并自行承担风险。
@@ -432,12 +446,30 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 **换了别的服务器 / 单机还能用吗？**
 能。它只监听客户端聊天事件，和具体服务器无关。
 
+**我在单机（单人存档）里打中文，怎么不翻译了？**
+这是 **v3.0.0 起的默认行为，不是故障**：单人世界里默认**完全不动** —— 收到的消息不翻译、
+你打的中文也不翻译。原因是单机的「聊天」多半是自己看的，而 NPC 对话、告示牌、书籍、命令输出
+这类系统消息逐条送去翻译既费钱又刷屏。
+
+想要在单机里也翻译，打开这一项即可（两种方式等价）：
+
+```
+/translator singleplayer on        （想关回来就用 off）
+```
+
+或者把配置里的 `translateInSingleplayer` 改成 `true`，再 `/translator reload`。
+`/translator status` 里能看到「单人世界: 是/否」与「单人里翻译: 开/关」，
+`/translator debug on` 之后每条被拦下的消息都会打印原因。
+
+> **多人服务器不受影响**：判据是「本地开着集成服务端的单人存档」，所以联机、以及**对局域网开放**
+> 的存档，翻译都照常工作。
+
 ## 9. 隐私与合规
 
-- **聊天内容会发到 DeepSeek 的服务器**：开启的「收到翻译」会把**其他玩家**在游戏里说的话发送给 DeepSeek API 才能翻译 —— 这是本模组的工作原理，不是可选项。介意的话用 `/hxtranslate incoming off` 关掉接收方向，只保留你自己发消息时的翻译。
+- **聊天内容会发到 DeepSeek 的服务器**：开启的「收到翻译」会把**其他玩家**在游戏里说的话发送给 DeepSeek API 才能翻译 —— 这是本模组的工作原理，不是可选项。介意的话用 `/translator incoming off` 关掉接收方向，只保留你自己发消息时的翻译。
 - **不会上传**账号、密码、坐标、背包等游戏数据；模组只读取聊天栏文本，并且只把需要翻译的那一条发出去。
-- **API Key** 只存在你本机的 `.minecraft/config/hxtranslate.json`，只用于直连 DeepSeek。本模组没有任何自建服务器，不会把 Key 或聊天内容转发到别处。
-- **不要**把配置文件或日志发给别人：配置里有你的 API Key（明文）；打开 `/hxtranslate debug on`
+- **API Key** 只存在你本机的 `.minecraft/config/server_chat_translator.json`，只用于直连 DeepSeek。本模组没有任何自建服务器，不会把 Key 或聊天内容转发到别处。
+- **不要**把配置文件或日志发给别人：配置里有你的 API Key（明文）；打开 `/translator debug on`
   之后，`logs/latest.log` 里还会有**聊天正文与译文**。仓库的 `.gitignore` 已排除本地配置。
 - **服务器规则**：本模组只做「读聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏。但个别服务器把「自动代发」视为宏，请自行查阅所在服务器规则（Hypixel 见 *Allowed Modifications*）。
 - **DeepSeek 服务条款**：使用即表示你同意 <https://api-docs.deepseek.com/zh-cn/> 的条款与计费方式。
@@ -452,7 +484,7 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 ```bash
 export JAVA_HOME=/path/to/jdk-25
 ./gradlew build
-# 产物: build/libs/hx-chat-translator-<版本>+mc26.3-fabric.jar
+# 产物: build/libs/Server-Chat-Translator_<版本>_mc26.3-fabric.jar
 ```
 
 只用到了 Fabric API（`fabric-message-api-v1` / `fabric-key-mapping-api-v1` / `fabric-command-api-v2` / `fabric-lifecycle-events-v1`），无需额外依赖。
@@ -463,7 +495,7 @@ export JAVA_HOME=/path/to/jdk-25
 cd forge-1.8.9
 export JAVA_HOME=/path/to/jdk-8
 ./gradlew build        # Gradle 版本由这里的 wrapper 固定为 2.14.1
-# 产物: forge-1.8.9/build/libs/hx-chat-translator-<版本>+mc1.8.9-forge.jar
+# 产物: forge-1.8.9/build/libs/Server-Chat-Translator_<版本>_mc1.8.9-forge.jar
 ```
 
 1.8.9 必须用**JDK 8 + Gradle 2.14.1 + ForgeGradle 2.1** 这套老工具链（Gradle 2.x 跑不了

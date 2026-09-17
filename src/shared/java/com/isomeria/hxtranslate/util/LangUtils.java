@@ -54,7 +54,7 @@ public final class LangUtils {
 
         @Override
         public Thread newThread(Runnable r) {
-            Thread thread = new Thread(r, "hxtranslate-regex-" + seq.incrementAndGet());
+            Thread thread = new Thread(r, "server_chat_translator-regex-" + seq.incrementAndGet());
             thread.setDaemon(true); // 绝不能拦住 JVM 退出
             return thread;
         }
@@ -388,7 +388,7 @@ public final class LangUtils {
                     disabledRegexes.put(regex, "连续 " + strikes + " 次匹配超过 " + REGEX_BUDGET_MS + " ms");
                     Log.LOGGER.warn("ignorePatterns 里的正则「{}」连续 {} 次匹配超时，已停用。"
                                     + "多半是灾难性回溯的写法（例如 (.*a){20}$ 这类嵌套量词）；"
-                                    + "改掉它并 /hxtranslate reload 即可恢复",
+                                    + "改掉它并 /server_chat_translator reload 即可恢复",
                             regex, strikes);
                 } else {
                     Log.LOGGER.warn("ignorePatterns 里的正则「{}」本次匹配超过 {} ms（第 {} 次，"
@@ -446,7 +446,7 @@ public final class LangUtils {
     /**
      * 因连续匹配超时被停用的正则（按正则文本 -> 原因）。
      *
-     * <p>用文本而不是 Pattern 实例做键：{@code /hxtranslate reload} 会重新编译出**新的**
+     * <p>用文本而不是 Pattern 实例做键：{@code /server_chat_translator reload} 会重新编译出**新的**
      * Pattern 对象，用实例做键的话坏正则会在 reload 后复活，又冻一次主线程。
      */
     private static final java.util.Map<String, String> disabledRegexes =
@@ -455,7 +455,7 @@ public final class LangUtils {
     /**
      * 清空熔断名单，让所有正则重新参与匹配。
      *
-     * <p>{@code /hxtranslate reload} 会调用它 —— 用户改了正则（或只是想让被误停用的规则复活）
+     * <p>{@code /server_chat_translator reload} 会调用它 —— 用户改了正则（或只是想让被误停用的规则复活）
      * 之后必须能恢复，否则唯一的办法就是重启游戏。
      */
     public static void resetRegexCircuit() {
@@ -463,7 +463,7 @@ public final class LangUtils {
         timeoutStrikes.clear();
     }
 
-    /** 当前被停用的正则条数（给 {@code /hxtranslate status} 与自检用）。 */
+    /** 当前被停用的正则条数（给 {@code /server_chat_translator status} 与自检用）。 */
     public static int disabledRegexCount() {
         return disabledRegexes.size();
     }

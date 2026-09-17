@@ -44,6 +44,28 @@ public interface ChatClientPort {
     void execute(Runnable task);
 
     /**
+     * 当前是不是在**单人（单机）世界**里。
+     *
+     * <p>为什么这个判断必须由装配层给出：{@code ChatTranslator} 不许 import 任何游戏类
+     * （两个构建编译同一份，且离线自检要能完整驱动它的决策），所以「怎么问游戏」留在各线的
+     * 装配层，而「拿到这个事实之后要不要翻译」的决策留在共享层 —— 这样单人闸门才能被离线
+     * 自检直接测到（自检的假实现随便设这个值）。
+     *
+     * <p>两条线的实现不同，但语义必须一致：**只有「本地开着集成服务端的单人世界」才算 true**。
+     * <ul>
+     *   <li>Fabric 26.3：{@code Minecraft.hasSingleplayerServer()}
+     *       （= 集成服务端已建立<b>且</b>单人世界已加载）；</li>
+     *   <li>Forge 1.8.9：{@code Minecraft.getMinecraft().isSingleplayer()}。</li>
+     * </ul>
+     *
+     * <p><b>不要</b>改用 {@code isLocalServer()}：「对局域网开放」的存档在它眼里也是 true，
+     * 而那种情况属于多人场景，仍然应该翻译 —— 判据用错会让玩家在联机时莫名其妙不翻译。
+     *
+     * <p>还没进入世界时返回 {@code false}（没进世界时本来就不会有消息要翻）。
+     */
+    boolean isSingleplayer();
+
+    /**
      * 这条消息是不是仍然连着「发起翻译时的那条连接」。
      *
      * <p>发送方向必须检查：翻译要几百毫秒，期间玩家可能切服/退世界，

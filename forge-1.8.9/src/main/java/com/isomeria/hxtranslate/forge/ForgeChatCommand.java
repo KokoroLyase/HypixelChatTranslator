@@ -20,7 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * 客户端命令 {@code /hxtranslate}（别名 {@code /hxt}）的 1.8.9 实现。
+ * 客户端命令 {@code /server_chat_translator}（别名 {@code /hxt}）的 1.8.9 实现。
  *
  * <p>1.8.9 <b>没有 Brigadier</b>（那是 1.13 才进的），所以命令要写成
  * {@link ICommand} 并注册到 {@code ClientCommandHandler}。这里把 Fabric 线
@@ -50,17 +50,18 @@ public final class ForgeChatCommand extends CommandBase {
 
     @Override
     public String getCommandName() {
-        return "hxtranslate";
+        return "translator";
     }
 
     @Override
     public List<String> getCommandAliases() {
-        return new ArrayList<String>(Arrays.asList("hxt"));
+        // v3.0.0 起只保留 /translator：旧的 /server_chat_translator 与 /hxt 不再注册（用户已确认「只换不留」）。
+        return new ArrayList<String>();
     }
 
     @Override
     public String getCommandUsage(ICommandSender sender) {
-        return "/hxtranslate [status|on|off|incoming|outgoing|key|models|glossary|debug|reload|test]";
+        return "/server_chat_translator [status|on|off|incoming|outgoing|key|models|glossary|debug|reload|test]";
     }
 
     /** 客户端命令不需要权限等级（也避免被当成 op 命令而拒绝执行）。 */
@@ -85,7 +86,7 @@ public final class ForgeChatCommand extends CommandBase {
             return null;
         }
         return getListOfStringsMatchingLastWord(args,
-                "status", "on", "off", "incoming", "outgoing", "key",
+                "status", "on", "off", "incoming", "outgoing", "singleplayer", "key",
                 "models", "glossary", "debug", "reload", "test");
     }
 
@@ -107,6 +108,8 @@ public final class ForgeChatCommand extends CommandBase {
             setToggle(sender, args, true);
         } else if ("outgoing".equals(sub)) {
             setToggle(sender, args, false);
+        } else if ("singleplayer".equals(sub)) {
+            setSingleplayer(sender, args);
         } else if ("debug".equals(sub)) {
             setDebug(sender, args);
         } else if ("key".equals(sub)) {
@@ -128,7 +131,7 @@ public final class ForgeChatCommand extends CommandBase {
 
     private void setToggle(ICommandSender sender, String[] args, boolean incoming) {
         if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
-            reply(sender, "§c用法: /hxtranslate " + (incoming ? "incoming" : "outgoing") + " on|off");
+            reply(sender, "§c用法: /server_chat_translator " + (incoming ? "incoming" : "outgoing") + " on|off");
             return;
         }
         boolean on = "on".equalsIgnoreCase(args[1]);
@@ -146,9 +149,28 @@ public final class ForgeChatCommand extends CommandBase {
         }
     }
 
+    /**
+     * 单人（单机）世界里要不要翻译（v3.0.0）。
+     *
+     * <p>默认关。玩家在单机里发现「怎么不翻译」时，{@code status} 与 debug 输出都会指向这条命令，
+     * 所以它的用法提示必须写全（含「多人服不受影响」，否则玩家会担心自己把联机也关掉了）。
+     */
+    private void setSingleplayer(ICommandSender sender, String[] args) {
+        if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
+            reply(sender, "§c用法: /server_chat_translator singleplayer on|off");
+            return;
+        }
+        boolean on = "on".equalsIgnoreCase(args[1]);
+        config.translateInSingleplayer = on;
+        config.save();
+        reply(sender, on
+                ? "§a已开启：单人世界的消息也会翻译"
+                : "§c已关闭：单人世界不翻译（多人服不受影响）");
+    }
+
     private void setDebug(ICommandSender sender, String[] args) {
         if (args.length < 2 || (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1]))) {
-            reply(sender, "§c用法: /hxtranslate debug on|off");
+            reply(sender, "§c用法: /server_chat_translator debug on|off");
             return;
         }
         boolean on = "on".equalsIgnoreCase(args[1]);
@@ -164,7 +186,7 @@ public final class ForgeChatCommand extends CommandBase {
 
     private void setKey(ICommandSender sender, String[] args) {
         if (args.length < 2) {
-            reply(sender, "§c用法: /hxtranslate key <你的Key>");
+            reply(sender, "§c用法: /server_chat_translator key <你的Key>");
             return;
         }
         StringBuilder value = new StringBuilder();
@@ -197,7 +219,7 @@ public final class ForgeChatCommand extends CommandBase {
                     feedback.error("查询失败: " + result.error());
                 }
             }
-        }, "hxtranslate-models");
+        }, "server_chat_translator-models");
         thread.setDaemon(true);
         thread.start();
     }
@@ -205,7 +227,7 @@ public final class ForgeChatCommand extends CommandBase {
     /** 测试翻译要发网络请求，同样放后台线程。 */
     private void runTest(ICommandSender sender, String[] args) {
         if (args.length < 2) {
-            reply(sender, "§c用法: /hxtranslate test <文本>");
+            reply(sender, "§c用法: /server_chat_translator test <文本>");
             return;
         }
         StringBuilder value = new StringBuilder();
@@ -229,7 +251,7 @@ public final class ForgeChatCommand extends CommandBase {
                     feedback.error("测试失败: " + result.error());
                 }
             }
-        }, "hxtranslate-test");
+        }, "server_chat_translator-test");
         thread.setDaemon(true);
         thread.start();
     }
@@ -252,7 +274,7 @@ public final class ForgeChatCommand extends CommandBase {
         }
         String suspicious = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (suspicious != null) {
-            message = message + "§e（术语表体检：" + suspicious + "，输入 /hxtranslate glossary 查看）";
+            message = message + "§e（术语表体检：" + suspicious + "，输入 /server_chat_translator glossary 查看）";
         }
         reply(sender, message);
     }
@@ -271,11 +293,11 @@ public final class ForgeChatCommand extends CommandBase {
         for (String line : GlossaryAudit.detailLines(findings, GLOSSARY_DETAIL_LIMIT)) {
             reply(sender, "§7  - " + line);
         }
-        reply(sender, "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/hxtranslate reload §7即可生效");
+        reply(sender, "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/server_chat_translator reload §7即可生效");
     }
 
     private void status(ICommandSender sender) {
-        reply(sender, "§8===== §bHypixel 聊天翻译 §8=====");
+        reply(sender, "§8===== §bServer Chat Translator §8=====");
         reply(sender, "§7总开关: " + onOff(config.enabled)
                 + " §8| §7收到翻译: " + onOff(config.translateIncoming)
                 + " §8| §7发送翻译: " + onOff(config.translateOutgoing)
@@ -284,6 +306,8 @@ public final class ForgeChatCommand extends CommandBase {
                 + " §8| §7思考模式: " + onOff(config.enableThinking)
                 + " §8| §7API Key: " + (config.hasApiKey() ? "§a已配置" : "§c未配置")
                 + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条");
+        // 单人闸门的状态（v3.0.0）：文案由共享层生成，两条线的口径不会漂移。
+        reply(sender, translator.singleplayerStatusLine());
         if (service.isCircuitOpen()) {
             reply(sender, "§c翻译服务连续失败，熔断中，还需 §f"
                     + service.circuitRemainingSeconds() + " §c秒");
@@ -292,14 +316,14 @@ public final class ForgeChatCommand extends CommandBase {
         if (disabledRegexes > 0) {
             reply(sender, "§e有 §f" + disabledRegexes
                     + " §e条 ignorePatterns 正则因匹配超时被停用（多半写了灾难性回溯的写法）。"
-                    + "改掉它并 §f/hxtranslate reload §e即可恢复。");
+                    + "改掉它并 §f/server_chat_translator reload §e即可恢复。");
             for (String regex : LangUtils.disabledRegexes()) {
                 reply(sender, "§8  - §7" + LangUtils.sanitizeOneLine(regex));
             }
         }
         String glossaryCounts = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (glossaryCounts != null) {
-            reply(sender, "§e术语表体检发现 " + glossaryCounts + "，输入 §f/hxtranslate glossary §e查看并修改");
+            reply(sender, "§e术语表体检发现 " + glossaryCounts + "，输入 §f/server_chat_translator glossary §e查看并修改");
         }
         reply(sender, "§7输入长度上限: §f" + config.maxIncomingChars
                 + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()

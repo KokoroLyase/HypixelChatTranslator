@@ -9,8 +9,8 @@ body:
         先确认三件事，能省掉一半来回：
 
         1. **说清你玩的是哪条线** —— 本模组从 v2.3.0 起同时提供
-           **MC 26.3 + Fabric**（`...-<版本>+mc26.3-fabric.jar`）与
-           **MC 1.8.9 + Forge**（`...-<版本>+mc1.8.9-forge.jar`）两条线，功能一致、配置通用；
+           **MC 26.3 + Fabric**（`Server-Chat-Translator_<版本>_mc26.3-fabric.jar`）与
+           **MC 1.8.9 + Forge**（`Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`）两条线，功能一致、配置通用；
         2. **模组版本与 MC 版本对得上** —— v2.x 只支持 26.3 或 1.8.9；还在玩 26.2 请用
            [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)；
         3. **已经是最新版** —— 很多问题在更新里修掉了，见
@@ -19,7 +19,7 @@ body:
         > **1.8.9 的玩家请特别注意**：那一条线是核心插件（coremod）。
         > 如果「打中文没被翻译」而其它功能（收消息翻译、F6、命令）都正常，
         > 多半是字节码注入没生效 —— 日志里会有
-        > `[hxtranslate] EntityPlayerSP 字节码注入失败…`，请务必把那一行贴上。
+        > `[server_chat_translator] EntityPlayerSP 字节码注入失败…`，请务必把那一行贴上。
 
   - type: dropdown
     id: line
@@ -35,7 +35,7 @@ body:
     id: mod-version
     attributes:
       label: 模组版本
-      description: 照抄文件名里的版本号，例如 hx-chat-translator-2.3.0+mc26.3-fabric.jar 就填 2.3.0
+      description: 照抄文件名里的版本号，例如 Server-Chat-Translator_3.0.0_mc26.3-fabric.jar 就填 3.0.0
       placeholder: "2.3.0"
     validations:
       required: true
@@ -83,13 +83,13 @@ body:
     id: debug-output
     attributes:
       label: 游戏内诊断输出
-      description: 先执行 /hxtranslate status，再执行 /hxtranslate debug on 并复现一次，把输出贴在这里（统计数字与跳过原因基本能定位到具体分支）
+      description: 先执行 /translator status，再执行 /translator debug on 并复现一次，把输出贴在这里（统计数字与跳过原因基本能定位到具体分支）
       value: |-
-        第 1 步 —— /hxtranslate status 的输出：
+        第 1 步 —— /translator status 的输出：
 
             在这里粘贴 status 的输出
 
-        第 2 步 —— /hxtranslate debug on 之后复现一次，聊天栏会逐条打印「翻译 / 跳过（原因）」，
+        第 2 步 —— /translator debug on 之后复现一次，聊天栏会逐条打印「翻译 / 跳过（原因）」，
         把相关的几行贴到下面（不用全贴）：
 
             在这里粘贴 debug 输出
@@ -100,7 +100,7 @@ body:
     id: logs
     attributes:
       label: 日志
-      description: "logs/latest.log 里搜 hxtranslate 的相关行。贴之前请先删掉 API Key（sk- 开头）；Key 泄露了就去 platform.deepseek.com 撤销重发。"
+      description: "logs/latest.log 里搜 server_chat_translator 的相关行。贴之前请先删掉 API Key（sk- 开头）；Key 泄露了就去 platform.deepseek.com 撤销重发。"
       render: text
 
   - type: checkboxes

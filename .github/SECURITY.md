@@ -5,13 +5,13 @@
 | 不要贴 | 为什么 |
 | --- | --- |
 | **DeepSeek API Key**（`sk-` 开头） | 拿到它就能用你的余额，等同于你的账号密码 |
-| 完整的 `config/hxtranslate.json` | 里面有 `apiKey` 明文 |
+| 完整的 `config/server_chat_translator.json` | 里面有 `apiKey` 明文 |
 | 未删减的 `logs/latest.log` | 可能包含上面两者 |
 
 贴日志前请先搜一遍 `sk-` 并删掉。想只贴配置结构的话，把 `apiKey` 的值改成 `""` 再贴。
 
 > Key 泄露了怎么办：立刻去 <https://platform.deepseek.com/api_keys> 撤销那个 Key 并新建一个，
-> 然后在游戏里执行 `/hxtranslate key <新Key>`。
+> 然后在游戏里执行 `/translator key <新Key>`。
 
 ## 报告安全问题的渠道
 

@@ -27,7 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 配置文件：.minecraft/config/hxtranslate.json
+ * 配置文件：.minecraft/config/server_chat_translator.json（文件名见 {@link #CONFIG_FILE_NAME}）
  *
  * <p>所有字段都是 public 的，Gson 直接读写。新增字段时只要给一个默认值，
  * 旧配置文件缺少该字段也不会出错（Gson 会保留默认值）。
@@ -35,7 +35,25 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 8;
+    public static final int CURRENT_CONFIG_VERSION = 9;
+
+    /**
+     * 配置文件名（位于游戏目录的 {@code config/} 下）。
+     *
+     * <p>名字跟着模组走：模组叫 Server Chat Translator、mod id 是 {@code server_chat_translator}，
+     * 所以配置文件也叫 {@code server_chat_translator.json} —— 整个 {@code config/} 目录里的
+     * 「模组标识」保持同一种写法（下划线），玩家一眼能认出来，也少一个需要记的名字。
+     *
+     * <p><b>v3.0.0 更名时没有做文件搬迁，这是有意的决定</b>：老文件
+     * {@code server_chat_translator.json} 原地不动、模组也不会去读它。理由是这个文件名只存在过一个
+     * 大版本、而且改名本身就是一次全面重构；为此长期维护一条「探测老文件再搬过来」的代码路径，
+     * 收益远小于风险（搬错了就是用户资产受损，见 RELEASING §5）。
+     * 想保留老设置的话，把老文件里要用的字段手动复制到新文件即可 —— README / CHANGELOG 都写明了。
+     *
+     * <p>注意这与 {@link #CURRENT_CONFIG_VERSION} 是**两件事**：文件名搬迁不做，
+     * 但「新增了一个顶层字段」仍然是配置结构变化，版本号照常 +1（见 {@link #applyMigrations()}）。
+     */
+    public static final String CONFIG_FILE_NAME = "server_chat_translator.json";
 
     /**
      * v1.0.0 的配置文件里<b>没有</b> {@code configVersion} 这个字段（v1.0.1 起才写），
@@ -222,7 +240,7 @@ public final class TranslatorConfig {
     // 开关
     // ------------------------------------------------------------------
 
-    /** 总开关，可用游戏内按键或 /hxtranslate on|off 切换。 */
+    /** 总开关，可用游戏内按键或 /server_chat_translator on|off 切换。 */
     public boolean enabled = true;
 
     /** 是否翻译收到的消息（英文 → 中文）。 */
@@ -230,6 +248,23 @@ public final class TranslatorConfig {
 
     /** 是否翻译自己发送的中文（中文 → 英文）。 */
     public boolean translateOutgoing = true;
+
+    /**
+     * 单人（单机）世界里是否也翻译。**默认关闭**（v3.0.0 起）。
+     *
+     * <p>为什么要有这一条：单机世界里的「聊天」多半是自己看的，而本模组会把你打的中文
+     * 译成英文再发出去 —— 单机里这毫无意义，还多花一次 API 请求。更要紧的是**接收方向**：
+     * 单机里大量文字是 NPC 对话、告示牌、书籍、命令输出的系统消息，逐条送去翻译既费钱又刷屏。
+     *
+     * <p>默认 {@code false} 是**有意的**：单机里翻译通常不是你想要的，而需要的人
+     * （例如用单人世界做中英对照、或者装了英文任务模组）打开一次即可。
+     * 打开方式：{@code /translator singleplayer on}，或把这里改成 {@code true} 再
+     * {@code /translator reload}。
+     *
+     * <p>闸门在共享层统一实现（{@code ChatTranslator.singleplayerBlocked()}），收发两个方向
+     * 共用同一个出口 —— 判据只有一个，不会出现「接收拦了、发送忘了」的分叉。
+     */
+    public boolean translateInSingleplayer = false;
 
     /** 是否翻译 /msg、/r、/pc 等命令里的聊天内容。 */
     public boolean translateCommandMessages = true;
@@ -619,7 +654,7 @@ public final class TranslatorConfig {
     }
 
     /**
-     * 配置文件路径：{@code .minecraft/config/hxtranslate.json}。
+     * 配置文件路径：{@code .minecraft/config/}{@link #CONFIG_FILE_NAME}。
      *
      * <p>装配层还没注入目录时（离线自检、单元测试）退回到相对路径，
      * 保证这个辅助方法本身永远不会把调用方炸掉 —— 它只被日志和读写用，
@@ -628,9 +663,9 @@ public final class TranslatorConfig {
     public static Path configPath() {
         Path dir = configDirOverride;
         if (dir != null) {
-            return dir.resolve("hxtranslate.json");
+            return dir.resolve(CONFIG_FILE_NAME);
         }
-        return Paths.get("config", "hxtranslate.json");
+        return Paths.get("config", CONFIG_FILE_NAME);
     }
 
     /**
@@ -661,7 +696,7 @@ public final class TranslatorConfig {
      * 从指定路径读取配置（{@link #load()} 用正式路径，这个重载让离线自检能在临时目录里跑完整流程）。
      *
      * <p><b>配置是用户资产，读不出来也不能弄丢它</b>：解析失败时先把原文件整份备份成
-     * {@code hxtranslate.json.broken-<时间戳>}，再退回默认值，并把原因记在 {@link #loadWarning()} 里。
+     * {@code server_chat_translator.json.broken-<时间戳>}，再退回默认值，并把原因记在 {@link #loadWarning()} 里。
      * （以前这里只写一行日志、不做备份：用户手改 json 漏一个逗号，之后随便按一下 F6 —— 也就是任何一次
      * {@link #save()} —— 就会把这份文件覆盖成默认值，Key、术语表、忽略规则全部永久消失。）
      */
@@ -711,7 +746,7 @@ public final class TranslatorConfig {
     /**
      * 本次读取配置时遇到的问题；正常读取时为 {@code null}。
      *
-     * <p>调用方（启动提示、{@code /hxtranslate reload}）应该把它转达给玩家 ——
+     * <p>调用方（启动提示、{@code /server_chat_translator reload}）应该把它转达给玩家 ——
      * 「Key 没了 / 设置变回默认」如果只写在日志里，玩家只会以为模组坏了。
      */
     public String loadWarning() {
@@ -732,10 +767,10 @@ public final class TranslatorConfig {
         }
         if (backup == null) {
             return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
-                    + "原文件未被改动，修好后执行 /hxtranslate reload。";
+                    + "原文件未被改动，修好后执行 /server_chat_translator reload。";
         }
         return "配置文件读不出来（" + reason + "），本次按默认设置运行；"
-                + "原文件已备份为 " + backup.getFileName() + "，修好后改回原名并执行 /hxtranslate reload。";
+                + "原文件已备份为 " + backup.getFileName() + "，修好后改回原名并执行 /server_chat_translator reload。";
     }
 
     /**
@@ -780,13 +815,15 @@ public final class TranslatorConfig {
         }
     }
 
-    /** 备份文件名：{@code hxtranslate.json.broken-20260915-140312}，与配置同目录。纯函数，可离线测试。 */
+    /** 备份文件名：{@code server_chat_translator.json.broken-20260915-140312}，与配置同目录。纯函数，可离线测试。 */
     public static Path brokenBackupPath(Path path, long timestampMillis) {
         String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
                 .withZone(ZoneId.systemDefault())
                 .format(Instant.ofEpochMilli(timestampMillis));
         Path fileName = path.getFileName();
-        String name = (fileName == null ? "hxtranslate.json" : fileName.toString()) + ".broken-" + stamp;
+        // fallback 用 CONFIG_FILE_NAME 而不是再抄一个字面量：备份名的前缀必须永远等于正式文件名，
+        // 否则改名时这里会静默漂移，玩家按提示去找备份文件却找不到。
+        String name = (fileName == null ? CONFIG_FILE_NAME : fileName.toString()) + ".broken-" + stamp;
         Path parent = path.getParent();
         return parent == null ? Paths.get(name) : parent.resolve(name);
     }
@@ -1053,6 +1090,32 @@ public final class TranslatorConfig {
         // 实际逻辑放在 refreshChangedDefaults() 里，因为这里在 configVersion 已是最新时不会执行，
         // 而这项调整不需要新版本号（见那个方法的注释）。
 
+        // ---- v8 -> v9：新增 translateInSingleplayer（单人世界默认不翻译）----
+        //
+        // 这一步**刻意什么都不做**，而 configVersion 仍然照常 +1 —— 两者都是有意的：
+        //
+        //  · 为什么不需要改用户数据：gson 反序列化时，配置文件里**没有的**字段会保留 Java 字段的
+        //    初始值（也就是 false），所以 v8 的老配置天然拿到「单人不翻译」这个新默认值，
+        //    不存在「某个旧值需要被改成新值」这回事。而 v8 及更早的版本**根本没有**这个字段，
+        //    也就不可能有「用户自定义过的值被覆盖」的风险 —— RELEASING §5 要保护的是用户资产，
+        //    这里没有资产可动。旧配置的唯一变化是 fillMissingFields 会把这个新字段**补写**进
+        //    json，让用户能在文件里看到并调整它 —— 那是补缺，不是覆盖。
+        //
+        //  · 为什么照样 +1：§5 要求「配置结构变化时 configVersion +1」。这里确实是结构变化
+        //    （多了一个顶层字段），而版本号是给**未来**的迁移用的判据：以后若再要区分
+        //    「这个字段是补出来的、还是用户显式设过的」，就必须能分辨「v8 的老文件」与
+        //    「v9 的文件」。现在不 +1，将来就没有这个信息可用。
+        //
+        //  · 为什么不用 refreshChangedDefaults()：那里放的是「结构没变、只调默认值」的调整，
+        //    判据是「字段值仍等于旧默认值」。这里连旧默认值都不存在，放过去只会误导读者。
+        //
+        //  · 必须与「配置文件不做搬迁」区分开：文件名从 server_chat_translator.json 改成
+        //    server_chat_translator.json 是另一件事（见 CONFIG_FILE_NAME 的说明），
+        //    那件事本轮决定不迁移；这里只管字段版本号。
+        if (from < 9) {
+            // 无需改动任何用户数据，见上面的说明。
+        }
+
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1269,7 +1332,7 @@ public final class TranslatorConfig {
 
     private void copyFrom(TranslatorConfig o) {
         this.configVersion = o.configVersion;
-        // 重载失败的原因也要跟着过来，否则 /hxtranslate reload 之后提示就丢了
+        // 重载失败的原因也要跟着过来，否则 /server_chat_translator reload 之后提示就丢了
         this.loadWarning = o.loadWarning;
         this.apiKey = o.apiKey;
         this.apiBaseUrl = o.apiBaseUrl;

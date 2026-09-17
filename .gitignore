@@ -15,8 +15,14 @@ classes/
 /.probe*.txt
 
 # 本地配置（含 DeepSeek API Key），绝对不要提交
+config/server_chat_translator.json
+run/config/server_chat_translator.json
+# v3.0.0 更名前的老配置文件名也要继续忽略：它同样含明文 API Key，
+# 而玩家机器上那个文件还在（本轮不做搬迁）。这一行是第二道防线 ——
+# 万一谁把老文件复制进仓库，也不会把 Key 一起提上去。
 config/hxtranslate.json
 run/config/hxtranslate.json
+config/*.json.broken-*
 *.local.json
 
 # eclipse

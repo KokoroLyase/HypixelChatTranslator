@@ -143,6 +143,25 @@ public final class GameClient implements ChatClientPort {
         minecraft.execute(task);
     }
 
+    /**
+     * 26.3 的判据是 {@code hasSingleplayerServer()}：它 =「集成服务端已建立 <b>且</b>
+     * 单人世界已加载」。已在 26.3 的 remapped jar 上核对过方法确实存在。
+     *
+     * <p><b>不要</b>改用 {@code isLocalServer()}：26.3 上它同样存在，但它对「对局域网开放」
+     * 的存档也返回 true —— 那种情况属于多人场景，仍然应该翻译。判据用错会让玩家开个局域网
+     * 就莫名其妙不翻译，而且编译期完全看不出来（两个方法都存在、都返回 boolean）。
+     *
+     * <p>{@code getSingleplayerServer()} 也能用（判空即可），但那是「先取对象再判断」，
+     * 与 26.3 自己提供的这个布尔判据语义重复，没必要绕。
+     *
+     * <p>还没进入世界时返回 false（没进世界时本来就不会有消息要翻）。
+     */
+    @Override
+    public boolean isSingleplayer() {
+        Minecraft minecraft = Minecraft.getInstance();
+        return minecraft != null && minecraft.hasSingleplayerServer();
+    }
+
     @Override
     public Object currentConnection() {
         Minecraft minecraft = Minecraft.getInstance();

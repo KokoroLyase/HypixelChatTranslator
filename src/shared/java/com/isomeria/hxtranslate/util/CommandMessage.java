@@ -37,10 +37,10 @@ public final class CommandMessage {
      *
      * <p>硬编码而不是放进配置，是因为这些命令根本不该发到服务器。
      * 否则「未知命令兜底」会把它当成普通命令：
-     * {@code /hxtranslate test 这是一句很长的中文} 会被取消、正文被翻译、
+     * {@code /server_chat_translator test 这是一句很长的中文} 会被取消、正文被翻译、
      * 再当成服务器命令发出去 —— 命令没执行，还往服务器发了垃圾。
      */
-    private static final List<String> ALWAYS_PROTECTED = Arrays.asList("hxtranslate", "hxt");
+    private static final List<String> ALWAYS_PROTECTED = Arrays.asList("translator");
 
     /**
      * head 例如 {@code "msg Player "}，message 例如 {@code "你好"}。

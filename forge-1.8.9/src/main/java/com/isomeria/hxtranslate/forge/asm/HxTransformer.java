@@ -80,7 +80,7 @@ public final class HxTransformer implements IClassTransformer {
             // 但**绝不能静默**：核心插件失效时玩家只会看到「我打的中文没被翻译」，
             // 没有任何线索。用 System.err 而不是日志框架：这条路径执行得极早
             // （FML 还没初始化日志），碰任何游戏/日志类都可能再抛一次。
-            System.err.println("[hxtranslate] EntityPlayerSP 字节码注入失败，"
+            System.err.println("[server_chat_translator] EntityPlayerSP 字节码注入失败，"
                     + "发送方向将不翻译（其余功能不受影响）: " + t);
             t.printStackTrace();
             return basicClass;

@@ -9,4 +9,4 @@ pluginManagement {
 	}
 }
 
-rootProject.name = 'hx-chat-translator'
+rootProject.name = 'Server-Chat-Translator'

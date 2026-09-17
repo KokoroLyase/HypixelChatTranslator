@@ -77,6 +77,7 @@ public class VerifyCore {
         v222SecondPassFixes();
         v214AuditFixes();
         v230GlossaryAudit();
+        v300SingleplayerGate();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -491,12 +492,24 @@ public class VerifyCore {
         System.out.println("== v1.0.6 复核：自己的命令不被劫持 ==");
         TranslatorConfig config = new TranslatorConfig();
         // 这些命令如果被劫持，会被取消并当成服务器命令发出去
-        assertNoCommand(config, "hxtranslate test 这是一句很长的中文话");
-        assertNoCommand(config, "hxt test 大家快来这里集合");
-        assertNoCommand(config, "hxtranslate key sk-abcdefghijklmn");
-        assertNoCommand(config, "HXTRANSLATE test 中文测试文本要长一点");
-        check("isAlwaysProtected 认得出自己的命令", CommandMessage.isAlwaysProtected("hxtranslate status"));
+        assertNoCommand(config, "translator test 这是一句很长的中文话");
+        // 大小写：isAlwaysProtected 会 toLowerCase，所以大写写法也必须认出来
+        assertNoCommand(config, "TRANSLATOR test 中文测试文本要长一点");
+        assertNoCommand(config, "translator key sk-abcdefghijklmn");
+        check("isAlwaysProtected 认得出自己的命令", CommandMessage.isAlwaysProtected("translator status"));
         check("别的命令不算自己的命令", !CommandMessage.isAlwaysProtected("shout hello"));
+
+        // ---- v3.0.0：命令改名后，旧命令名不再是「自己的命令」 ----
+        //
+        // 这是「只换不留」的直接后果，必须写进用例：/hxtranslate 现在是一个**普通未知命令**，
+        // 于是它会被「未知命令兜底」按普通命令处理（正文像一句话就翻）。玩家升级后如果还打旧命令，
+        // 表现就是「命令没执行、反而发出去了」—— 文档里必须写清楚，用例把这一点钉住，
+        // 免得以后有人以为「旧命令还在保护名单里」。
+        check("旧命令 /hxtranslate 已不在保护名单里（改名后它只是普通未知命令）",
+                !CommandMessage.isAlwaysProtected("hxtranslate status"));
+        check("旧别名 /hxt 也已被移除", !CommandMessage.isAlwaysProtected("hxt status"));
+        check("保护名单里只有新命令名",
+                CommandMessage.isAlwaysProtected("translator") && !CommandMessage.isAlwaysProtected("hxtranslate"));
     }
 
     /**
@@ -678,7 +691,7 @@ public class VerifyCore {
                     !dirty.ok() && dirty.error().contains("网关坏了 请稍后重试"));
             server.status = 200;
 
-            // 5) 熔断后复位要能立刻重试（/hxtranslate reload 会调用它）
+            // 5) 熔断后复位要能立刻重试（/server_chat_translator reload 会调用它）
             server.status = 500;
             for (int i = 0; i < 5; i++) {
                 client.translate("trip" + i, Direction.INCOMING);
@@ -697,7 +710,7 @@ public class VerifyCore {
             sized.requestsPerMinute = 1000;
             sized.cacheSize = 100;                 // 构造时是大容量
             TranslationService service = new TranslationService(sized);
-            sized.cacheSize = 16;                  // 模拟 /hxtranslate reload 把它改小
+            sized.cacheSize = 16;                  // 模拟 /server_chat_translator reload 把它改小
             server.delayMs = 0;
             server.response = ok("cached value");
             // 必须用发送方向：它是单线程 FIFO，写入缓存的先后是确定的。
@@ -870,7 +883,7 @@ public class VerifyCore {
      */
     private static void v113ConfigDurability() throws IOException {
         System.out.println("== v1.1.3：配置不再丢 ==");
-        Path dir = Files.createTempDirectory("hxtranslate-verify-");
+        Path dir = Files.createTempDirectory("server_chat_translator-verify-");
         try {
             // ---- 1) v1.0.0 时代的配置：文件里**没有** configVersion（v1.0.1 起才写）----
             //    Gson 会给「文件里没有的键」保留字段初始值，也就是当前版本号，
@@ -891,7 +904,7 @@ public class VerifyCore {
             legacyIgnores.add(new com.google.gson.JsonPrimitive("^(You|A player) (joined|left)"));
             legacyIgnores.add(new com.google.gson.JsonPrimitive("^Sending you to"));
             legacyJson.add("ignorePatterns", legacyIgnores);
-            Path legacyFile = dir.resolve("hxtranslate.json");
+            Path legacyFile = dir.resolve("server_chat_translator.json");
             Files.write(legacyFile, legacyJson.toString().getBytes(StandardCharsets.UTF_8));
 
             TranslatorConfig legacy = TranslatorConfig.load(legacyFile);
@@ -925,7 +938,7 @@ public class VerifyCore {
             checkEq("坏配置：生成了备份", 1, backups.size());
             // 用例本身要抗「备份没生成」：否则一条断言失败会以异常收场，后面的用例全都跑不到
             checkEq("坏配置：备份内容就是原件（Key 还在）", brokenText, readIfExists(backups));
-            // 之后任何一次 save()（按 F6、/hxtranslate on|key|debug…）都会写新文件，
+            // 之后任何一次 save()（按 F6、/server_chat_translator on|key|debug…）都会写新文件，
             // 但备份必须还在 —— 这就是「配置不会永久丢」的底线。
             fallback.save(brokenFile);
             checkEq("坏配置：保存之后备份仍在，内容可恢复", brokenText, readIfExists(backups));
@@ -1686,7 +1699,7 @@ public class VerifyCore {
             h.client.flushTasks();
             check("切回主线程后才真正发送", h.client.sentChats.contains(FAKE_EN));
 
-            check("统计会清零（/hxtranslate debug on 用它）", true);
+            check("统计会清零（/server_chat_translator debug on 用它）", true);
             h.translator.resetCounters();
             check("resetCounters 之后计数归零",
                     h.translator.counters().contains("收到 §f0") && h.translator.sendCounters().contains("发出 §a译文 §f0"));
@@ -2059,7 +2072,7 @@ public class VerifyCore {
      *
      * <p>三条都来自 2026-09-16 的深度审计：
      * <ol>
-     *   <li>{@code /hxtranslate models} 的输出没有长度上限 —— 模型名由**接口**给出，
+     *   <li>{@code /server_chat_translator models} 的输出没有长度上限 —— 模型名由**接口**给出，
      *       {@code apiBaseUrl} 可以指向任意第三方中转站，异常/恶意中转站返回上万条 id
      *       就能把聊天记录整屏顶掉；</li>
      *   <li>「清洗」原本只靠调用方自觉，接口返回的错误正文一旦漏洗，{@code §} 会变成颜色代码、
@@ -2277,7 +2290,7 @@ public class VerifyCore {
         checkEq("连续第二次超时才停用", 1, LangUtils.disabledRegexCount());
         check("停用后第二条消息立即返回、不再等预算", true);
 
-        // ---- 2) /hxtranslate reload 能恢复（这是玩家唯一的自救手段）----
+        // ---- 2) /server_chat_translator reload 能恢复（这是玩家唯一的自救手段）----
         check("被停用的正则能列出（给状态命令显示）", LangUtils.disabledRegexes().size() == 1);
         LangUtils.resetRegexCircuit();
         checkEq("resetRegexCircuit 后熔断名单清空", 0, LangUtils.disabledRegexCount());
@@ -2377,11 +2390,11 @@ public class VerifyCore {
                 contains(readme, "| `translateCommandArgs` | " + defaults.translateCommandArgs.size() + " 条"));
 
         // 命令表必须列出真实存在的子命令，否则玩家不知道有这个命令
-        check("README 的命令表里有 /hxtranslate status", contains(readme, "/hxtranslate status"));
-        check("README 的命令表里有 incoming", contains(readme, "/hxtranslate incoming on|off"));
-        check("README 的命令表里有 outgoing", contains(readme, "/hxtranslate outgoing on|off"));
+        check("README 的命令表里有 /translator status", contains(readme, "/translator status"));
+        check("README 的命令表里有 incoming", contains(readme, "/translator incoming on|off"));
+        check("README 的命令表里有 outgoing", contains(readme, "/translator outgoing on|off"));
         // v2.3.0：术语表体检是多了一个命令，README 不写玩家就不知道有它
-        check("README 的命令表里有 /hxtranslate glossary", contains(readme, "/hxtranslate glossary"));
+        check("README 的命令表里有 /translator glossary", contains(readme, "/translator glossary"));
         check("README 写明了术语表的方向约定（英文在等号左边）",
                 contains(readme, "英文在等号左边"));
 
@@ -2464,6 +2477,13 @@ public class VerifyCore {
         volatile boolean runTasksInline = true;
         /** 置为 true 后所有发送都失败，用来验证「发送失败的内容不进回显名单」。 */
         volatile boolean failSends = false;
+        /**
+         * 当前是不是单人世界（v3.0.0 单人闸门的开关）。
+         *
+         * <p>默认 false = 多人，与绝大多数既有用例的前提一致，所以加这个字段不会影响它们；
+         * 要测单人闸门的用例自己设成 true。
+         */
+        volatile boolean singleplayer = false;
 
         @Override
         public String localPlayerName() {
@@ -2482,6 +2502,11 @@ public class VerifyCore {
             } else {
                 tasks.add(task);
             }
+        }
+
+        @Override
+        public boolean isSingleplayer() {
+            return singleplayer;
         }
 
         @Override
@@ -2815,7 +2840,7 @@ public class VerifyCore {
         String summary = GlossaryAudit.summarize(mixed);
         check("摘要区分「写错或不会生效」与「有风险」",
                 contains(summary, "2 条写错或不会生效") && contains(summary, "2 条有风险"));
-        check("摘要指路到 /hxtranslate glossary", contains(summary, "/hxtranslate glossary"));
+        check("摘要指路到 /server_chat_translator glossary", contains(summary, "/server_chat_translator glossary"));
         List<String> limited = GlossaryAudit.detailLines(mixed, 2);
         checkEq("明细受上限约束（2 条明细 + 1 行省略说明）", 3, limited.size());
         check("省略说明写清还有几条", contains(at(limited, 2), "另有 2 条"));
@@ -2834,6 +2859,241 @@ public class VerifyCore {
                 GlossaryAudit.audit(Arrays.asList(LangUtils.repeat("a", 200))), 5);
         check("超长条目在明细里被截断（实测 " + lengthOf(at(longLine, 0)) + " 字符）",
                 !longLine.isEmpty() && lengthOf(at(longLine, 0)) <= 80);
+    }
+
+    /**
+     * 等 mock 服务的请求次数涨到 {@code target} 以上（最多 {@code millis} 毫秒）。
+     *
+     * <p>为什么需要它：{@code TranslationService.submit} 是**异步**的 —— 提交后请求在工作线程上
+     * 才发出去，所以「刚提交完就去看 requestCount」永远看到 0，用例会假红。
+     * 这与 {@code FakeChatClient.awaitChat} 是同一类等待，只是等的是「请求真的发出去了」。
+     *
+     * <p>返回是否达到目标，调用方仍然要断言 —— 等不到时用例必须红，不能静默通过。
+     */
+    private static boolean awaitRequestCount(MockServer server, int target, long millis) {
+        long deadline = System.currentTimeMillis() + millis;
+        while (System.currentTimeMillis() < deadline) {
+            if (server.requestCount.get() >= target) {
+                return true;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return server.requestCount.get() >= target;
+            }
+        }
+        return server.requestCount.get() >= target;
+    }
+
+    /**
+     * 「这一段时间里请求次数没有涨」——专门用来断言**闸门确实拦住了**。
+     *
+     * <p>为什么不能写成「调用完立刻看计数」：{@code submit} 是异步的，闸门即使被中和，
+     * 请求也要等一小会儿才在工作线程上发出去 —— 立刻断言会**恒绿**（反向验证当时就抓到了
+     * 这条假绿：把 singleplayerBlocked() 中和成 false 之后，「没有发起任何请求」那条依然是绿的）。
+     * 所以这里主动等满一个时间窗，等不到才算通过。
+     *
+     * <p>判据有下限：光看时间窗还不够，必须先用**同一份输入**在多人世界里证明「它本来会发请求」
+     * （见调用处的「阳性对照」）。否则一个根本不会被翻译的输入也能让这条通过。
+     */
+    private static boolean requestCountStays(MockServer server, int expected, long millis) {
+        long deadline = System.currentTimeMillis() + millis;
+        while (System.currentTimeMillis() < deadline) {
+            if (server.requestCount.get() != expected) {
+                return false;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return server.requestCount.get() == expected;
+            }
+        }
+        return server.requestCount.get() == expected;
+    }
+
+    /**
+     * v3.0.0：单人（单机）世界默认不翻译，新增 {@code translateInSingleplayer} 配置项。
+     *
+     * <p>这一组用例保护的东西很具体：**单机里默认一个请求都不发**（省下的不只是钱，
+     * 还有 NPC 对话/告示牌/命令输出被逐条翻译刷屏的体验），而玩家打开开关后两条线都要恢复。
+     *
+     * <p>写用例时的两个坑，这里都刻意避开了：
+     * <ol>
+     *   <li><b>输入必须真的能走到闸门之前的所有过滤</b>。RELEASING §9.3 记着上一轮的教训：
+     *       拿一条「本来就不会被翻译」的消息去测「某某情况下也不翻译」，会得到恒绿的假绿。
+     *       所以这里接收方向用 {@code [MVP+] [红队] Steve: rush mid now}（带本地化前缀的英文，
+     *       实测会翻译），发送方向用 `大家快来中路`（含汉字，正常会翻译）——
+     *       闸门一旦失效，这两个输入都会**真的发起请求**，用例立刻变红。</li>
+     *   <li><b>判据是「请求次数」而不是「有没有等到回调」</b>。闸门失效的表现是请求真的发出去了，
+     *       mock 服务的计数器比任何时序等待都确定。</li>
+     * </ol>
+     */
+    private static void v300SingleplayerGate() throws Exception {
+        System.out.println("== v3.0.0：单人世界默认不翻译 ==");
+
+        // 两个「本来一定会被翻译」的输入，整组用例都靠它们区分「闸门拦住了」与
+        // 「输入本身就不会被翻译」。接收方向那条故意带本地化前缀 [红队]（Hypixel 的典型形态），
+        // 发送方向那条含汉字。
+        final String englishChat = "[MVP+] [红队] Steve: rush mid now";
+        final String chineseChat = "大家快来中路";
+
+        try (MockServer server = new MockServer()) {
+            // 接收方向回中文译文、发送方向回英文译文（按输入选一个即可，两个方向的要求相反）
+            server.response = ok("rush mid now");
+            server.delayMs = 200; // 闸门若失效，请求会稳稳发出并被计数，不靠时间赛跑
+
+            // ---- 1) 默认配置：单人里翻译是关的 ----
+            TranslatorConfig defaults = new TranslatorConfig();
+            check("新配置默认 translateInSingleplayer=false（单人不翻译）",
+                    !defaults.translateInSingleplayer);
+
+            // ---- 2) 接收方向：阳性对照 + 单人闸门 ----
+            //
+            // 先证明「同一份输入在多人世界里**本来就会**发请求」——这是下面那条「没发请求」
+            // 有意义的前提（RELEASING §9.3：用一条本来就不会被翻译的消息去测「也不翻译」是假绿）。
+            int before = server.requestCount.get();
+            Harness control = Harness.incoming(server);
+            control.client.singleplayer = false;
+            control.translator.handleIncoming(englishChat);
+            check("（阳性对照）多人世界里这句英文确实会发起请求 → 下面的「没发请求」才有意义",
+                    awaitRequestCount(server, before + 1, 5000));
+
+            // 单人 + 默认配置 → 在一个**足够盖住异步提交**的时间窗里，请求次数一点都不涨
+            Harness in = Harness.incoming(server);
+            in.client.singleplayer = true;
+            in.config.debugLog = true; // 闸门必须在 debug 下说明「因为单人不翻译」
+            before = server.requestCount.get();
+            in.translator.handleIncoming(englishChat);
+            check("单人世界里收到的英文消息没有发起任何请求（闸门拦住了）",
+                    requestCountStays(server, before, 1200));
+            check("接收方向单人闸门只让这一条进了「跳过」统计（实测 " + in.translator.counters() + "）",
+                    in.translator.counters().contains("跳过 §f1"));
+            check("接收方向确实经过的是「单人」闸门而不是别的过滤（debug 有原因）",
+                    in.logs.stream().anyMatch(line -> contains(line, "单人世界")));
+            check("接收方向不会往服务器发东西", in.client.sentChats.isEmpty());
+
+            // ---- 3) 发送方向（直接打中文）：先阳性对照，再单人闸门 ----
+            before = server.requestCount.get();
+            Harness outControl = Harness.outgoing(server);
+            outControl.client.singleplayer = false;
+            outControl.translator.onSendChat(chineseChat);
+            check("（阳性对照）多人世界里这句中文确实会发起请求",
+                    awaitRequestCount(server, before + 1, 5000));
+
+            Harness out = Harness.outgoing(server);
+            out.client.singleplayer = true;
+            out.config.debugLog = true;
+            before = server.requestCount.get();
+            boolean allowed = out.translator.onSendChat(chineseChat);
+            check("单人世界里打中文不发起翻译请求",
+                    requestCountStays(server, before, 1200));
+            check("单人世界里打中文返回「放行原消息」（不取消发送）", allowed);
+            check("发送方向也没往服务器发东西", !out.client.hasChat(1500));
+
+            // ---- 4) 发送方向（命令正文）：同一套阳性对照 + 闸门 ----
+            before = server.requestCount.get();
+            Harness cmdControl = Harness.outgoing(server);
+            cmdControl.client.singleplayer = false;
+            cmdControl.translator.onSendCommand("shout " + chineseChat);
+            check("（阳性对照）多人世界里 /shout 的中文正文确实会发起请求",
+                    awaitRequestCount(server, before + 1, 5000));
+
+            Harness cmd = Harness.outgoing(server);
+            cmd.client.singleplayer = true;
+            before = server.requestCount.get();
+            boolean cmdAllowed = cmd.translator.onSendCommand("shout " + chineseChat);
+            check("单人世界里 /shout 的中文正文不发起翻译请求",
+                    requestCountStays(server, before, 1200));
+            check("单人世界里的命令原样放行", cmdAllowed);
+
+            // ---- 5) 只把「世界类型」这一个变量换掉，就应恢复翻译（证明拦的原因就是它） ----
+            //     （步骤 2-4 的阳性对照已经各自证明了这一点，这里再补一条把开关也打开的组合）
+            server.delayMs = 0;
+            Harness openIn = Harness.incoming(server);
+            openIn.client.singleplayer = true;
+            openIn.config.translateInSingleplayer = true;
+            before = server.requestCount.get();
+            openIn.translator.handleIncoming(englishChat);
+            check("打开 translateInSingleplayer 后，单人世界里会翻译收到的消息",
+                    awaitRequestCount(server, before + 1, 5000));
+            check("打开后译文照常显示在聊天栏",
+                    openIn.feedback.awaitInfo() && openIn.feedback.hasInfo("rush mid now"));
+
+            Harness openOut = Harness.outgoing(server);
+            openOut.client.singleplayer = true;
+            openOut.config.translateInSingleplayer = true;
+            before = server.requestCount.get();
+            boolean openAllowed = openOut.translator.onSendChat(chineseChat);
+            check("打开后单人世界里会翻译自己打的中文",
+                    awaitRequestCount(server, before + 1, 5000));
+            check("打开后发送方向仍然取消原发送（等译文回来再发）", !openAllowed);
+            check("打开后译文真的发到了服务器（sendChat 带上回了英文译文）",
+                    openOut.client.awaitChat(5000)
+                            && !openOut.client.sentChats.isEmpty()
+                            && contains(at(openOut.client.sentChats, 0), "rush mid now"));
+
+            // ---- 7) status 的显示口径必须与闸门一致（否则玩家看不懂为什么不翻） ----
+            Harness statusSp = Harness.outgoing(server);
+            statusSp.client.singleplayer = true;
+            String lineSp = statusSp.translator.singleplayerStatusLine();
+            check("status 行显示出「单人世界」", contains(lineSp, "单人世界"));
+            check("status 行显示出「单人里翻译: 关」", contains(lineSp, "单人里翻译: §c关"));
+            check("status 行给出打开方式（玩家看到就知道怎么办）", contains(lineSp, "/translator singleplayer on"));
+
+            Harness statusMp = Harness.outgoing(server);
+            statusMp.config.translateInSingleplayer = true;
+            String lineMp = statusMp.translator.singleplayerStatusLine();
+            check("多人世界里 status 行显示「单人世界: 否」", contains(lineMp, "单人世界: §7否"));
+            check("开关打开后 status 行显示「单人里翻译: 开」", contains(lineMp, "单人里翻译: §a开"));
+            check("开关打开后 status 行不再提示「当前单人消息不翻译」",
+                    !contains(lineMp, "当前单人消息不翻译"));
+
+            // ---- 8) 闸门与端口转发的是同一个事实 ----
+            check("translator.isSingleplayer() 与端口一致（单人）", statusSp.translator.isSingleplayer());
+            check("translator.isSingleplayer() 与端口一致（多人）", !statusMp.translator.isSingleplayer());
+        }
+
+        // ---- 9) configVersion 8 -> 9：文件名搬迁与字段版本是两件事 ----
+        versionNineMigration();
+    }
+
+    /**
+     * v3.0.0：{@code configVersion} 8 -> 9。
+     *
+     * <p>与「配置文件不做搬迁」是**两件不同的事**，这一组用例只钉住后者之外的那一半：
+     * 新增了一个顶层字段，所以结构版本照常 +1；而迁移体是空分支，因为 gson 会给缺失字段
+     * 填上 Java 字段初始值（false），老配置**天然**拿到「单人不翻译」，没有任何用户数据需要改。
+     */
+    private static void versionNineMigration() {
+        System.out.println("-- 配置迁移 v8 -> v9 --");
+
+        TranslatorConfig legacy = new TranslatorConfig();
+        legacy.configVersion = 8;
+        // 模拟一份 v8 的老配置：那个字段在文件里根本不存在，所以把对象里的值也抹回默认初始值，
+        // 再走一遍 applyMigrations。
+        legacy.translateInSingleplayer = false;
+        boolean changed = legacy.applyMigrations();
+        check("v8 -> v9 迁移不改动任何用户数据（changed 为 false）", !changed);
+        check("v8 -> v9 迁移后 configVersion = " + TranslatorConfig.CURRENT_CONFIG_VERSION,
+                legacy.configVersion == TranslatorConfig.CURRENT_CONFIG_VERSION);
+        check("老配置（v8）拿到的 translateInSingleplayer 是 false",
+                !legacy.translateInSingleplayer);
+
+        // 反向：已经是最新版时不该再动任何东西
+        TranslatorConfig fresh = new TranslatorConfig();
+        check("已是最新版时迁移不做任何改动", !fresh.applyMigrations());
+
+        // v8 之前的老配置（例如 v1）也要能一路升到 9
+        TranslatorConfig ancient = new TranslatorConfig();
+        ancient.configVersion = 1;
+        ancient.incomingSystemPrompt = "你是翻译。"; // 老提示词，会被升级
+        ancient.outgoingSystemPrompt = "你是翻译。";
+        ancient.applyMigrations();
+        checkEq("v1 老配置一路升到最新 configVersion",
+                TranslatorConfig.CURRENT_CONFIG_VERSION, ancient.configVersion);
+        check("v1 老配置也拿到「单人不翻译」这个新默认值", !ancient.translateInSingleplayer);
     }
 
     /** 取第 index 条结论的种类；越界返回 null（用例要抗自己的失败）。 */
@@ -2955,6 +3215,44 @@ public class VerifyCore {
         check("核心插件验证程序已入库（tools/VerifyCoremod.java）",
                 readRepoFile("tools/VerifyCoremod.java") != null);
 
+        // ---- 元数据自洽性（v3.0.0）----
+        //
+        // 为什么加这一组：更名时把 mod id 从 hxtranslate 改成 server_chat_translator，
+        // 最容易出的错**不是编译错误，而是「元数据指向一个不存在的类」**——
+        // 编译、构建、自检全都绿，游戏里却根本不加载模组（或者 coremod 不生效）。
+        // 本轮实测就踩到了两处：`fabric.mod.json` 的 entrypoint 与 `forge-1.8.9/build.gradle`
+        // 的 `FMLCorePlugin` 都被写成了 `com.isomeria.server_chat_translator...`。
+        // 这里把它们钉死：**元数据里出现的类名必须是磁盘上真实存在的源文件**。
+        metadataSelfConsistency();
+
+
+        //
+        // 为什么值得一条门禁：核心插件注入失败时只往 System.err 打一行
+        // `[<前缀>] EntityPlayerSP 字节码注入失败…`，而 README / CONTRIBUTING / issue 模板
+        // 都让玩家「去日志里搜这个字符串」。**前缀一旦改了而文档没跟，排错指引就指向一个
+        // 搜不到的东西** —— 玩家贴不出那行，维护者就只能猜。上次改名时这类漂移是静默的，
+        // 所以这里把它钉死：HxTransformer 里实际用的前缀，必须与文档里写的完全一致。
+        //
+        // 判据的两半都必须存在：既怕前缀改了文档没跟，也怕文档写了前缀但代码里其实没有
+        // （把 System.err 那行删了同样会让指引失效）。
+        String transformer = readRepoFile(
+                "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/asm/HxTransformer.java");
+        java.util.regex.Matcher prefixMatcher = transformer == null ? null
+                : java.util.regex.Pattern.compile("System\\.err\\.println\\(\"(\\[[^\\]]+\\]) ").matcher(transformer);
+        String errPrefix = (prefixMatcher != null && prefixMatcher.find()) ? prefixMatcher.group(1) : null;
+        check("HxTransformer 里能找到 System.err 的日志前缀（找不到说明注入失败提示被删了）",
+                errPrefix != null);
+        if (errPrefix != null) {
+            String[] docsToCheck = {
+                    "README.md", "CONTRIBUTING.md", ".github/ISSUE_TEMPLATE/bug_report.md",
+                    ".github/ISSUE_TEMPLATE/bug_report.yml"};
+            for (String doc : docsToCheck) {
+                String text = readRepoFile(doc);
+                check("文档里提到的日志前缀与 HxTransformer 实际一致（" + doc + " 需含 " + errPrefix + "）",
+                        text != null && text.contains(errPrefix));
+            }
+        }
+
         // 标签约定：两条线分属两个 workflow，这里把「别把 -forge 标签交给 Fabric 那套」钉死
         String forgeWorkflow = readRepoFile(".github/workflows/build-forge.yml");
         check("Forge 线有独立 CI workflow", forgeWorkflow != null);
@@ -2990,8 +3288,11 @@ public class VerifyCore {
 
         // 文档：双版本说明必须真的写在 README 里
         String readme = readRepoFile("README.md");
-        check("README 写明了两条线的产物名（+mc1.8.9-forge.jar）",
-                readme != null && readme.contains("+mc1.8.9-forge.jar"));
+        check("README 写明了两条线的产物名（新格式 _<版本>_mc1.8.9-forge.jar）",
+                readme != null && readme.contains("Server-Chat-Translator_<版本>_mc1.8.9-forge.jar"));
+        check("README 不再残留旧产物名格式（<名字>-<版本>+mc…）",
+                readme != null && !readme.contains("Server-Chat-Translator-<版本>+mc")
+                        && !readme.contains("hx-chat-translator"));
         check("README 写明了 1.8.9 版是核心插件（coremod）",
                 readme != null && readme.contains("核心插件"));
         check("README 的 Release 名与产物名对齐（v<版本>-mc26.3-fabric）",
@@ -3225,7 +3526,12 @@ public class VerifyCore {
         check("README 里写了 Minecraft " + mc, contains(readme, mc));
         check("README 里写了 Loader ≥ " + loader, contains(readme, "≥ " + loader));
         check("README 里写了 Fabric API " + api, contains(readme, api));
-        check("README 里的产物文件名带 mc" + mc, contains(readme, "+mc" + mc + "-fabric.jar"));
+        // 产物命名规则（v3.0.0 起）：Server-Chat-Translator_<版本>_mc<游戏版本>-<加载器>.jar
+        // 注意结构变了：旧格式是 <名字>-<版本>+mc<版本>-<加载器>.jar（连字符分段、加号连版本），
+        // 新格式统一用下划线分段、不再用加号。这里直接钉住**新格式的完整形状**，
+        // 而不是只查一个片段 —— 只查片段的话新旧写法的片段可能同时成立，门禁就废了。
+        check("README 里的产物文件名是 v3.0.0 的新格式（_<版本>_mc" + mc + "-fabric.jar）",
+                contains(readme, "Server-Chat-Translator_<版本>_mc" + mc + "-fabric.jar"));
 
         // 自检的类路径必须排除游戏/加载器库：否则「纯逻辑类误引用游戏 API」在自检里也能过，
         // v2.1.0 的静默丢消息 bug 就是这么藏住的（见 build.gradle 里的说明）。
@@ -3241,6 +3547,123 @@ public class VerifyCore {
         } catch (IOException | RuntimeException e) {
             return null;
         }
+    }
+
+    /**
+     * 元数据里写的全限定类名，在磁盘上真的存在吗？
+     *
+     * <p>只查「同一个包路径下的源文件是否存在」，不试图解析 class 文件 ——
+     * 要防的错是「改名时把包路径一起改了」这种字符串级错误，
+     * 源文件存在性就是最直接、最不容易误报的判据。
+     */
+    private static boolean sourceClassExists(String fqcn) {
+        String rel = fqcn.replace('.', '/') + ".java";
+        return Files.exists(Paths.get("src/shared/java", rel))
+                || Files.exists(Paths.get("src/main/java", rel))
+                || Files.exists(Paths.get("forge-1.8.9/src/main/java", rel));
+    }
+
+    /**
+     * v3.0.0：元数据自洽性 —— mod id、显示名、入口类名三件事必须彼此一致且指向真实存在的类。
+     *
+     * <p>这一组用例的由来是**实测踩到的两个静默缺陷**（编译、构建、自检全绿，游戏里却不生效）：
+     * <ol>
+     *   <li>{@code fabric.mod.json} 的 {@code entrypoints.client} 被写成
+     *       {@code com.isomeria.server_chat_translator.HxTranslateClient}（不存在的包）
+     *       → 模组**根本不会被加载**；</li>
+     *   <li>{@code forge-1.8.9/build.gradle} 的 {@code FMLCorePlugin} 被写成同样的错包名
+     *       → **核心插件不生效**，1.8.9 的发送方向完全不翻译。</li>
+     * </ol>
+     * 两者都是「字符串写错」而不是「逻辑写错」，只能靠把断言钉在元数据上。
+     */
+    private static void metadataSelfConsistency() {
+        System.out.println("-- 元数据自洽性（mod id / 显示名 / 入口类）--");
+
+        String fabricMod = readRepoFile("src/main/resources/fabric.mod.json");
+        String mcmod = readRepoFile("forge-1.8.9/src/main/resources/mcmod.info");
+        String forgeMod = readRepoFile("forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/HxTranslateForge.java");
+        check("能读到 fabric.mod.json / mcmod.info / HxTranslateForge.java（用例抗自己的失败）",
+                fabricMod != null && mcmod != null && forgeMod != null);
+        if (fabricMod == null || mcmod == null || forgeMod == null) {
+            return;
+        }
+
+        // 1) mod id 两条线必须一致
+        String fabricId = between(fabricMod, "\"id\": \"", "\"");
+        String forgeId = between(mcmod, "\"modid\": \"", "\"");
+        check("mod id 两条线一致（fabric=" + fabricId + " / forge=" + forgeId + "）",
+                fabricId != null && fabricId.equals(forgeId));
+
+        // 2) mod id 必须是「资源目录安全」的写法：小写 + 下划线。
+        //    1.8.9 的 ResourceLocation 不接受大写，连字符虽然合法但没必要冒险（RELEASING §10.5）。
+        check("mod id 是「小写 + 下划线」（" + fabricId + "）",
+                fabricId != null && fabricId.matches("[a-z][a-z0-9_]*"));
+
+        // 3) 两条线的资源目录名必须等于 mod id
+        check("Fabric 的资源目录名 = mod id（assets/" + fabricId + "）",
+                fabricId != null && Files.exists(Paths.get("src/main/resources/assets", fabricId, "lang", "en_us.json")));
+        check("Forge 的资源目录名 = mod id（assets/" + fabricId + "）",
+                fabricId != null && Files.exists(Paths.get("forge-1.8.9/src/main/resources/assets", fabricId, "lang", "en_US.lang")));
+
+        // 4) 语言文件的键必须用 mod id 作前缀，且两线一致
+        if (fabricId != null) {
+            String expectKey = "key." + fabricId + ".toggle";
+            String fabricLang = readRepoFile("src/main/resources/assets/" + fabricId + "/lang/en_us.json");
+            String forgeLang = readRepoFile("forge-1.8.9/src/main/resources/assets/" + fabricId + "/lang/en_US.lang");
+            check("Fabric 语言键用 mod id 作前缀（" + expectKey + "）", contains(fabricLang, expectKey));
+            check("Forge 语言键用 mod id 作前缀（" + expectKey + "）", contains(forgeLang, expectKey));
+            check("按键名由代码注册的那个键与语言文件一致（两线都必须能找到定义）",
+                    contains(readRepoFile("src/main/java/com/isomeria/hxtranslate/HxTranslateClient.java"), expectKey)
+                            && contains(readRepoFile("forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/HxTranslateForge.java"), expectKey));
+        }
+
+        // 5) 显示名：三条线（两份元数据 + 注解）必须完全一致，且纯英文
+        String fabricName = between(fabricMod, "\"name\": \"", "\"");
+        String forgeName = between(mcmod, "\"name\": \"", "\"");
+        String annotationName = between(forgeMod, "name = \"", "\"");
+        check("两份元数据的显示名一致（fabric=" + fabricName + " / forge=" + forgeName + "）",
+                fabricName != null && fabricName.equals(forgeName));
+        check("@Mod(name=…) 与元数据的显示名一致（" + annotationName + "）",
+                annotationName != null && annotationName.equals(fabricName));
+        check("显示名是纯英文（不含汉字）", fabricName != null && !LangUtils.containsHan(fabricName));
+        check("元数据里不再残留旧显示名", !contains(fabricMod, "Hypixel Chat Translator")
+                && !contains(mcmod, "Hypixel Chat Translator"));
+
+        // 6) 入口类名必须指向真实存在的源文件（本轮实测踩到的两个静默缺陷）
+        //    注意 start 标记要把 `com.` 一起带上：只写 `com.isomeria` 的话，返回的字符串会丢掉
+        //    开头的 `com`（本轮就是这么先写错、再被这条用例自己抓出来的）。
+        String entry = between(fabricMod, "\"com.isomeria", "\"");
+        entry = entry == null ? null : "com.isomeria" + entry;
+        check("Fabric entrypoint 是 com.isomeria 包下的类（读到: " + entry + "）",
+                entry != null && entry.startsWith("com.isomeria."));
+        if (entry != null) {
+            check("Fabric entrypoint 指向真实存在的类（" + entry + "）", sourceClassExists(entry));
+        }
+        String forgeBuild = readRepoFile("forge-1.8.9/build.gradle");
+        String corePlugin = between(forgeBuild, "'FMLCorePlugin': '", "'");
+        check("FMLCorePlugin 入口指向真实存在的类（" + corePlugin + "）",
+                corePlugin != null && sourceClassExists(corePlugin));
+        String coreMarker = between(forgeBuild, "'FMLCorePluginContainsFMLMod': '", "'");
+        check("FMLCorePluginContainsFMLMod 的值是 true", "true".equals(coreMarker));
+        // 核心插件里的 HxHooks 全限定名也必须是真实存在的类
+        String hooksConst = between(readRepoFile(
+                "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/asm/HxTransformer.java"), "HOOKS = \"", "\"");
+        check("HxTransformer 里的 HOOKS 常量指向真实存在的类（" + hooksConst + "）",
+                hooksConst != null && sourceClassExists(hooksConst.replace('/', '.')));
+    }
+
+    /** 取 {@code text} 里 {@code start} 与随后第一个 {@code end} 之间的内容；找不到返回 null。 */
+    private static String between(String text, String start, String end) {
+        if (text == null) {
+            return null;
+        }
+        int i = text.indexOf(start);
+        if (i < 0) {
+            return null;
+        }
+        int from = i + start.length();
+        int j = text.indexOf(end, from);
+        return j < 0 ? null : text.substring(from, j);
     }
 
     /**

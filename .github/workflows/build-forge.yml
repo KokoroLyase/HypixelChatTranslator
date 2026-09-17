@@ -47,7 +47,7 @@ jobs:
       - name: Upload jar
         uses: actions/upload-artifact@v7
         with:
-          name: hx-chat-translator-forge-1.8.9
+          name: Server-Chat-Translator-forge-1.8.9
           # 注意：upload-artifact 的 path 相对仓库根目录，不受上面的 working-directory 影响
           path: |
             forge-1.8.9/build/libs/*.jar

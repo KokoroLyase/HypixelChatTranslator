@@ -22,7 +22,7 @@ import java.util.Map;
  * 「这次要不要拦下来」，要拦就直接 {@code RETURN}（原版一行都不会执行），
  * 翻译完成后由模组自己再调一次同方法重发，此时闸门放行、走原版逻辑。
  */
-@IFMLLoadingPlugin.Name("hx-chat-translator")
+@IFMLLoadingPlugin.Name("server_chat_translator")
 @IFMLLoadingPlugin.MCVersion("1.8.9")
 @IFMLLoadingPlugin.TransformerExclusions({"com.isomeria.hxtranslate"})
 public final class HxLoadingPlugin implements IFMLLoadingPlugin {

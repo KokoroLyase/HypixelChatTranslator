@@ -31,7 +31,7 @@ labels: bug
 >
 > **1.8.9 的玩家请注意**：那一条线是核心插件（coremod）。如果「打中文没被翻译」
 > 而其它功能（收消息翻译、F6、命令）都正常，多半是字节码注入没生效 ——
-> `logs/latest.log` 里会有 `[hxtranslate] EntityPlayerSP 字节码注入失败…`，请务必贴上那一行。
+> `logs/latest.log` 里会有 `[server_chat_translator] EntityPlayerSP 字节码注入失败…`，请务必贴上那一行。
 
 ## 现象
 
@@ -42,8 +42,8 @@ labels: bug
 先执行这两条命令，把输出贴上来（统计数字和跳过原因基本能定位到具体分支）：
 
 ```
-/hxtranslate status
-/hxtranslate debug on
+/translator status
+/translator debug on
 ```
 
 `debug on` 之后复现一次，聊天栏会逐条打印「翻译 / 跳过（原因）」，把相关几行贴上来：
@@ -57,7 +57,7 @@ labels: bug
 
 ## 日志
 
-`logs/latest.log` 里搜 `hxtranslate` 的相关行（**贴之前请先删掉 API Key**）：
+`logs/latest.log` 里搜 `server_chat_translator` 的相关行（**贴之前请先删掉 API Key**）：
 
 ```
 

@@ -1,5 +1,140 @@
 # 更新日志
 
+## v3.0.0 — 2026-09-17（**不兼容变更**：改名 + 命令变更 + 单机默认不翻译）
+
+一次**全面重构**，三件事一起做：**模组更名为 Server Chat Translator**、
+**命令换成 `/translator`**、**单人（单机）世界默认不翻译**。
+版本号按 RELEASING §1 走首位进位（不兼容变更），两条线同号 3.0.0：
+`Server-Chat-Translator_3.0.0_mc26.3-fabric.jar` 与 `Server-Chat-Translator_3.0.0_mc1.8.9-forge.jar`。
+
+### 这一版改了什么
+
+**1. 更名：从「Hypixel 聊天翻译」到「Server Chat Translator」**
+
+这个模组一直不只服务 Hypixel —— 任何英文服务器的聊天都能翻。名字里的 Hypixel 是历史包袱，
+这次一并去掉。四个名字分层的规矩写进了 [RELEASING.md](RELEASING.md) §10.5：
+
+| 层 | 旧 | 新 |
+| --- | --- | --- |
+| 显示名 | Hypixel 聊天翻译 / Hypixel Chat Translator | **Server Chat Translator**（纯英文，`fabric.mod.json` / `mcmod.info` / 日志里都不加中文） |
+| mod id | `hxtranslate` | **`server_chat_translator`**（下划线；资源目录要过 1.8.9 的 `ResourceLocation`，下划线最安全） |
+| 配置文件名 | `hxtranslate.json` | **`server_chat_translator.json`** |
+| 产物名 | `hx-chat-translator-<版本>+mc<版本>-<加载器>.jar` | **`Server-Chat-Translator_<版本>_mc<版本>-<加载器>.jar`** |
+| Java 包名 | `com.isomeria.hxtranslate` | **不变**（内部实现，改了要动核心插件里的类名字符串，收益接近零） |
+
+配套同步：语言文件目录改成 `assets/server_chat_translator/lang/`、按键翻译键改成
+`key.server_chat_translator.toggle`、游戏内开关提示前缀从 `[hx]` 改成 `[sct]`、
+核心插件注入失败那行的 `System.err` 前缀改成 `[server_chat_translator]`、
+两个 `settings.gradle` 的 `rootProject.name`（它会进 jar 内 LICENSE 的文件名）也跟着改。
+
+**没有做 i18n，这是有意的**：显示名硬编码在代码里，不在语言文件里；共享层不许 import
+Minecraft（两个构建编译同一份、自检类路径剔除了游戏库），用不了 `Component.translatable()`。
+所以中文客户端同样显示英文名 —— 见 RELEASING §10.5 第 3 条。
+
+**2. 命令：`/hxtranslate` → `/translator`**
+
+`/hxtranslate` 与 `/hxt` **都不再注册**（只换不留）。命令表多了 `singleplayer on|off`，
+`status` 多了一行「单人世界: 是/否 | 单人里翻译: 开/关」。
+
+> ⚠️ 旧命令现在是**普通未知命令**：还打 `/hxtranslate test 中文…` 的话，它会被
+> 「未知命令兜底」当成普通命令处理（正文像一句话就翻），表现为「命令没执行、反而发出去了」。
+> `CommandMessage.ALWAYS_PROTECTED` 白名单同步成只认 `translator`，并有用例钉住这一点。
+
+**3. 单人（单机）世界默认不翻译，可用开关打开**
+
+单机里的「聊天」多半是自己看的，而 NPC 对话、告示牌、书籍、命令输出这类系统消息逐条送去翻译
+既费钱又刷屏。所以新增配置项 **`translateInSingleplayer`（默认 `false`）**：
+
+```
+/translator singleplayer on     打开（off 关回来）
+```
+
+闸门在**共享层的单一出口**（`ChatTranslator.singleplayerBlocked()`），接收方向与发送方向
+（含 `/shout` 这类命令正文）都从它过 —— 规则只写一遍，不会出现「接收拦了、发送忘了」。
+判据由装配层通过端口给出：Fabric 26.3 用 `Minecraft.hasSingleplayerServer()`，
+Forge 1.8.9 用 `Minecraft.isSingleplayer()`，两者语义一致。
+**刻意不用 `isLocalServer()`**：它对「对局域网开放」的存档也返回 true，而那是多人场景，仍应翻译。
+
+debug 模式下被拦下的消息会打印原因（不再是静默跳过）：
+`跳过（单人世界，且 translateInSingleplayer=false（用 /translator singleplayer on 可打开））`。
+
+### 升级后你要做什么
+
+1. **⚠️ 先删掉旧的 jar**。mod id 从 `hxtranslate` 改成 `server_chat_translator` 之后，
+   新旧两个 jar 会被**同时加载**，结果是聊天被翻译两遍（还会双倍消耗 API 请求）。
+   进游戏前请到 `mods/` 里删掉名字带 `hx-chat-translator` 的旧文件，只留新的那一个。
+2. **配置文件没有自动搬迁，这是有意的**。新文件名是 `config/server_chat_translator.json`，
+   旧的 `config/hxtranslate.json` **原地不动、模组不会读它**。想把老设置带过来，
+   手动把要用的字段（`apiKey`、`glossary`、`ignorePatterns`…）复制到新文件即可；
+   模组首次启动会在 `config/` 下生成一份带默认值的新文件。
+   （`configVersion` 8 → 9 是另一件事：新增了顶层字段，版本号照常 +1，见下。）
+3. 命令换成 `/translator`，旧命令不再工作（见上）。
+4. **单机里默认不翻译了**。想在单机里也翻译就 `/translator singleplayer on`，或把
+   `translateInSingleplayer` 改成 `true`。多人服务器完全不受影响。
+5. 环境要求**没变**：26.3 线仍是 Fabric Loader ≥ 0.19.5 + Fabric API 0.160.5+26.3 + Java 25；
+   1.8.9 线仍是 Forge 11.15.1.2318 + Java 8。
+
+### 配置与兼容性
+
+- **配置结构变化**：新增顶层字段 `translateInSingleplayer`，`configVersion` **8 → 9**。
+  迁移体是**刻意的空分支**：gson 反序列化时，文件里没有的字段会保留 Java 字段初始值（`false`），
+  所以老配置**天然**拿到「单人不翻译」这个新默认值，**不存在任何用户数据需要改写**；
+  `fillMissingFields` 会把这个新字段补写进 json，让用户能看到并调整它（补缺，不是覆盖）。
+  版本号照样 +1，因为它是给**未来**的迁移用的判据（以后要区分「补出来的值」与「用户显式设过的值」
+  就必须能分辨 v8 与 v9 的文件）。见 RELEASING §5。
+- **文件名搬迁与 `configVersion` 是两件事**：前者本轮不做（上面第 2 条），后者照做（本条）。
+- 用户资产（`apiKey` / `glossary` / `ignorePatterns` / 提示词）**一个字节都没有被改动**。
+- 产物名格式变了（下划线分段、不再用 `+`），已发布的旧产物一律保持原名不动（RELEASING §4）。
+- tag / Release 名**保持** `v<版本>-mc<游戏版本>-<加载器>`；RELEASING §10.2 从
+  「与产物名逐字符对齐」改成「语义对齐即可」。
+
+### 验证
+
+- **Fabric 线**：`./gradlew clean build` 全绿，离线自检 **810 项通过 / 0 失败**
+  （v2.3.0 在同一个提交上是 753 项，**+57**）。产物名 `Server-Chat-Translator_3.0.0_mc26.3-fabric.jar`。
+- **Forge 线**：`gradle clean build` 全绿 = **810 项自检 + 9 项核心插件验证**，0 失败。
+  产物名 `Server-Chat-Translator_3.0.0_mc1.8.9-forge.jar`。
+  共享层用 **JDK 8** 编译通过（Java 9+ 语法/API 会在这一步直接失败）。
+- **反向验证**（逐条把规则中和掉，确认对应用例真的会红，而不是「怎么改都绿」）：
+
+  | 中和掉的规则 | 变红断言数 |
+  | --- | --- |
+  | 单人闸门（`singleplayerBlocked()` 恒 false） | 9 |
+  | 日志前缀一致性（只改代码、文档不跟） | 4 |
+  | 日志前缀一致性（删掉 `System.err` 那行） | 1 |
+  | 元数据入口类（entrypoint 指向不存在的包） | 1 |
+  | 元数据 mod id（改成带大写，1.8.9 的 `ResourceLocation` 会炸） | 7 |
+
+  > 单人闸门的反向验证**当场抓出了写用例时的一个假绿**：最初「单人世界里没有发起任何请求」
+  > 是「调用完立刻看计数」，而 `TranslationService.submit` 是异步的 —— 把闸门中和掉之后
+  > 那条断言**依然是绿的**。改成「阳性对照 + 盖住异步提交的时间窗」之后才真正生效。
+  > 这正是 RELEASING §6 要求反向验证的理由。
+
+### 新增门禁：元数据自洽性（本次更名实测踩出来的）
+
+更名最容易出的错**不是编译错误，而是「元数据指向一个不存在的类」**：编译、构建、自检全绿，
+游戏里却根本不加载模组。本次实测踩到两处，都是改成 `com.isomeria.server_chat_translator…`
+这种「把包路径也当成 mod id 改了」的字符串错误：
+
+- `fabric.mod.json` 的 `entrypoints.client` → **模组根本不会被加载**；
+- `forge-1.8.9/build.gradle` 的 `FMLCorePlugin` → **核心插件不生效**，1.8.9 发送方向完全不翻译。
+
+两者都不会让构建变红，所以新增了一组门禁（`metadataSelfConsistency()`）钉住：
+mod id 两条线一致且是小写+下划线、资源目录名 = mod id、语言键以 mod id 为前缀、
+三处显示名逐字一致且纯英文、**入口类/coremod 类/`HOOKS` 常量指向的源文件必须真实存在**。
+另有一条门禁把「日志前缀」在代码与四份文档之间钉死（见 [RELEASING.md](RELEASING.md) §8、§10.5）。
+
+### 没有自动化覆盖的部分
+
+- 核心插件的**游戏内实际效果**仍只有离线字节码验证（`verifyCoremod` 9 项：真 deobf
+  `EntityPlayerSP` + 真 JVM 校验器 + 三项反向验证）。本机没有图形环境，**没有真正跑过两条线的客户端**；
+- 两条线的装配面（`GameClient` / `HxTranslateClient` / `TranslateCommand`、`ForgeClient` /
+  `HxTranslateForge` / `ForgeChatCommand`）不在自检范围内：**`isSingleplayer()` 的两处实现**
+  （`hasSingleplayerServer()` / `isSingleplayer()`）与 `/translator singleplayer` 子命令
+  只经过方法级核对（在 26.3 的 remapped jar 与 MCP `stable_22` 映射表里确认过方法确实存在），
+  **没有在真实客户端里验证过**；
+- 更名后**新旧 jar 同时加载**这一条只写在升级说明里，没有自动化门禁（模组无法知道 mods 目录里有什么）。
+
 ## v2.3.0 — 2026-09-17（1.8.9 + Forge 线首次发布，Release 名 `v2.3.0-mc1.8.9-forge`）
 
 与 Fabric 版**同一个版本号**（2.3.0），只是产物名不同：

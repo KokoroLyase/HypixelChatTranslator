@@ -18,7 +18,7 @@ import net.minecraft.network.chat.Component;
 import java.util.List;
 
 /**
- * 客户端命令 /hxtranslate（别名 /hxt）。
+ * 客户端命令 /server_chat_translator（别名 /hxt）。
  * 这些命令只在本地执行，不会发到 Hypixel 服务器。
  */
 public final class TranslateCommand {
@@ -32,8 +32,7 @@ public final class TranslateCommand {
     public static void register(TranslatorConfig config, TranslationService service,
                                 ChatTranslator translator, FeedbackPort feedback) {
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            dispatcher.register(build("hxtranslate", config, service, translator, feedback));
-            dispatcher.register(build("hxt", config, service, translator, feedback));
+            dispatcher.register(build("translator", config, service, translator, feedback));
         });
     }
 
@@ -83,7 +82,7 @@ public final class TranslateCommand {
                     // 重载往往就是「刚改完术语表」：顺手体检一次，写反 / 漏等号的条目当场说清楚
                     String suspicious = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
                     if (suspicious != null) {
-                        message = message + "§e（术语表体检：" + suspicious + "，输入 /hxtranslate glossary 查看）";
+                        message = message + "§e（术语表体检：" + suspicious + "，输入 /server_chat_translator glossary 查看）";
                     }
                     context.getSource().sendFeedback(Component.literal(message));
                     return 1;
@@ -128,6 +127,19 @@ public final class TranslateCommand {
                             "§c已关闭：直接打出的中文不再翻译（命令正文见 §ftranslateCommandMessages§c）"));
                     return 1;
                 })))
+                // 单人（单机）世界里要不要翻译（v3.0.0）。默认关：单机里的聊天多半是自己看的，
+                // 而且 NPC 对话/告示牌/命令输出逐条送去翻译既费钱又刷屏。
+                .then(ClientCommands.literal("singleplayer").then(ClientCommands.literal("on").executes(context -> {
+                    config.translateInSingleplayer = true;
+                    config.save();
+                    context.getSource().sendFeedback(Component.literal("§a已开启：单人世界的消息也会翻译"));
+                    return 1;
+                })).then(ClientCommands.literal("off").executes(context -> {
+                    config.translateInSingleplayer = false;
+                    config.save();
+                    context.getSource().sendFeedback(Component.literal("§c已关闭：单人世界不翻译（多人服不受影响）"));
+                    return 1;
+                })))
                 .then(ClientCommands.literal("key")
                         .then(ClientCommands.argument("value", StringArgumentType.greedyString())
                                 .executes(context -> {
@@ -151,7 +163,7 @@ public final class TranslateCommand {
                         } else {
                             feedback.error("查询失败: " + result.error());
                         }
-                    }, "hxtranslate-models");
+                    }, "server_chat_translator-models");
                     thread.setDaemon(true);
                     thread.start();
                     return 1;
@@ -171,7 +183,7 @@ public final class TranslateCommand {
     }
 
     /**
-     * 术语表体检报告（{@code /hxtranslate glossary}）。
+     * 术语表体检报告（{@code /server_chat_translator glossary}）。
      *
      * <p>术语表是玩家长期维护的资产，而「写反了」「漏了等号」这类错误是**完全静默**的：
      * 前者让两个方向的含义都反过来，后者会被渲染直接丢掉（加了词却一个字都没进提示词）。
@@ -194,14 +206,14 @@ public final class TranslateCommand {
             source.sendFeedback(Component.literal("§7  - " + line));
         }
         source.sendFeedback(Component.literal(
-                "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/hxtranslate reload §7即可生效"));
+                "§7体检只做提示，不会自动改你的配置；改完术语表后 §f/server_chat_translator reload §7即可生效"));
     }
 
     /** 测试翻译要发网络请求，必须放到后台线程，否则会卡住游戏。 */
     private static void runTest(TranslationService service, FeedbackPort feedback, String text) {
         // 方向按内容自动判断，规则和实际收发时一致：含汉字 = 你想发出去的中文（中→英），
         // 否则当作收到的英文（英→中）。
-        // 以前这里固定用「英→中」，于是 `/hxtranslate test 你好` 会得到「你好」原样返回，
+        // 以前这里固定用「英→中」，于是 `/server_chat_translator test 你好` 会得到「你好」原样返回，
         // 看着像模组坏了，其实是根本没测到发送方向 —— 而发送方向才是会影响服务器里别人的那个。
         Direction direction = LangUtils.containsHan(text) ? Direction.OUTGOING : Direction.INCOMING;
         Thread thread = new Thread(() -> {
@@ -211,14 +223,14 @@ public final class TranslateCommand {
             } else {
                 feedback.error("测试失败: " + result.error());
             }
-        }, "hxtranslate-test");
+        }, "server_chat_translator-test");
         thread.setDaemon(true);
         thread.start();
     }
 
     private static void status(FabricClientCommandSource source, TranslatorConfig config,
                                TranslationService service, ChatTranslator translator) {
-        source.sendFeedback(Component.literal("§8===== §bHypixel 聊天翻译 §8====="));
+        source.sendFeedback(Component.literal("§8===== §bServer Chat Translator §8====="));
         source.sendFeedback(Component.literal("§7总开关: " + onOff(config.enabled)
                 + " §8| §7收到翻译: " + onOff(config.translateIncoming)
                 + " §8| §7发送翻译: " + onOff(config.translateOutgoing)
@@ -227,6 +239,9 @@ public final class TranslateCommand {
                 + " §8| §7思考模式: " + onOff(config.enableThinking)
                 + " §8| §7API Key: " + (config.hasApiKey() ? "§a已配置" : "§c未配置")
                 + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条"));
+        // 单人闸门的状态（v3.0.0）：玩家在单机里发现「怎么不翻译」时，唯一能告诉他原因的地方。
+        // 文案由共享层生成，两条线的口径不会漂移（见 ChatTranslator#singleplayerStatusLine）。
+        source.sendFeedback(Component.literal(translator.singleplayerStatusLine()));
         if (service.isCircuitOpen()) {
             source.sendFeedback(Component.literal("§c翻译服务连续失败，熔断中，还需 §f"
                     + service.circuitRemainingSeconds() + " §c秒"));
@@ -237,7 +252,7 @@ public final class TranslateCommand {
         if (disabledRegexes > 0) {
             source.sendFeedback(Component.literal("§e有 §f" + disabledRegexes
                     + " §e条 ignorePatterns 正则因匹配超时被停用（多半写了灾难性回溯的写法）。"
-                    + "改掉它并 §f/hxtranslate reload §e即可恢复。"));
+                    + "改掉它并 §f/server_chat_translator reload §e即可恢复。"));
             for (String regex : LangUtils.disabledRegexes()) {
                 source.sendFeedback(Component.literal("§8  - §7" + LangUtils.sanitizeOneLine(regex)));
             }
@@ -247,7 +262,7 @@ public final class TranslateCommand {
         String glossaryCounts = GlossaryAudit.countsText(GlossaryAudit.audit(config.glossary));
         if (glossaryCounts != null) {
             source.sendFeedback(Component.literal("§e术语表体检发现 " + glossaryCounts
-                    + "，输入 §f/hxtranslate glossary §e查看并修改"));
+                    + "，输入 §f/server_chat_translator glossary §e查看并修改"));
         }
         source.sendFeedback(Component.literal("§7输入长度上限: §f" + config.maxIncomingChars
                 + "§7字符 §8| §7本分钟请求: §f" + service.usedRequestsThisMinute()

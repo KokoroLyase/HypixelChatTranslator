@@ -21,7 +21,7 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 
 /**
- * Hypixel 聊天翻译模组入口（纯客户端）。
+ * Server Chat Translator模组入口（纯客户端）。
  *
  * <p>这里只做「装配」：造出翻译逻辑需要的几个实现（{@code GameClient} / {@code GameFeedback}
  * / {@code TranslationService}），把事件挂上，把开关按键接好。
@@ -36,7 +36,7 @@ import java.util.List;
  */
 public final class HxTranslateClient implements ClientModInitializer {
 
-    public static final String MOD_ID = "hxtranslate";
+    public static final String MOD_ID = "server_chat_translator";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     static {
@@ -108,7 +108,7 @@ public final class HxTranslateClient implements ClientModInitializer {
 
         // 事件注册与开关按键都在 client 里，入口只负责把 KeyMapping 做出来交给它
         KeyMapping toggleKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
-                "key.hxtranslate.toggle",
+                "key.server_chat_translator.toggle",
                 InputConstants.Type.KEYBOARD,
                 DEFAULT_TOGGLE_KEY,
                 KeyMapping.Category.MULTIPLAYER));
@@ -123,7 +123,7 @@ public final class HxTranslateClient implements ClientModInitializer {
         if (!config.hasApiKey()) {
             LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}", TranslatorConfig.configPath());
         }
-        LOGGER.info("Hypixel 聊天翻译已加载 (MC 26.3 / DeepSeek {})", config.model);
+        LOGGER.info("Server Chat Translator已加载 (MC 26.3 / DeepSeek {})", config.model);
     }
 
     /** 开关按键的轮询与启动提示。 */
@@ -142,17 +142,17 @@ public final class HxTranslateClient implements ClientModInitializer {
     }
 
     private void showStartupNotice() {
-        feedback.info("§8[§bhx§8] §7Hypixel 聊天翻译已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        feedback.info("§8[§bsct§8] §7Server Chat Translator已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
         // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了，
         // 甚至重新输入一遍 Key 把原件覆盖掉（原文件已经备份过，但先说清楚能省掉这一步）。
         if (config.loadWarning() != null) {
             feedback.error(config.loadWarning());
         }
         if (!config.hasApiKey()) {
-            feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
+            feedback.error("未配置 DeepSeek API Key！请执行 §f/server_chat_translator key <你的Key> §c或编辑配置文件。");
             feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
-            feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
+            feedback.hint("F6 开关翻译，/server_chat_translator status 查看状态，/server_chat_translator debug on 排错");
         }
         reportGlossaryFindings();
     }

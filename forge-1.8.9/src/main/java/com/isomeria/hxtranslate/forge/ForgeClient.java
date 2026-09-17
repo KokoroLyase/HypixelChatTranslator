@@ -130,6 +130,23 @@ public final class ForgeClient implements ChatClientPort {
         minecraft.addScheduledTask(task);
     }
 
+    /**
+     * 1.8.9 有现成的 {@code Minecraft.isSingleplayer()}（MCP 名 {@code func_71356_B}，
+     * 已在 stable_22 映射表里核对）：它的原始说明正是「只有一个玩家在玩、而且当前服务器
+     * 是集成服务端」，与 Fabric 26.3 线上 {@code hasSingleplayerServer()} 的语义一致 ——
+     * 两条线的闸门必须同义，否则同一个人在两条线上会遇到不同的行为。
+     *
+     * <p>1.8.9 里还有 {@code isIntegratedServerRunning()}，那个只问「集成服务端在跑吗」，
+     * 不保证「只有自己一个玩家」，所以不用它。
+     *
+     * <p>还没进入世界时返回 false（没进世界时本来就不会有消息要翻）。
+     */
+    @Override
+    public boolean isSingleplayer() {
+        Minecraft minecraft = Minecraft.getMinecraft();
+        return minecraft != null && minecraft.isSingleplayer();
+    }
+
     @Override
     public Object currentConnection() {
         Minecraft minecraft = Minecraft.getMinecraft();

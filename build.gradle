@@ -114,8 +114,8 @@ jar {
 	inputs.property "projectName", projectName
 
 	// 文件名带上游戏版本与模组加载器，和主流模组一致：
-	// hx-chat-translator-2.0.0+mc26.3-fabric.jar
-	archiveFileName = "${project.archives_base_name}-${project.mod_version}+mc${project.minecraft_version}-fabric.jar"
+	// Server-Chat-Translator_3.0.0_mc26.3-fabric.jar
+	archiveFileName = "${project.archives_base_name}_${project.mod_version}_mc${project.minecraft_version}-fabric.jar"
 
 	from("LICENSE") {
 		rename { "${it}_$projectName" }
@@ -123,5 +123,5 @@ jar {
 }
 
 tasks.matching { it.name == "sourcesJar" }.configureEach {
-	archiveFileName = "${project.archives_base_name}-${project.mod_version}+mc${project.minecraft_version}-fabric-sources.jar"
+	archiveFileName = "${project.archives_base_name}_${project.mod_version}_mc${project.minecraft_version}-fabric-sources.jar"
 }

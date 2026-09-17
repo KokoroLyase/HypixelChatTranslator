@@ -30,12 +30,20 @@
 
 ## 2. 文件名
 
-发布产物的文件名必须带上**游戏版本**和**模组加载器**：
+发布产物的文件名必须带上**游戏版本**和**模组加载器**（v3.0.0 起格式如下）：
 
 ```
-hx-chat-translator-<mod_version>+mc<minecraft_version>-<loader>.jar
-例：hx-chat-translator-1.0.3+mc26.2-fabric.jar
+Server-Chat-Translator_<mod_version>_mc<minecraft_version>-<loader>.jar
+例：Server-Chat-Translator_3.0.0_mc26.3-fabric.jar
+    Server-Chat-Translator_3.0.0_mc1.8.9-forge.jar
 ```
+
+**三段之间用下划线分隔，版本号后面不再用 `+`。** 三段的含义是
+`模组名_模组版本_mc游戏版本-加载器`；模组名本身用连字符（`Server-Chat-Translator`），
+所以「连字符属于名字、下划线属于分隔符」是唯一的分段依据，下载页上一眼能断句。
+
+> v2.3.0 及更早的格式是 `hx-chat-translator-<版本>+mc<版本>-<加载器>.jar`。
+> 已发布的产物**一律保持原名不动**（§4），只有新版本用新格式。
 
 由 `build.gradle` 里的 `archiveFileName` 生成，改版本时只改 `gradle.properties`，不要手改文件名。
 
@@ -50,7 +58,7 @@ git add -A && git commit -m "fix: ..."
 git push origin main
 
 # 4) 打 tag 并推送 —— CI 会自动构建并创建 Release
-git tag -a v<mod_version> -m "Hypixel 聊天翻译 v<mod_version> (MC 26.2 / Fabric)"
+git tag -a v<mod_version> -m "Server Chat Translator v<mod_version> (MC 26.2 / Fabric)"
 git push origin v<mod_version>
 ```
 
@@ -95,7 +103,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 
 ## 5. 配置兼容
 
-`config/hxtranslate.json` 是用户资产，升级时：
+`config/server_chat_translator.json` 是用户资产，升级时：
 
 - 通过 `TranslatorConfig.applyMigrations()` 做**自动迁移**，并把 `configVersion` +1；
 - 只补缺、只替换「仍是旧版默认值」的字段（用提示词标记判断，例如 `LEGACY_INCOMING_MARKERS`）；
@@ -103,7 +111,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 - 迁移逻辑要做成「少改」而不是「多改」：判据只认老版默认值的识别标记，**不要**用
   「里面没有某个新段落就当成老版」这类会误伤手写内容的规则（v1.1.3 修的就是这条）；
 - 配置**读不出来**时（JSON 语法错误、类型写错）必须先把原文件整份另存为
-  `hxtranslate.json.broken-<时间戳>`，再退回默认值，并在游戏内告知原因与备份文件名 ——
+  `server_chat_translator.json.broken-<时间戳>`，再退回默认值，并在游戏内告知原因与备份文件名 ——
   只写日志的话，玩家看到的只是「设置全没了」，而之后任意一次保存都会把原件覆盖掉；
 - 写盘一律走 `TranslatorConfig.writeAtomically()`（先写 `.tmp` 再改名），
   并且保存时要保留文件里模组「不认识的字段」；
@@ -145,7 +153,7 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   YAML 2 空格、无行尾空格、文件末尾空行）。编辑器支持 EditorConfig 时会自动生效。
 - **行尾**：`.gitattributes` 把文本统一成 LF、把 `*.jar` 等标记为二进制。
   Windows 上 clone 也不会产生「只改了行尾」的假 diff。
-- **不要提交生成物**：`build/`、`.gradle/`、`run/`、`logs/`、`config/hxtranslate.json`
+- **不要提交生成物**：`build/`、`.gradle/`、`run/`、`logs/`、`config/server_chat_translator.json`
   （含 API Key）都已在 `.gitignore` 里。跑完自检会在根目录生成 `logs/`，那是运行期产物。
 - **依赖**：保持零第三方依赖（只用 Fabric API + JDK 自带的 `HttpURLConnection`）。
   引入新依赖前先想清楚是否值得 —— 目前整包不到 70 KB。
@@ -155,6 +163,9 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   而它是 `Error`，`catch (RuntimeException)` 接不住，工作线程直接死、翻译回调不执行、
   消息静默消失（v2.1.0 修的就是这个，见 CHANGELOG）。自检的类路径已经剔除了游戏库，
   违反这条会在 `./gradlew build` 里立刻报错。
+- **日志前缀**：核心插件注入失败那行 `[server_chat_translator] …` 是文档让玩家去日志里搜的关键词，
+  所以它必须与 README / CONTRIBUTING / issue 模板**逐字一致**（§10.5）。自检里有门禁比对两边，
+  只改代码或只改文档都会被构建拦下。
 - **自检的类路径**：`build.gradle` 里 `sourceSets.verify` 刻意**只放行 gson 与 slf4j**，
   Minecraft / Fabric / LWJGL / authlib 全部剔除。所以 `tools/VerifyCore.java` 能碰到的
   只有纯逻辑类；若要在自检里用新库，必须在那个过滤器里显式加白名单，别把
@@ -203,8 +214,8 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 
 | 线 | 构建目录 | MC / 加载器 | 工具链 | 产物名 |
 | --- | --- | --- | --- | --- |
-| Fabric | 仓库根目录 | 26.3 / Fabric | Gradle 9 + Loom + JDK 25 | `hx-chat-translator-<版本>+mc26.3-fabric.jar` |
-| Forge | `forge-1.8.9/` | 1.8.9 / Forge 11.15.1.2318 | Gradle 2.14.1 + ForgeGradle 2.1 + **JDK 8** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` |
+| Fabric | 仓库根目录 | 26.3 / Fabric | Gradle 9 + Loom + JDK 25 | `Server-Chat-Translator_<版本>_mc26.3-fabric.jar` |
+| Forge | `forge-1.8.9/` | 1.8.9 / Forge 11.15.1.2318 | Gradle 2.14.1 + ForgeGradle 2.1 + **JDK 8** | `Server-Chat-Translator_<版本>_mc1.8.9-forge.jar` |
 
 ### 10.1 共享层是硬约束
 
@@ -241,9 +252,11 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   | Fabric | `v<版本>-mc<游戏版本>-fabric` | `v2.3.0-mc26.3-fabric` |
   | Forge | `v<版本>-mc<游戏版本>-forge` | `v2.3.0-mc1.8.9-forge` |
 
-  刻意与**产物文件名**对齐，只差一个字符（产物用 `+`、tag 用 `-`）：
-  产物是 `hx-chat-translator-2.3.0+mc26.3-fabric.jar`，tag 就是 `v2.3.0-mc26.3-fabric`。
-  这样「看到 jar 的名字就知道该找哪个 Release」，反过来也一样。
+  **tag 与产物名「语义对齐」即可，不要求逐字符对齐**（v3.0.0 起）：
+  两者都体现「版本 + 游戏版本 + 加载器」，但分段符不同 ——
+  tag 用全连字符（`v3.0.0-mc26.3-fabric`），产物用下划线分段（`Server-Chat-Translator_3.0.0_mc26.3-fabric.jar`）。
+  这样「看到 jar 的名字就知道该找哪个 Release」，反过来也一样，而不必为了一个字符去动摇 tag 规则
+  （两个 workflow 的 glob 都依赖它，收益接近零）。
   只写 `-fabric` / `-forge` 不够 —— 光看 tag 分不出是给哪个 Minecraft 版本的，
   而两条线将来各自都可能再支持别的游戏版本。
 - **历史遗留**：≤ v2.2.3 的 Release 用的是加后缀之前的旧名（`v2.2.3`、`v1.1.3` …），
@@ -285,3 +298,34 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   失败说明（那条路径执行得极早，碰不得日志框架）。
 - 1.8.9 的 `IChatComponent.getUnformattedText()` 会带出 `§` 代码（现代 `getString()` 不会），
   所以装配层先过一遍 `LangUtils.stripFormattingCodes`，保证两条线判定一致。
+
+### 10.5 名字的四层（v3.0.0 定下的规矩）
+
+模组有四个名字，各有各的用途与受众。**改名前先把这四层分开想**，否则很容易只改一半：
+
+| 层 | 值 | 出现在哪 | 能不能随便改 |
+| --- | --- | --- | --- |
+| **显示名** | `Server Chat Translator` | `fabric.mod.json` / `mcmod.info` 的 `name`、`@Mod(name=…)`、`status` 抬头、启动提示、`LOGGER.info` | 改了玩家看得见，**要同步文档**；`fabric.mod.json` / `mcmod.info` / 日志里必须保持**纯英文** |
+| **mod id** | `server_chat_translator`（下划线） | `fabric.mod.json` 的 `id`、`mcmod.info` 的 `modid`、`assets/<modid>/lang/`、按键翻译键 `key.<modid>.toggle` | **改了就与旧 jar 不兼容**（新旧会同时加载、聊天被翻两遍），必须让玩家先删旧 jar |
+| **配置文件名** | `server_chat_translator.json` | `TranslatorConfig.CONFIG_FILE_NAME`、`.gitignore`、README/RELEASING/SECURITY | 是**用户资产**（§5）；改名要么做迁移、要么明确不做并写进升级说明 |
+| **产物名** | `Server-Chat-Translator_<版本>_mc<游戏版本>-<加载器>.jar` | `build.gradle` 的 `archiveFileName`、README | 只影响下载与核对（§2、§10.3） |
+
+三条写下来的决定：
+
+1. **mod id 用下划线**（`server_chat_translator`）而不用连字符。Fabric 的 `MetadataVerifier`
+   正则其实允许连字符（`[a-z][a-z0-9-_]{1,63}`），但资源目录名还要过 1.8.9 的
+   `ResourceLocation`，**下划线是最安全的选择** —— 没必要为了好看去冒险。
+2. **Java 包名不改**（仍是 `com.isomeria.hxtranslate`）。包名是内部实现，改了要动每一个文件、
+   以及核心插件里的字符串常量（`HxHooks` 的全限定名），收益接近零、风险不小。
+   所以仓库里**允许同时看到** `hxtranslate`（包路径）与 `server_chat_translator`（mod id）——
+   这不是漏改，是刻意的。全局扫描时不要顺手把包路径也换掉。
+3. **模组名不走语言文件，也不做 i18n**。显示名是硬编码的，不在 `assets/*/lang/` 里；
+   共享层不许 import Minecraft（两个构建编译同一份，且自检类路径剔除了游戏库），
+   所以用不了原版的 `Component.translatable()`。要做本地化就得给共享层造一套 i18n 查找机制，
+   而收益只是「同一句话写两遍」。**所以中文客户端也显示英文名 `Server Chat Translator`，
+   这是有意的、不是漏做本地化。** 语言文件里只有按键名一条（`key.<modid>.toggle`）。
+
+> **日志前缀**：核心插件注入失败那行 `[server_chat_translator] …` 是玩家按文档去日志里搜的
+> 关键词，所以它**必须与 README / CONTRIBUTING / issue 模板里写的逐字一致**。
+> 自检里有一条门禁专门钉这件事（比对 `HxTransformer` 里的实际前缀与四份文档），
+> 改名时漏改一处就会被构建拦下。

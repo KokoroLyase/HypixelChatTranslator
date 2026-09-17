@@ -24,7 +24,7 @@ import org.lwjgl.input.Keyboard;
 import java.util.List;
 
 /**
- * Hypixel 聊天翻译的 MC 1.8.9 + Forge 入口（纯客户端）。
+ * Server Chat Translator的 MC 1.8.9 + Forge 入口（纯客户端）。
  *
  * <p>这里只做「装配」，与 Fabric 线的 {@code HxTranslateClient} 一一对应：
  * 注入日志出口、注入配置目录、造出翻译逻辑需要的几个实现、把事件挂上、把命令与按键接好。
@@ -44,13 +44,13 @@ import java.util.List;
  * 「客户端退出」回调也不会拦住 JVM 退出；1.8.9 也确实没有可用的客户端停止事件。
  */
 @Mod(modid = HxTranslateForge.MODID,
-        name = "Hypixel Chat Translator",
+        name = "Server Chat Translator",
         version = HxVersion.VERSION,
         clientSideOnly = true,
         acceptedMinecraftVersions = "[1.8.9]")
 public final class HxTranslateForge {
 
-    public static final String MODID = "hxtranslate";
+    public static final String MODID = "server_chat_translator";
 
     /** 默认按 F6 切换翻译开关，可在「按键设置 → 多人游戏」里改。 */
     private static final int DEFAULT_TOGGLE_KEY = Keyboard.KEY_F6;
@@ -106,7 +106,7 @@ public final class HxTranslateForge {
         // 本类自己也要挂到总线上：开关按键与启动提示都在这里
         MinecraftForge.EVENT_BUS.register(this);
 
-        toggleKey = new KeyBinding("key.hxtranslate.toggle", DEFAULT_TOGGLE_KEY,
+        toggleKey = new KeyBinding("key.server_chat_translator.toggle", DEFAULT_TOGGLE_KEY,
                 "key.categories.multiplayer");
         ClientRegistry.registerKeyBinding(toggleKey);
 
@@ -117,7 +117,7 @@ public final class HxTranslateForge {
             LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}",
                     TranslatorConfig.configPath());
         }
-        LOGGER.info("Hypixel 聊天翻译已加载 (MC 1.8.9 / Forge / DeepSeek {})", config.model);
+        LOGGER.info("Server Chat Translator已加载 (MC 1.8.9 / Forge / DeepSeek {})", config.model);
     }
 
     /** 开关按键。 */
@@ -146,16 +146,16 @@ public final class HxTranslateForge {
     }
 
     private void showStartupNotice() {
-        feedback.info("§8[§bhx§8] §7Hypixel 聊天翻译已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        feedback.info("§8[§bsct§8] §7Server Chat Translator已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
         // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了
         if (config.loadWarning() != null) {
             feedback.error(config.loadWarning());
         }
         if (!config.hasApiKey()) {
-            feedback.error("未配置 DeepSeek API Key！请执行 §f/hxtranslate key <你的Key> §c或编辑配置文件。");
+            feedback.error("未配置 DeepSeek API Key！请执行 §f/server_chat_translator key <你的Key> §c或编辑配置文件。");
             feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
-            feedback.hint("F6 开关翻译，/hxtranslate status 查看状态，/hxtranslate debug on 排错");
+            feedback.hint("F6 开关翻译，/server_chat_translator status 查看状态，/server_chat_translator debug on 排错");
         }
         reportGlossaryFindings();
     }

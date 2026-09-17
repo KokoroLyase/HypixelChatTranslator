@@ -14,6 +14,8 @@
 - [ ] 改过 `forge-1.8.9/.../asm/` 时，`verifyCoremod` 通过（`check` 会自动带上）
 - [ ] 按 `RELEASING.md §1` 的规则确定了版本号；需要发布时已更新 `gradle.properties`
 - [ ] 更新了 `CHANGELOG.md`（纯文档改动可不占版本号，见 `RELEASING.md §1`）
+- [ ] 改过 **mod id / 显示名 / 配置文件名 / 日志前缀** 的话，两条线的元数据与四份文档已同步
+      （自检有两条门禁盯着：`metadataSelfConsistency()` 与日志前缀一致性，见 `RELEASING.md` §8、§10.5）
 
 ## 关于「没有自动化覆盖」的部分
 
@@ -26,6 +28,10 @@
 - 核心插件的**游戏内**实际效果 —— 离线只能验字节码是否合法，跑不跑得通要进游戏试
   （打一句中文，看有没有一秒后以英文发出）
 - `config` 里的 `incomingSystemPrompt` / `outgoingSystemPrompt` —— 提示词的实际翻译效果需要真实 API Key
+- **单人闸门**（`isSingleplayer()` 的两处装配实现）—— 自检用的是假端口，所以
+  `Minecraft.hasSingleplayerServer()` / `Minecraft.isSingleplayer()` 这两处**只有方法级核对**：
+  请进一次**单人存档**确认默认不翻译、`/translator singleplayer on` 之后恢复，
+  再进一次**多人服**确认不受影响（「对局域网开放的存档」也应当照常翻译）
 - 换 `minecraft_version` 时 —— 请对照 `RELEASING.md §9` 的清单逐条确认
 
 <!-- 例：改了注册面 → 在游戏里启动一次，确认 F6 能开关、收到的英文会翻译 -->

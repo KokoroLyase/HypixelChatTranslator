@@ -1,15 +1,15 @@
 # 参与开发（CONTRIBUTING）
 
-这是一个**纯客户端**的 Minecraft 聊天翻译模组：把 Hypixel 的英文聊天译成中文，把你打的中文译成
-英文再发出去。欢迎 issue 与 PR，但本仓库对「什么算改完」有比较明确的要求 —— 请先花两分钟读完这一页，
+这是一个**纯客户端**的 Minecraft 聊天翻译模组：把**任何英文服务器**的聊天译成中文，把你打的中文译成
+英文再发出去（不限于 Hypixel）。欢迎 issue 与 PR，但本仓库对「什么算改完」有比较明确的要求 —— 请先花两分钟读完这一页，
 它只做「指路」，具体规则都在别的文档里（不重复一遍，免得两边说法不一致）。
 
-## 仓库里有两条线（v2.3.0 起）
+## 仓库里有两条线（v2.3.0 起，v3.0.0 起改了产物名与命令）
 
 | 线 | 构建目录 | MC / 加载器 | 工具链 | 产物 |
 | --- | --- | --- | --- | --- |
-| Fabric | 仓库根目录 | 26.3 / Fabric | JDK 25 + Gradle 9 + Loom | `...-<版本>+mc26.3-fabric.jar` |
-| Forge | `forge-1.8.9/` | 1.8.9 / Forge | **JDK 8** + Gradle 2.14.1 + ForgeGradle 2.1 | `...-<版本>+mc1.8.9-forge.jar` |
+| Fabric | 仓库根目录 | 26.3 / Fabric | JDK 25 + Gradle 9 + Loom | `Server-Chat-Translator_<版本>_mc26.3-fabric.jar` |
+| Forge | `forge-1.8.9/` | 1.8.9 / Forge | **JDK 8** + Gradle 2.14.1 + ForgeGradle 2.1 | `Server-Chat-Translator_<版本>_mc1.8.9-forge.jar` |
 
 两条线**编译同一份 `src/shared/java`**，只有装配层不同（Fabric 在 `src/main/java`，
 Forge 在 `forge-1.8.9/src/main/java`）。这意味着一条硬约束：**共享层只能用 Java 8 的语法与 API**。
@@ -18,12 +18,12 @@ Forge 在 `forge-1.8.9/src/main/java`）。这意味着一条硬约束：**共�
 ## 提 issue 之前
 
 - 先确认**用的是最新版**，并说清你玩的是哪条线（26.3 / Fabric 还是 1.8.9 / Forge），
-  以及模组是哪个版本（`/hxtranslate status` 里能看到）；
+  以及模组是哪个版本（`/translator status` 里能看到）；
 - 安装、配置、命令、以及一批常见症状都写在 [README](README.md) 里，尤其是 FAQ 那一节；
 - 报 bug 请用 [Bug 模板](.github/ISSUE_TEMPLATE/bug_report.yml)，它会问你要 `status` 与 `debug on`
   的输出 —— 那两样基本能直接定位到代码里的哪个分支；
 - **1.8.9 线是核心插件**：如果「打中文没被翻译」而其它功能正常，多半是字节码注入没生效，
-  日志里会有一行 `[hxtranslate] EntityPlayerSP 字节码注入失败…`，请把它一并贴上；
+  日志里会有一行 `[server_chat_translator] EntityPlayerSP 字节码注入失败…`，请把它一并贴上；
 - **不要把 API Key 贴进 issue**（配置文件里是明文），细节见 [SECURITY.md](.github/SECURITY.md)。
 
 ## 改代码时
@@ -64,8 +64,8 @@ cd forge-1.8.9
 JAVA_HOME=/path/to/jdk-8 ./gradlew clean build    # 构建 + 自检 + 核心插件验证
 ```
 
-产物分别在 `build/libs/hx-chat-translator-<版本>+mc26.3-fabric.jar`
-与 `forge-1.8.9/build/libs/hx-chat-translator-<版本>+mc1.8.9-forge.jar`。
+产物分别在 `build/libs/Server-Chat-Translator_<版本>_mc26.3-fabric.jar`
+与 `forge-1.8.9/build/libs/Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`。
 
 ## 许可
 

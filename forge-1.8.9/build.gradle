@@ -186,9 +186,9 @@ processResources {
 
 jar {
     // 文件名带上游戏版本与模组加载器，和 Fabric 线一个规矩：
-    // hx-chat-translator-2.3.0+mc1.8.9-forge.jar
+    // Server-Chat-Translator_3.0.0_mc1.8.9-forge.jar
     // 注意：Gradle 2.14 的属性叫 archiveName（archiveFileName 是 Gradle 5+ 才有的）
-    archiveName = "${archivesBaseName}-${modVersion}+mc${mcVersion}-${loaderTag}.jar"
+    archiveName = "${archivesBaseName}_${modVersion}_mc${mcVersion}-${loaderTag}.jar"
 
     // 核心插件声明：FMLCorePlugin 指向 IFMLLoadingPlugin 实现，
     // FMLCorePluginContainsFMLMod 表示「这个 jar 同时还是普通模组」（里面还有 @Mod 类）。
