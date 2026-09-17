@@ -885,9 +885,11 @@ public class VerifyCore {
             legacyJson.addProperty("incomingSystemPrompt",
                     "You translate Minecraft chat. Keep common gaming abbreviations meaningful.");
             JsonArray legacyIgnores = new JsonArray();
-            legacyIgnores.add("^\\+\\d+ .*(XP|Coins|Tokens)");
-            legacyIgnores.add("^(You|A player) (joined|left)");
-            legacyIgnores.add("^Sending you to");
+            // gson 2.2.4（1.8.9 自带的那版）没有 JsonArray.add(String) 重载，
+            // 必须显式包一层 JsonPrimitive —— 两条线跑同一份自检，所以统一这么写。
+            legacyIgnores.add(new com.google.gson.JsonPrimitive("^\\+\\d+ .*(XP|Coins|Tokens)"));
+            legacyIgnores.add(new com.google.gson.JsonPrimitive("^(You|A player) (joined|left)"));
+            legacyIgnores.add(new com.google.gson.JsonPrimitive("^Sending you to"));
             legacyJson.add("ignorePatterns", legacyIgnores);
             Path legacyFile = dir.resolve("hxtranslate.json");
             Files.write(legacyFile, legacyJson.toString().getBytes(StandardCharsets.UTF_8));

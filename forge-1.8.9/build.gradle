@@ -1,0 +1,203 @@
+buildscript {
+    repositories {
+        maven { name = "forge"; url = "https://maven.minecraftforge.net/" }
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'net.minecraftforge.gradle:ForgeGradle:2.1-SNAPSHOT'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle.forge'
+
+// ------------------------------------------------------------------
+// 双版本里的 1.8.9 + Forge 线。
+//
+// 它与仓库根目录的 Fabric 构建**编译同一份共享源码**（../src/shared/java），
+// 区别只在装配层：src/main/java 下是本线专属的入口、事件注册、聊天渲染、命令，
+// 外加一个 ASM 核心插件（1.8.9 没有 ClientChatEvent，拦发送只能靠字节码注入，见 asm/）。
+//
+// 这个构建必须用 JDK 8 + Gradle 2.14.1：Gradle 2.x 跑不了 Java 9+，
+// 而 ForgeGradle 2.1 跑不了 Gradle 3+。
+// ------------------------------------------------------------------
+
+// 模组版本号只有一个来源：仓库根目录的 gradle.properties。
+// 两条线共用同一个版本号是硬要求（v2.3.0 的 Fabric 版与 1.8.9 版同号）。
+def rootProps = new Properties()
+file('../gradle.properties').withInputStream { rootProps.load(it) }
+
+version = rootProps.getProperty('mod_version')
+group = rootProps.getProperty('maven_group')
+archivesBaseName = rootProps.getProperty('archives_base_name')
+
+def modVersion = project.version
+def mcVersion = project.minecraft_version
+def loaderTag = 'forge'
+
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
+
+sourceSets {
+    main {
+        java.srcDirs = ['src/main/java', '../src/shared/java']
+    }
+}
+
+// 版本号要出现在两个地方：mcmod.info（processResources 展开）和 @Mod 注解。
+// 注解要求编译期常量，所以这里生成一个小小的常量类，保证版本号仍然只有一个来源
+// （仓库根目录 gradle.properties 的 mod_version）。
+task generateVersionSource {
+    def outDir = file("$buildDir/generated/source/hxversion")
+    outputs.dir outDir
+    doLast {
+        def pkgDir = new File(outDir, "com/isomeria/hxtranslate/forge")
+        pkgDir.mkdirs()
+        new File(pkgDir, "HxVersion.java").withWriter("UTF-8") { w ->
+            w.println "package com.isomeria.hxtranslate.forge;"
+            w.println ""
+            w.println "/**"
+            w.println " * 由 build.gradle 生成，值来自仓库根目录 gradle.properties 的 mod_version。"
+            w.println " * 不要手改：两条线必须永远同号。"
+            w.println " */"
+            w.println "public final class HxVersion {"
+            w.println ""
+            w.println "    public static final String VERSION = \"${modVersion}\";"
+            w.println ""
+            w.println "    private HxVersion() {"
+            w.println "    }"
+            w.println "}"
+        }
+    }
+}
+
+sourceSets.main.java.srcDir "$buildDir/generated/source/hxversion"
+compileJava.dependsOn generateVersionSource
+
+// ------------------------------------------------------------------
+// 离线自检：与 Fabric 线跑**同一份** tools/VerifyCore.java。
+// 两条线编译同一份共享源码，所以这一套断言同时保护两个版本 ——
+// 在 1.8.9 这条线上它额外承担一个职责：用 JDK 8 编译共享层，
+// 任何 Java 9+ 的语法或 API 都会在这里直接编译失败（含糊的运行时错误提前到编译期）。
+//
+// 类路径刻意只放行 gson：Minecraft / Forge 一律不进自检，
+// 这样「共享层误引用游戏 API」会在自检里立刻炸出来（与 Fabric 线同一个门禁）。
+// ------------------------------------------------------------------
+sourceSets {
+    verify {
+        java {
+            srcDir '../tools'
+            // 只编译 VerifyCore：tools/ 下还有 VerifyCoremod.java（要 ASM），
+            // 不加这个过滤会把两个都拉进来，类路径就对不上了。
+            include 'VerifyCore.java'
+        }
+        // 自检的类路径**只放行 gson**：Minecraft / Forge 一律不进，
+        // 「共享层误引用游戏 API」才会在自检里立刻炸出来。
+        // 版本钉在 1.8.9 自带的 2.2.4，这样自检跑的就是这条线真实面对的 API 面。
+        compileClasspath = sourceSets.main.output + configurations.verifyCompile
+        runtimeClasspath = output + compileClasspath
+    }
+    // 核心插件验证的源集必须在 dependencies 之前声明：
+    // verifyCoremodCompile 这个配置是随源集一起创建的，声明晚了就用不了。
+    verifyCoremod {
+        java {
+            srcDir '../tools'
+            include 'VerifyCoremod.java'
+        }
+        compileClasspath = sourceSets.main.output + configurations.verifyCoremodCompile
+        runtimeClasspath = output + compileClasspath
+    }
+}
+
+task verifyCore(type: JavaExec, dependsOn: 'verifyClasses') {
+    group = 'verification'
+    description = '运行离线自检（与 Fabric 线同一份断言）'
+    // 自检要读仓库根目录的文件（README / gradle.properties / src/**），必须在根目录跑
+    workingDir = project.file('..')
+    classpath = sourceSets.verify.runtimeClasspath
+    main = 'VerifyCore'
+}
+
+check.dependsOn verifyCore
+
+minecraft {
+    version = project.forge_version
+    runDir = 'run'
+    mappings = project.mappings_version
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // ASM 在运行时由 FML 的启动类加载器提供（1.8.9 自带 asm-all 5.0.3），
+    // 所以只要编译期可见，**绝不能打进 jar**（打包会导致版本冲突）。
+    compileOnly 'org.ow2.asm:asm-all:5.0.3'
+
+    // 离线自检用：1.8.9 自带的 gson 版本（刻意不用更新的，免得掩盖兼容问题）
+    verifyCompile 'com.google.code.gson:gson:2.2.4'
+
+    // 核心插件验证用：只放 ASM 与 launchwrapper（IClassTransformer 的宿主），
+    // 同样**不放 Minecraft / Forge** —— 验证要能在脱离游戏环境时跑
+    verifyCoremodCompile 'org.ow2.asm:asm-all:5.0.3'
+    verifyCoremodCompile 'net.minecraft:launchwrapper:1.12'
+}
+
+// ------------------------------------------------------------------
+// 核心插件验证任务（源集在上面的 sourceSets 里）
+//
+// ASM 注入是这条线上唯一「不跑游戏就没法确认」的部分：这里用**真实的** deobf
+// EntityPlayerSP 跑一遍转换器，再交给**真 JVM 的校验器**（-Xverify:all）验字节码，
+// 并做三项反向验证（非目标类原样返回 / SRG 名命中 / 混淆名命中）。
+//
+// 挂在 check 上，所以 `gradle build` 会顺带跑完，失败即构建失败。
+// ------------------------------------------------------------------
+task verifyCoremod(type: JavaExec, dependsOn: 'verifyCoremodClasses') {
+    group = 'verification'
+    description = '离线验证 ASM 注入：真实 EntityPlayerSP + 真 JVM 字节码校验'
+    classpath = sourceSets.verifyCoremod.runtimeClasspath
+    main = 'VerifyCoremod'
+    // 强制全量字节码校验：注入出问题时这里会直接抛 VerifyError
+    jvmArgs = ['-Xverify:all']
+    doFirst {
+        def deobf = configurations.forgeGradleMc.files.find { it.name.startsWith('forgeBin-') }
+        if (deobf == null) {
+            // 找不到目标 jar 必须**响亮地失败**：静默跳过等于这道门禁不存在
+            throw new GradleException('找不到 deobf 的 forgeBin jar，核心插件验证无法进行')
+        }
+        args = [deobf.absolutePath, "$buildDir/coremod-verify"]
+    }
+}
+
+check.dependsOn verifyCoremod
+
+processResources {
+    inputs.property "version", modVersion
+    inputs.property "mcversion", mcVersion
+
+    from(sourceSets.main.resources.srcDirs) {
+        include 'mcmod.info'
+        expand 'version': modVersion, 'mcversion': mcVersion
+    }
+    from(sourceSets.main.resources.srcDirs) {
+        exclude 'mcmod.info'
+    }
+}
+
+jar {
+    // 文件名带上游戏版本与模组加载器，和 Fabric 线一个规矩：
+    // hx-chat-translator-2.3.0+mc1.8.9-forge.jar
+    // 注意：Gradle 2.14 的属性叫 archiveName（archiveFileName 是 Gradle 5+ 才有的）
+    archiveName = "${archivesBaseName}-${modVersion}+mc${mcVersion}-${loaderTag}.jar"
+
+    // 核心插件声明：FMLCorePlugin 指向 IFMLLoadingPlugin 实现，
+    // FMLCorePluginContainsFMLMod 表示「这个 jar 同时还是普通模组」（里面还有 @Mod 类）。
+    // 少了第二行，FML 会把整个 jar 只当核心插件、不加载 @Mod，模组等于没装上。
+    manifest {
+        attributes(
+                'FMLCorePlugin': 'com.isomeria.hxtranslate.forge.asm.HxLoadingPlugin',
+                'FMLCorePluginContainsFMLMod': 'true'
+        )
+    }
+}
+
