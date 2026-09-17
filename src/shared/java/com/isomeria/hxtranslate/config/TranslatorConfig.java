@@ -1372,6 +1372,22 @@ public final class TranslatorConfig {
         this.outgoingSystemPrompt = o.outgoingSystemPrompt;
     }
 
+    /**
+     * 接口地址是否**不是** HTTPS（即 API Key 会以明文随请求发出去）。
+     *
+     * <p>存在的理由：Key 是玩家的真金白银，而 {@code apiBaseUrl} 允许填任意中转站。
+     * 填成 {@code http://…} 时，请求头里的 {@code Authorization: Bearer <Key>} 是明文，
+     * 同一网段（公共 WiFi、公司网络、房东的路由器）上任何能抓包的人都能拿到它。
+     * 代码里**不阻止**这种配置（本地代理、自建中转站确实有用），但要主动告诉玩家。
+     *
+     * <p>判据刻意放宽：只有明确以 {@code http://} 开头才算不安全。
+     * 没写 scheme（例如 {@code 127.0.0.1:8080}）无法判断，按「不警告」处理 ——
+     * 宁可漏报一次，也不要对着一堆正常配置报假警（那种警告很快就会被玩家无视）。
+     */
+    public boolean hasInsecureBaseUrl() {
+        return apiBaseUrl != null && apiBaseUrl.trim().toLowerCase(Locale.ROOT).startsWith("http://");
+    }
+
     public boolean hasApiKey() {
         return apiKey != null && !LangUtils.isBlank(apiKey);
     }

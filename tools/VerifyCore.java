@@ -3257,6 +3257,66 @@ public class VerifyCore {
                         && contains(forgeEntry, "Server Chat Translator 已就绪"));
         check("两个入口都不再有「Translator已」这种粘连",
                 !contains(fabricEntry, "Translator已") && !contains(forgeEntry, "Translator已"));
+
+        // ---- 3) 聊天栏提示前缀必须只有一个来源（v3.0.1 审计）----
+        //
+        // 更名时只把装配层的「启动提示」换成了新品牌，而 GameFeedback / ForgeFeedback 里
+        // hint/error/success 用的仍是旧品牌 [hx] —— 于是启动那一行显示新名字、
+        // 此后每条提示都显示旧名字。已把前缀收成 ChatTranslator.CHAT_PREFIX 单一来源。
+        //
+        // 判据刻意**只在方法块内搜字符串字面量**：整文件 grep 会被解释这段历史的注释判红
+        // （上一轮写 LICENSE 门禁时就踩过这个坑），而块内写死的 `"[hx] ..."` 才是真回归。
+        check("提示前缀常量存在且非空（" + ChatTranslator.CHAT_PREFIX + "）",
+                ChatTranslator.CHAT_PREFIX != null && !ChatTranslator.CHAT_PREFIX.isEmpty());
+        String[] feedbackFiles = {
+                "src/main/java/com/isomeria/hxtranslate/chat/GameFeedback.java",
+                "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/ForgeFeedback.java"};
+        for (String ff : feedbackFiles) {
+            String src = readRepoFile(ff);
+            boolean usesConstant = false;
+            boolean hardcodedPrefix = false;
+            for (String method : new String[]{"hint", "error", "success"}) {
+                String block = blockOf(src, method + "(String text)");
+                if (block == null) {
+                    continue;
+                }
+                if (block.contains("ChatTranslator.CHAT_PREFIX")) {
+                    usesConstant = true;
+                }
+                // 块内还自己拼一个以方括号开头的字面量 = 又硬编码了一份前缀
+                if (block.contains("\"§8[")) {
+                    hardcodedPrefix = true;
+                }
+            }
+            check(ff + " 的提示前缀走 ChatTranslator.CHAT_PREFIX（不再自己拼）", usesConstant);
+            check(ff + " 的 hint/error/success 里没有自己硬编码的方括号前缀", !hardcodedPrefix);
+        }
+
+        // ---- 4) 非 HTTPS 的接口地址要能被识别出来（v3.0.1 审计）----
+        //
+        // 背景：apiBaseUrl 允许填任意中转站，填成 http:// 时请求头里的
+        // `Authorization: Bearer <Key>` 是明文，同一网络里的人抓包就能拿到玩家的 Key。
+        // 代码不阻止这种配置（本地代理、自建中转站确实有用），但必须在启动时说清楚。
+        TranslatorConfig secure = new TranslatorConfig();
+        check("默认地址是 https，不触发警告", !secure.hasInsecureBaseUrl());
+        TranslatorConfig plain = new TranslatorConfig();
+        plain.apiBaseUrl = "http://127.0.0.1:8080";
+        check("http:// 地址被识别为不安全（会警告）", plain.hasInsecureBaseUrl());
+        TranslatorConfig upper = new TranslatorConfig();
+        upper.apiBaseUrl = "HTTP://example.com";
+        check("大写 HTTP:// 同样被识别（大小写不敏感）", upper.hasInsecureBaseUrl());
+        TranslatorConfig noScheme = new TranslatorConfig();
+        noScheme.apiBaseUrl = "127.0.0.1:8080";
+        check("没写 scheme 的不误报（无法判断，宁可漏报不报假警）", !noScheme.hasInsecureBaseUrl());
+        TranslatorConfig https = new TranslatorConfig();
+        https.apiBaseUrl = "https://relay.example.com/v1";
+        check("https 中转站不误报", !https.hasInsecureBaseUrl());
+        // 真代码里必须真的用到这个判定：否则它只是个没人调用的死方法
+        String entry = readRepoFile("src/main/java/com/isomeria/hxtranslate/HxTranslateClient.java");
+        String entryForge = readRepoFile(
+                "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/HxTranslateForge.java");
+        check("两条线的启动提示都会检查明文接口地址",
+                contains(entry, "hasInsecureBaseUrl()") && contains(entryForge, "hasInsecureBaseUrl()"));
     }
 
     /**

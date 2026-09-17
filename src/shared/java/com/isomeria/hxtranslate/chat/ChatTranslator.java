@@ -56,9 +56,19 @@ public final class ChatTranslator {
      */
     private static final int MAX_REGEX_INPUT_CHARS = 1024;
 
+    /**
+     * 聊天栏提示的行首品牌前缀（{@code §8[§bsct§8]}）。
+     *
+     * <p>做成常量是因为它曾经**在两个类里各写了一份**：更名时只改了装配层的「启动提示」，
+     * 而 {@code GameFeedback}/{@code ForgeFeedback} 里 hint/error/success 用的还是旧品牌 {@code [hx]}，
+     * 于是启动那一行显示新名字、此后的每条提示都显示旧名字（v3.0.1 审计发现）。
+     * 现在只有一个来源，两线共用。
+     */
+    public static final String CHAT_PREFIX = "§8[§bsct§8]";
+
     /** 「没配 Key」的统一提示。 */
     private static final String NO_KEY_HINT =
-            "未配置 DeepSeek API Key（用 §f/translator key <你的Key>§c 配置）";
+            CHAT_PREFIX + " §c未配置 DeepSeek API Key（用 §f/translator key <你的Key>§c 配置）";
     /** 聊天方向多给一条退路：干脆关掉发送翻译。 */
     private static final String NO_KEY_HINT_WITH_OFF =
             NO_KEY_HINT + "，或 §f/translator outgoing off§c 关掉发送翻译";

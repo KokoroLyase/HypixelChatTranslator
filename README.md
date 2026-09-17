@@ -168,7 +168,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `apiKey` | `""` | DeepSeek API Key |
-| `apiBaseUrl` | `https://api.deepseek.com` | 接口地址，用中转站时改这里 |
+| `apiBaseUrl` | `https://api.deepseek.com` | 接口地址，用中转站时改这里。**请用 `https://`**：填 `http://` 时你的 API Key 会以明文发出去，同一网络里的人抓包就能拿到（模组会在启动时警告一次，但不会阻止你这样配——本地代理确实需要它） |
 | `model` | `deepseek-flash` | 模型。**2026-09 起 DeepSeek 只提供 `deepseek-flash` 与 `deepseek-v4-pro`**，旧的 `deepseek-chat` 已下线（升级时会自动改过来） |
 | `enableThinking` | `false` | 是否开启思考模式。新模型**默认开启**，聊天翻译既慢又贵，所以默认显式关闭 |
 | `temperature` | `0.7` | 采样温度；翻译要稳定，别调太高（思考模式下该参数不生效） |

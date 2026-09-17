@@ -1,5 +1,6 @@
 package com.isomeria.hxtranslate.chat;
 
+import com.isomeria.hxtranslate.chat.ChatTranslator;
 import com.isomeria.hxtranslate.util.LangUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
@@ -24,17 +25,17 @@ public final class GameFeedback implements FeedbackPort {
 
     @Override
     public void hint(String text) {
-        send(Component.literal("§8[hx] §7" + clean(text)));
+        send(Component.literal(ChatTranslator.CHAT_PREFIX + " §7" + clean(text)));
     }
 
     @Override
     public void error(String text) {
-        send(Component.literal("§8[hx] §c" + clean(text)));
+        send(Component.literal(ChatTranslator.CHAT_PREFIX + " §c" + clean(text)));
     }
 
     @Override
     public void success(String text) {
-        send(Component.literal("§8[hx] §a" + clean(text)));
+        send(Component.literal(ChatTranslator.CHAT_PREFIX + " §a" + clean(text)));
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.isomeria.hxtranslate.forge;
 
+import com.isomeria.hxtranslate.chat.ChatTranslator;
 import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.util.LangUtils;
 import net.minecraft.client.Minecraft;
@@ -34,17 +35,17 @@ public final class ForgeFeedback implements FeedbackPort {
 
     @Override
     public void hint(String text) {
-        send(new ChatComponentText("§8[hx] §7" + clean(text)));
+        send(new ChatComponentText(ChatTranslator.CHAT_PREFIX + " §7" + clean(text)));
     }
 
     @Override
     public void error(String text) {
-        send(new ChatComponentText("§8[hx] §c" + clean(text)));
+        send(new ChatComponentText(ChatTranslator.CHAT_PREFIX + " §c" + clean(text)));
     }
 
     @Override
     public void success(String text) {
-        send(new ChatComponentText("§8[hx] §a" + clean(text)));
+        send(new ChatComponentText(ChatTranslator.CHAT_PREFIX + " §a" + clean(text)));
     }
 
     @Override

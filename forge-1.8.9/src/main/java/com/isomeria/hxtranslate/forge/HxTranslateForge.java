@@ -146,7 +146,7 @@ public final class HxTranslateForge {
     }
 
     private void showStartupNotice() {
-        feedback.info("§8[§bsct§8] §7Server Chat Translator 已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        feedback.info(com.isomeria.hxtranslate.chat.ChatTranslator.CHAT_PREFIX + " §7Server Chat Translator 已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
         // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了
         if (config.loadWarning() != null) {
             feedback.error(config.loadWarning());
@@ -156,6 +156,12 @@ public final class HxTranslateForge {
             feedback.hint("配置文件: " + TranslatorConfig.configPath());
         } else {
             feedback.hint("F6 开关翻译，/translator status 查看状态，/translator debug on 排错");
+            if (config.hasInsecureBaseUrl()) {
+                // 只在真的会泄露时才说（见 hasInsecureBaseUrl 的注释）；不禁用这种配置，
+                // 因为本地代理/自建中转站确实有用 —— 玩家有权知道风险后自己决定。
+                feedback.error("apiBaseUrl 是 http://（非加密），你的 API Key 会以明文发出去，"
+                        + "同一网络里的人可能抓到它。建议改成 https:// 地址。");
+            }
         }
         reportGlossaryFindings();
     }
