@@ -117,7 +117,7 @@ public final class HxTranslateForge {
             LOGGER.warn("尚未配置 DeepSeek API Key，翻译功能不可用。配置文件: {}",
                     TranslatorConfig.configPath());
         }
-        LOGGER.info("Server Chat Translator已加载 (MC 1.8.9 / Forge / DeepSeek {})", config.model);
+        LOGGER.info("Server Chat Translator 已加载 (MC 1.8.9 / Forge / DeepSeek {})", config.model);
     }
 
     /** 开关按键。 */
@@ -146,7 +146,7 @@ public final class HxTranslateForge {
     }
 
     private void showStartupNotice() {
-        feedback.info("§8[§bsct§8] §7Server Chat Translator已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
+        feedback.info("§8[§bsct§8] §7Server Chat Translator 已就绪 §8(" + (config.enabled ? "§a开" : "§c关") + "§8)");
         // 配置读不出来时必须说清楚：否则玩家看到「未配置 API Key」会以为模组坏了
         if (config.loadWarning() != null) {
             feedback.error(config.loadWarning());

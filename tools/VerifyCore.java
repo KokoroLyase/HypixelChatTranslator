@@ -77,6 +77,7 @@ public class VerifyCore {
         v214AuditFixes();
         v230GlossaryAudit();
         v300SingleplayerGate();
+        v300AuditFixes();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -642,6 +643,30 @@ public class VerifyCore {
         checkEq("清洗不可信文本：其余控制字符丢弃", "ab",
                 LangUtils.sanitizeOneLine("a\u0000\u0007b"));
         checkEq("清洗不可信文本：null 安全", "", LangUtils.sanitizeOneLine(null));
+
+        // 1b) 不可见 / 双向格式字符（v3.0.0 洁净度审计补）
+        //
+        // 旧实现只挡 C0 控制字符，这些「合法但看不见」的字符能原样进聊天栏。
+        // 其中 U+202E（RLO）会把整行剩余部分的显示顺序反过来 —— 接口返回的文本
+        // （译文 / 模型名 / 错误正文）来自可能是第三方中转站的不可信来源，必须挡掉。
+        checkEq("清洗不可信文本：RTL override（U+202E，能重排整行）被丢掉",
+                "hello world", LangUtils.sanitizeOneLine("hello \u202Eworld"));
+        checkEq("清洗不可信文本：双向标记 LRM/RLM 被丢掉",
+                "ab", LangUtils.sanitizeOneLine("a\u200E\u200Fb"));
+        checkEq("清洗不可信文本：双向隔离符 U+2066-2069 被丢掉",
+                "abc", LangUtils.sanitizeOneLine("a\u2066b\u2069c"));
+        checkEq("清洗不可信文本：零宽空格被丢掉",
+                "hello", LangUtils.sanitizeOneLine("he\u200Bllo"));
+        checkEq("清洗不可信文本：BOM 被丢掉", "hello", LangUtils.sanitizeOneLine("\uFEFFhello"));
+        checkEq("清洗不可信文本：软连字符被丢掉", "hello", LangUtils.sanitizeOneLine("he\u00ADllo"));
+        checkEq("清洗不可信文本：私用区字符被丢掉", "hello", LangUtils.sanitizeOneLine("he\uE000llo"));
+        // 反向：这些**不能**误伤
+        checkEq("清洗不可信文本：零宽连字 U+200D 必须保留（emoji 组合需要）",
+                "👨\u200D👩", LangUtils.sanitizeOneLine("👨\u200D👩"));
+        checkEq("清洗不可信文本：普通文本一字不动", "你好 hello 🎉",
+                LangUtils.sanitizeOneLine("你好 hello 🎉"));
+        checkEq("清洗不可信文本：全角空格/不换行空格不当作控制字符",
+                "a\u3000b", LangUtils.sanitizeOneLine("a\u3000b"));
 
         // 2) 截断不能把 emoji 的代理对劈成两半（孤立代理会变乱码，还可能被服务器拒收）
         check("代理对截断：不产生孤立代理项",
@@ -3140,6 +3165,98 @@ public class VerifyCore {
 
         // ---- 9) configVersion 8 -> 9：文件名搬迁与字段版本是两件事 ----
         versionNineMigration();
+    }
+
+    /**
+     * v3.0.0 洁净度审计：对模组本身的深度审计所修的问题。
+     *
+     * <p>三件事，都是「构建全绿、820 项自检也全绿」时仍然存在的问题：
+     * <ol>
+     *   <li><b>汉字判定漏了 1512 个码位</b> —— {@code containsHan} 是「绝不把中文发到英文服」的
+     *       最后一道闸，漏一个区间就等于给汉字留了一条通道；同时 {@code hanRatio} 少算会让
+     *       「收到的中文消息」占比不足阈值而被送去翻译（白花钱 + 贴一条中译中的废话）。</li>
+     *   <li><b>不可见/双向格式字符没被清洗</b> —— 见 {@code v222InputHygiene} 里的那一组。</li>
+     *   <li><b>更名时中英之间的空格被吃掉</b>（{@code Translator已加载}）。</li>
+     * </ol>
+     *
+     * <p>反向验证：把 {@code isHan} 的区间还原成旧版本（去掉部首/康熙/兼容补充/扩展 I/〇），
+     * 下面「汉字覆盖」那几条会立刻变红 —— 这是它们真的在保护那道闸的证据。
+     */
+    private static void v300AuditFixes() {
+        System.out.println("== v3.0.0 洁净度审计：模组本身的问题 ==");
+
+        // ---- 1) 汉字判定必须覆盖 Unicode 里所有 Script=Han 的区间 ----
+        //
+        // 判据是**穷举对照 JDK 自带的 Unicode 表**，而不是抽查几个样本：
+        // 抽查只能证明「我想到的那几个字认得」，而这道闸要保证的是「没有任何汉字能穿过去」。
+        // 穷举还顺带守住未来：JDK 升级带来新的 Script=Han 码位时，这条会自己变红，
+        // 提醒把新区间补进 isHan（旧实现漏了 1512 个：部首补充、康熙部首、
+        // 兼容表意文字补充、扩展 I、〇 等）。
+        int hanTotal = 0;
+        int hanMissing = 0;
+        StringBuilder hanMissingSample = new StringBuilder();
+        for (int cp = 0; cp <= 0x10FFFF; cp++) {
+            if (!Character.isValidCodePoint(cp)
+                    || Character.UnicodeScript.of(cp) != Character.UnicodeScript.HAN) {
+                continue;
+            }
+            hanTotal++;
+            if (LangUtils.isHan(cp)) {
+                continue;
+            }
+            hanMissing++;
+            if (hanMissing <= 8) {
+                hanMissingSample.append(String.format("U+%04X ", cp));
+            }
+        }
+        check("汉字判定覆盖全部 Script=Han 码位（共 " + hanTotal + " 个，漏掉 " + hanMissing
+                        + (hanMissing == 0 ? "" : "：" + hanMissingSample) + "）",
+                hanMissing == 0);
+        // 穷举本身要有意义：真的扫到了几万个码位（防止 UnicodeScript 在某环境下返回空而恒绿）
+        check("穷举判据确实扫到了 CJK 基本区（共 " + hanTotal + " 个 Script=Han 码位）",
+                hanTotal > 40000);
+
+        // 反向：这些**不是**汉字，不能被算进去（否则中文标点会被当成汉字，占比判定失真）
+        check("中文标点不算汉字（。！？，）",
+                !LangUtils.isHan('。') && !LangUtils.isHan('！') && !LangUtils.isHan('？')
+                        && !LangUtils.isHan('，') && !LangUtils.isHan('、'));
+        check("ASCII 与数字不算汉字", !LangUtils.isHan('a') && !LangUtils.isHan('1') && !LangUtils.isHan(' '));
+
+        // 实际影响 1：漏掉的字必须能被**计数**数出来。
+        //
+        // 判据要写对：{@code hanRatio} 的分母是「汉字 + 拉丁字母」，所以「〇」这种
+        // 既不算汉字也不算拉丁的字符会被**直接忽略** —— 只测 ratio 是测不出漏算的
+        // （"〇一二三四五六七八九" 在旧实现下照样是 1.0，本用例第一版就是这么写错的，
+        //   反向验证时它没有变红，才发现判据本身没有保护任何东西）。
+        // 真正能证明漏算的是 countHan 本身：2 个汉字 + 〇 + 2 个汉字，正确计数是 5。
+        checkEq("含 〇 的字符串汉字计数正确（旧实现漏算 〇）",
+                5, LangUtils.countHan("二〇二六年"));
+        checkEq("单独的 〇 也认作汉字（旧实现 countHan=0）", 1, LangUtils.countHan("〇"));
+        // 实际影响 2：漏掉的字必须能被「发送方向不许有汉字」的闸门拦下
+        check("发送方向闸门认得出 〇（旧实现会把它放行到英文服）", LangUtils.containsHan("〇"));
+        check("发送方向闸门认得出扩展 I 的汉字（旧实现会把它放行到英文服）",
+                LangUtils.containsHan("𮯰"));
+        check("发送方向闸门认得出兼容表意文字补充的汉字",
+                LangUtils.containsHan(new String(Character.toChars(0x2F800))));
+        check("发送方向闸门认得出康熙部首（玩家会用它打偏旁）",
+                LangUtils.containsHan("⼀"));
+
+        // ---- 2) 更名时被吃掉的中英空格 ----
+        //
+        // 判据是**读两个入口类的源文件**，而不是在这里重新拼一遍字符串再自己跟自己比
+        // （那样写成什么样都会通过，等于没有门禁）。这两行文案分别进日志与聊天栏，
+        // `Translator已加载` 这种粘连是更名时全局替换的产物（主聊天栏那句当时有空格、日志那句没有）。
+        String fabricEntry = readRepoFile("src/main/java/com/isomeria/hxtranslate/HxTranslateClient.java");
+        String forgeEntry = readRepoFile(
+                "forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/HxTranslateForge.java");
+        check("Fabric 入口文案：显示名与中文之间有空格",
+                contains(fabricEntry, "Server Chat Translator 已加载")
+                        && contains(fabricEntry, "Server Chat Translator 已就绪"));
+        check("Forge 入口文案：显示名与中文之间有空格",
+                contains(forgeEntry, "Server Chat Translator 已加载")
+                        && contains(forgeEntry, "Server Chat Translator 已就绪"));
+        check("两个入口都不再有「Translator已」这种粘连",
+                !contains(fabricEntry, "Translator已") && !contains(forgeEntry, "Translator已"));
     }
 
     /**

@@ -75,14 +75,44 @@ public final class LangUtils {
         return false;
     }
 
-    /** 单个码位是否为汉字（只算表意文字，不算中文标点）。 */
+    /**
+     * 单个码位是否为汉字（只算表意文字，不算中文标点）。
+     *
+     * <p><b>范围必须覆盖 Unicode 里所有 Script=Han 的码位</b>（v3.0.0 洁净度审计补齐）。
+     * 原因不是「更好看」，而是 {@link #containsHan} 是「绝不把中文发到英文服」的**最后一道闸**：
+     * 漏掉任何一个汉字区间，模型回一个落在缺口里的字就能带着汉字穿过闸门发到英文服。
+     * 另外 {@link #hanRatio} 的汉字计数少算，会让「收到的中文消息」占比不足阈值而被送去翻译
+     * （白花钱、还往聊天栏贴一条中译中的废话）。
+     *
+     * <p>补齐的做法是拿 JDK 自带的 {@code Character.UnicodeScript} 逐码位对照出来的：
+     * 旧实现漏了 1512 个 Script=Han 的码位，主要是
+     * {@code U+2E80-2EF3}（部首补充）、{@code U+2F00-2FD5}（康熙部首）、
+     * {@code U+2F800-2FA1D}（兼容表意文字补充）、{@code U+2EBF0-2EE5D}（扩展 I，Unicode 15.1 新增）、
+     * 以及 {@code 〇}(U+3007) 这类零散的表意符号。
+     *
+     * <p>刻意**不**把这些区间里的非表意码位算进来（例如 {@code 〆} U+3006、
+     * {@code 〇} 之外的 U+3008 起的中文标点）：本方法只回答「是不是汉字」，
+     * 标点由 {@link #isCjkPunctuation} 单独判定。
+     */
     public static boolean isHan(int cp) {
         return (cp >= 0x4E00 && cp <= 0x9FFF)      // CJK 统一表意文字
                 || (cp >= 0x3400 && cp <= 0x4DBF)  // 扩展 A
                 || (cp >= 0xF900 && cp <= 0xFAFF)  // 兼容表意文字
                 || (cp >= 0x20000 && cp <= 0x2A6DF)// 扩展 B
                 || (cp >= 0x2A700 && cp <= 0x2EBEF)// 扩展 C-F
-                || (cp >= 0x30000 && cp <= 0x323AF);// 扩展 G-H
+                || (cp >= 0x2EBF0 && cp <= 0x2EE5D)// 扩展 I（Unicode 15.1 新增，旧实现漏了）
+                || (cp >= 0x30000 && cp <= 0x323AF)// 扩展 G-H
+                || (cp >= 0x2E80 && cp <= 0x2EF3)  // CJK 部首补充（U+2E9A 未分配，一起包含无害）
+                || (cp >= 0x2F00 && cp <= 0x2FD5)  // 康熙部首
+                || (cp >= 0x2F800 && cp <= 0x2FA1D)// 兼容表意文字补充（旧实现漏了 542 个）
+                || (cp >= 0x3021 && cp <= 0x3029)  // 苏州码子 〡-〩（Script=Han）
+                || (cp >= 0x3038 && cp <= 0x303B)  // 〸-〻 合体字
+                || cp == 0x3005                     // 々 迭代符号
+                || cp == 0x3007                     // 〇 表意数字零（中文里真的会用）
+                || cp == 0x16FE2                    // 古汉字钩号
+                || cp == 0x16FE3                    // 古汉字迭代号
+                || cp == 0x16FF0                    // 越南喃字迭代号（Script=Han）
+                || cp == 0x16FF1;                   // 同上
     }
 
     /** 统计 ASCII 拉丁字母数量，用来判断“这看起来像英文”。 */
@@ -543,6 +573,20 @@ public final class LangUtils {
             if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
                 pendingSpace = true;
             } else if (c >= 0x20 && c != 0x7F) {
+                // 不可见 / 双向格式字符必须丢掉（v3.0.0 洁净度审计补）。
+                //
+                // 这里处理的是**接口返回的文本**（译文、模型名、错误正文），来源可能是第三方中转站，
+                // 对模组是不可信输入。旧实现只挡了 C0 控制字符，而下面这些都是「合法」字符、
+                // 能原样进聊天栏 —— 其中 U+202E 会把**整行剩余部分的显示顺序反过来**：
+                // 传入 "hello \u202Eworld" 时玩家看到的是被重排过的文本，可以用作视觉伪装。
+                // 零宽字符则能在看起来正常的句子里藏东西（复制出来才发现不一样）。
+                //
+                // 刻意**保留** U+200C/U+200D（零宽不连字/连字）：它们是 emoji 组合
+                // （👨‍👩‍👧）和部分文字连写所必需的，删掉会把玩家的 emoji 弄坏，
+                // 而它们本身不能重排文本、也不是可滥用的伪装手段。
+                if (isInvisibleFormat(c)) {
+                    continue;
+                }
                 if (pendingSpace && builder.length() > 0) {
                     builder.append(' ');
                 }
@@ -552,6 +596,21 @@ public final class LangUtils {
             // 其余控制字符直接丢弃
         }
         return builder.toString();
+    }
+
+    /**
+     * 是否是「看不见、但能影响显示」的格式字符 —— 进聊天栏前一律丢弃。
+     *
+     * <p>保留 {@code U+200C} / {@code U+200D}（emoji 组合需要），理由见 {@link #sanitizeOneLine}。
+     */
+    private static boolean isInvisibleFormat(char c) {
+        return c == '\u00AD'                       // SOFT HYPHEN：看不见，复制出来却多一个字符
+                || c == '\u200B'                   // ZERO WIDTH SPACE
+                || c == '\u200E' || c == '\u200F'  // LRM / RLM：双向标记
+                || (c >= '\u202A' && c <= '\u202E')// LRE / RLE / PDF / LRO / RLO（能重排整行）
+                || (c >= '\u2066' && c <= '\u2069')// LRI / RLI / FSI / PDI：双向隔离
+                || c == '\uFEFF'                   // BOM / ZERO WIDTH NO-BREAK SPACE
+                || (c >= '\uE000' && c <= '\uF8FF');// 私用区：聊天字体没有字形，只会显示成方块
     }
 
     // ------------------------------------------------------------------
