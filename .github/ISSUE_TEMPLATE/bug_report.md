@@ -18,13 +18,20 @@ labels: bug
 
 ## 环境
 
-- 模组版本（照抄文件名里的版本号，如 `2.1.2`）：
-- Minecraft / Fabric Loader / Fabric API 版本：
+- 我用的是哪条线（MC 26.3 + Fabric / MC 1.8.9 + Forge）：
+- 模组版本（照抄文件名里的版本号，如 `2.3.0`）：
+- 游戏与加载器版本（26.3 写 Fabric Loader + Fabric API；1.8.9 写 Forge 版本）：
 - 客户端语言（中文 / 英文）：
 - 服务器与场景（如 Hypixel Bed Wars 单排）：
 
-> 模组版本与 MC 版本必须对得上：**v2.x 只支持 MC 26.3**，26.2 请用
+> 模组版本与 MC 版本必须对得上：**v2.x 支持 MC 26.3 与 1.8.9 两条线**，26.2 请用
 > [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)。
+> 下载地址见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)
+> （Release 名带 `-mc<游戏版本>-<加载器>`，与 jar 文件名一一对应）。
+>
+> **1.8.9 的玩家请注意**：那一条线是核心插件（coremod）。如果「打中文没被翻译」
+> 而其它功能（收消息翻译、F6、命令）都正常，多半是字节码注入没生效 ——
+> `logs/latest.log` 里会有 `[hxtranslate] EntityPlayerSP 字节码注入失败…`，请务必贴上那一行。
 
 ## 现象
 

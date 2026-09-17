@@ -1,6 +1,7 @@
 # Hypixel 聊天翻译 (hx-chat-translator)
 
-面向 **Minecraft Java 版 26.3 + Fabric** 的纯客户端聊天翻译模组。调用 **DeepSeek API** 做 AI 翻译：
+面向 **Minecraft Java 版**的纯客户端聊天翻译模组，调用 **DeepSeek API** 做 AI 翻译。
+同时支持 **26.3 + Fabric** 与 **1.8.9 + Forge** 两条线（功能一致、配置通用，按你的游戏版本选一个装）：
 
 - **别人打的英文 → 自动翻成中文**，作为一条附带消息显示在原消息下面；
 - **你打的中文 → 自动翻成英文再发出去**，服务器里的外国人看到的是正常英文；
@@ -18,6 +19,23 @@
 
 ## 1. 环境要求
 
+两条线的**功能、配置格式、配置文件位置、命令完全一致**（编译的是同一份核心逻辑），
+按你玩的版本选一个装即可：
+
+| 你玩的版本 | 下载哪个 | 需要什么 | Release 名 |
+| --- | --- | --- | --- |
+| Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric Loader ≥ 0.19.5 + Fabric API 0.160.5+26.3 + Java 25 | `v<版本>-mc26.3-fabric` |
+| Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge 11.15.1.2318 + Java 8 | `v<版本>-mc1.8.9-forge` |
+
+> 两条线**共用同一个配置文件**（`.minecraft/config/hxtranslate.json`，格式一字不差），
+> 所以 1.8.9 的配置可以直接拿去 26.3 用，反之亦然。
+>
+> Release 名刻意与产物文件名对齐（只差一个字符：产物用 `+`、Release 名用 `-`），
+> 所以「看到 jar 的名字就知道该找哪个 Release」。这套命名是**从 v2.3.0 起**的规矩；
+> 更早的版本（`v2.2.3`、`v1.1.3` … 全是 Fabric 版）保留原来的名字，不重命名。
+
+### 1.1 26.3 + Fabric 线
+
 | 项目 | 版本 |
 | --- | --- |
 | Minecraft | **26.3**（2026-09-15 发布的正式版） |
@@ -26,31 +44,18 @@
 | Java | **25**（26.3 强制要求，启动器会自动带上） |
 | 系统 | Windows / macOS / Linux 均可 |
 
-> **2.0.0 起不再支持 26.2**。游戏升到 26.3 后请用本版；
+> **2.0.0 起不再支持 26.2**。游戏升到 26.3 后请用 26.3 线；
 > 还想继续玩 26.2 的话，用 [v1.1.3](https://github.com/KokoroLyase/HypixelChatTranslator/releases/tag/v1.1.3)
 > （旧版 Release 一律保留）。
 
-> **本模组同时提供两条线，版本号相同、按文件名区分**（v2.3.0 起双版本并行）：
->
-> | 你玩的版本 | 下载哪个 | 加载器 | Release 名 |
-> | --- | --- | --- | --- |
-> | Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric | `v<版本>-mc26.3-fabric` |
-> | Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge | `v<版本>-mc1.8.9-forge` |
->
-> 两条线的功能、配置格式、配置文件位置、命令**完全一致**（编译的是同一份核心逻辑），
-> 所以 1.8.9 的配置文件可以直接拿去 26.3 用，反之亦然。
->
-> Release 名刻意与产物文件名对齐（只差一个字符：产物用 `+`、Release 名用 `-`），
-> 所以「看到 jar 的名字就知道该找哪个 Release」。这套命名是**从 v2.3.0 起**的规矩；
-> 更早的版本（`v2.2.3`、`v1.1.3` … 全是 Fabric 版）保留原来的名字，不重命名。
-
-### 1.8.9 + Forge 的额外说明
+### 1.2 1.8.9 + Forge 线
 
 | 项目 | 要求 |
 | --- | --- |
 | Minecraft | **1.8.9** |
 | Forge | **11.15.1.2318**（1.8.9 的推荐版） |
 | Java | **8**（1.8.9 强制要求） |
+| 系统 | Windows / macOS / Linux 均可 |
 
 1.8.9 版是一个**核心插件（coremod）**：游戏启动时它会针对
 `EntityPlayerSP.sendChatMessage` 做一次方法头注入。原因是 1.8.9 **没有**任何可以拦截
@@ -68,6 +73,8 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 
 ## 2. 安装
 
+### 2.1 26.3 + Fabric 线
+
 1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
@@ -78,6 +85,16 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 
    文件名里的 `mc26.3` 是游戏版本、`fabric` 是模组加载器，和大多数模组一样。下载后**不需要改名**，直接丢进 `mods` 即可。
 4. 启动游戏，进入 Hypixel。
+
+### 2.2 1.8.9 + Forge 线
+
+1. 安装 **Forge 11.15.1.2318 for 1.8.9**（[官方下载页](https://files.minecraftforge.net/net/minecraftforge/forge/index_1.8.9.html)，
+   选 `11.15.1.2318` 的 Installer）。用启动器时记得选 **Java 8**。
+2. 把本模组 **`hx-chat-translator-<版本>+mc1.8.9-forge.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-mc1.8.9-forge` 的那一条）丢进同一个 `mods` 文件夹（路径同上）。
+3. 启动游戏，进入 Hypixel。
+
+> 1.8.9 线不依赖 Forge 之外的任何模组（**不需要** Fabric API 之类的东西）。
+> 因为它是核心插件，装之前请确认没有别的 coremod 也在改聊天发送路径 —— 详见 §1.2。
 
 ## 3. 配置 DeepSeek API Key（必须做一次）
 
@@ -236,13 +253,24 @@ v1.0.7 起再加了一道 **15 秒时间窗**：只有 15 秒内自己发过的�
            → 含汉字？取消本次发送 → 异步翻译 → 主线程用 ClientPacketListener.sendChat(英文) 发出去
 ```
 
+**1.8.9 + Forge 线走的是同一套决策，差别只在「挂在什么上」**（判定逻辑是共享的同一份代码）：
+
+| 环节 | Fabric (26.3) | Forge (1.8.9) |
+| --- | --- | --- |
+| 收到消息 | `ClientReceiveMessageEvents.CHAT` + `.GAME` 两条 | `ClientChatReceivedEvent` 一条（1.8.9 不分签名聊天与系统消息） |
+| 发消息前拦截 | `ClientSendMessageEvents.ALLOW_CHAT` / `ALLOW_COMMAND` | 对 `EntityPlayerSP.sendChatMessage` 做方法头注入（1.8.9 没有对应事件） |
+| 显示译文 | `Hud.getChat().addClientSystemMessage` | `GuiIngame.getChatGUI().printChatMessage` |
+| 命令 | Brigadier（Fabric 客户端命令 API） | `ICommand` + `ClientCommandHandler` |
+| 开关按键 | `KeyMapping` + tick 轮询 | `KeyBinding` + `InputEvent.KeyInputEvent` |
+
 几个实现上的选择：
 
 - **为什么译文另起一行，而不是把原消息替换掉？** 翻译是异步的（几百毫秒到几秒），而聊天栏消息一旦显示就无法就地修改文字；另起一行最稳，也不会破坏服务器原来的颜色/点击事件。
-- **为什么不用 Mixin？** 26.3 的 Fabric API 已经提供了收发聊天的全部事件，模组**零 Mixin**，对游戏版本更新更耐受，也几乎不可能与其它模组冲突。（26.2 → 26.3 这次升级只改了两处 API 调用，零 Mixin 的结构省掉了跟进字节码的麻烦。）
+- **为什么 Fabric 线不用 Mixin？** 26.3 的 Fabric API 已经提供了收发聊天的全部事件，所以 Fabric 线**零 Mixin**，对游戏版本更新更耐受，也几乎不可能与其它模组冲突。（26.2 → 26.3 这次升级只改了两处 API 调用，零 Mixin 的结构省掉了跟进字节码的麻烦。）
+  **但 1.8.9 线做不到**：那里根本没有任何可以拦截「自己发出的聊天」的 Forge 事件 —— `ClientChatEvent` 要到 1.11 才加入，服务端的 `ServerChatEvent` 在 Hypixel 这类远程服务器上永远不会触发。所以 1.8.9 线只能对 `EntityPlayerSP.sendChatMessage` 做一次方法头注入。这点差异是**平台能力**造成的，不是实现取向不同：注入只在方法头加一个「要不要拦下这次发送」的早退分支，**不拦的时候原版逻辑一个字节都不改**，而且有离线字节码验证 + 真 JVM 校验器兜底（见 [RELEASING.md](RELEASING.md) §10.4）。
 - **HTTP 只用 `HttpURLConnection`**（`java.base` 模块），不依赖 `java.net.http`，避免 Mojang 精简版运行时缺少模块导致崩溃。
-- **为什么进来的消息要同时接 `CHAT` 和 `GAME` 两条事件？** 别删掉任何一条。正常服务器的玩家聊天走签名聊天（`CHAT`，能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**（`GAME`）下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。只接一条就会有一半场景失效。
-- **发送方向为什么要「取消原发送 → 异步翻译 → 自己重发」？** Fabric 的发送事件是同步回调，而网络请求要几百毫秒，不能在主线程里等；重发时必须走原版 `ClientPacketListener.sendChat`，让客户端自己重新签名。也因此必须有个 `programmaticSend` 开关把「自己发的」和「玩家发的」区分开，否则会无限递归。
+- **为什么进来的消息要同时接 `CHAT` 和 `GAME` 两条事件？**（Fabric 线）别删掉任何一条。正常服务器的玩家聊天走签名聊天（`CHAT`，能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**（`GAME`）下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。只接一条就会有一半场景失效。1.8.9 那边只有一条事件（也拿不到发送者），走的正是同一条「靠内容和说话人名字判断」的路径。
+- **发送方向为什么要「取消原发送 → 异步翻译 → 自己重发」？** Fabric 的发送事件是同步回调，而网络请求要几百毫秒，不能在主线程里等；重发时必须走原版 `ClientPacketListener.sendChat`，让客户端自己重新签名。也因此必须有个 `programmaticSend` 开关把「自己发的」和「玩家发的」区分开，否则会无限递归。1.8.9 线的注入闸门用的是同一套思路（一个 `ThreadLocal` 标志），并且**必须是 `ThreadLocal`**：两次发送并发时共享字段会互相擦掉对方的标志位。
 
 ## 7. 费用 / 限流
 
@@ -416,7 +444,10 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 
 ## 10. 从源码构建
 
-需要 **JDK 25**：
+两条线**各自独立构建**，但编译的是同一份共享逻辑（`src/shared/java`），
+所以决策逻辑只写一次、改一次。
+
+### Fabric 线（26.3）—— 需要 JDK 25
 
 ```bash
 export JAVA_HOME=/path/to/jdk-25
@@ -426,18 +457,45 @@ export JAVA_HOME=/path/to/jdk-25
 
 只用到了 Fabric API（`fabric-message-api-v1` / `fabric-key-mapping-api-v1` / `fabric-command-api-v2` / `fabric-lifecycle-events-v1`），无需额外依赖。
 
+### Forge 线（1.8.9）—— 需要 JDK 8
+
+```bash
+cd forge-1.8.9
+export JAVA_HOME=/path/to/jdk-8
+./gradlew build        # Gradle 版本由这里的 wrapper 固定为 2.14.1
+# 产物: forge-1.8.9/build/libs/hx-chat-translator-<版本>+mc1.8.9-forge.jar
+```
+
+1.8.9 必须用**JDK 8 + Gradle 2.14.1 + ForgeGradle 2.1** 这套老工具链（Gradle 2.x 跑不了
+Java 9+，ForgeGradle 2.1 跑不了 Gradle 3+），所以它有独立的 wrapper 与 `gradle.properties`；
+**但模组版本号仍然只有根目录 `gradle.properties` 一个来源**，两条线永远同号。
+
+### 共享层锁定 Java 8
+
+`src/shared/java` 由两个构建**编译同一份文件**，因此只能用 Java 8 的语法与 API：
+不能用 `record`、文本块、`List.of` / `Map.of`、switch 表达式、`String.isBlank`、
+`Files.readString` 等。需要 Java 11+ 语义的地方用 `LangUtils` 里的等价实现。
+第三方库也只有 **gson**，而且是 1.8.9 自带的 **2.2.4** —— 加新依赖前先确认它也带得动。
+完整禁用清单与理由见 [RELEASING.md](RELEASING.md) §10.1。
+
 发布新版本（版本号规则、文件命名、保留旧版、配置迁移等约定）见 [RELEASING.md](RELEASING.md)。
 
 ### 离线自检（不需要启动游戏）
 
 `tools/VerifyCore.java` 会用本地 mock HTTP 服务验证语言判断、命令拆解、DeepSeek 请求体与各种错误分支，
-**并且已经接进 Gradle 构建**：`./gradlew build` 会顺带跑完（本地和 CI 用的是同一条命令），
+**并且已经接进两个构建**：`./gradlew build` 会顺带跑完（本地和 CI 用的是同一条命令），
 失败会直接让构建红掉，所以不存在「忘了跑测试」这回事。
+**两条线跑的是同一份断言**，所以它同时保护两个版本 —— 新增用例只需要写一次。
 
 ```bash
-JAVA_HOME=/path/to/jdk-25 ./gradlew build      # 构建 + 自动跑自检
-JAVA_HOME=/path/to/jdk-25 ./gradlew verifyCore # 只跑自检
+JAVA_HOME=/path/to/jdk-25 ./gradlew build        # Fabric：构建 + 自动跑自检
+JAVA_HOME=/path/to/jdk-25 ./gradlew verifyCore   # Fabric：只跑自检
+cd forge-1.8.9 && JAVA_HOME=/path/to/jdk-8 ./gradlew verifyCore   # Forge：只跑自检
 ```
+
+Forge 构建还会额外跑 `tools/VerifyCoremod.java`（`verifyCoremod`）：拿**真实的** `EntityPlayerSP`
+跑一遍字节码注入，再用**真 JVM 的校验器**（`-Xverify:all`）验证产物合法，外加三项反向验证
+（无关类原样返回 / SRG 名命中 / 混淆名命中）。改核心插件时它一定会跑到。
 
 自检不依赖 Minecraft 运行时（`ChatTranslator` 里依赖游戏类的部分不在其中），几秒内跑完。
 新增的纯逻辑（`util/` 下的过滤器、匹配器、解析器）都应该在这里补用例。开发环境里改完代码，

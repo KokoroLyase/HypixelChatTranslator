@@ -38,8 +38,9 @@ jobs:
           java-version: '8'
 
       # build 会顺带跑完两道离线门禁，失败即构建失败：
-      #   1) 702 项共享自检（与 Fabric 线同一份 tools/VerifyCore.java）
-      #   2) 9 项核心插件验证（真实 EntityPlayerSP + 真 JVM 字节码校验）
+      #   1) 共享自检（与 Fabric 线同一份 tools/VerifyCore.java，断言数只增不减）
+      #   2) 核心插件验证（真实 EntityPlayerSP + 真 JVM 字节码校验）
+      # 这里刻意不写死断言条数：断言只增不减，写死数字每次加用例都要改一遍注释。
       - name: Build
         run: ./gradlew build --no-daemon --console=plain
 

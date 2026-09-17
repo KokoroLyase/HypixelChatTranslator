@@ -4,8 +4,14 @@
 
 ## 检查清单
 
-- [ ] 本地跑过 `./gradlew clean build`，**自检全绿**（CI 用的是同一条命令，失败即构建失败）
+- [ ] **两条线的构建都跑过**：根目录 `./gradlew clean build`（JDK 25）与
+      `forge-1.8.9` 下的 `./gradlew clean build`（JDK 8），**自检全绿**
+      （CI 用的是这两条命令，失败即构建失败）
+- [ ] 改过 `src/shared/java` 的话，确认没有用 Java 9+ 的语法或 API
+      （`record`、文本块、`List.of`、switch 表达式、`String.isBlank`、`Files.readString`…），
+      见 `RELEASING.md §10.1`
 - [ ] 修 bug / 加功能时，**在 `tools/VerifyCore.java` 补了用例**（先复现再修）
+- [ ] 改过 `forge-1.8.9/.../asm/` 时，`verifyCoremod` 通过（`check` 会自动带上）
 - [ ] 按 `RELEASING.md §1` 的规则确定了版本号；需要发布时已更新 `gradle.properties`
 - [ ] 更新了 `CHANGELOG.md`（纯文档改动可不占版本号，见 `RELEASING.md §1`）
 
@@ -13,8 +19,13 @@
 
 如果改动涉及以下任一位置，请在下面说明**你人工验证了什么**（自检覆盖不到它们）：
 
-- `chat/GameClient.java`、`HxTranslateClient.java` —— 依赖 Minecraft 类，靠编译期报错 + 代码审查
-- `config/incomingSystemPrompt` / `outgoingSystemPrompt` —— 提示词的实际翻译效果需要真实 API Key
+- Fabric 装配面：`HxTranslateClient.java`、`chat/GameClient.java`、`chat/GameFeedback.java`、
+  `command/TranslateCommand.java` —— 依赖 Minecraft 类，靠编译期报错 + 代码审查
+- Forge 装配面：`HxTranslateForge.java`、`ForgeClient.java`、`ForgeFeedback.java`、
+  `ForgeChatCommand.java` —— 同上
+- 核心插件的**游戏内**实际效果 —— 离线只能验字节码是否合法，跑不跑得通要进游戏试
+  （打一句中文，看有没有一秒后以英文发出）
+- `config` 里的 `incomingSystemPrompt` / `outgoingSystemPrompt` —— 提示词的实际翻译效果需要真实 API Key
 - 换 `minecraft_version` 时 —— 请对照 `RELEASING.md §9` 的清单逐条确认
 
 <!-- 例：改了注册面 → 在游戏里启动一次，确认 F6 能开关、收到的英文会翻译 -->

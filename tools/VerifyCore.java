@@ -2873,7 +2873,7 @@ public class VerifyCore {
     }
 
     /**
-     * 双版本布局守卫（v2.3.0-forge 起）。
+     * 双版本布局守卫（1.8.9 + Forge 线起）。
      *
      * <p>从这一版开始仓库同时维护 Fabric(26.3) 与 Forge(1.8.9) 两条线，共享层
      * {@code src/shared/java} 由两个构建**编译同一份文件**。这个前提只有在共享层
@@ -3007,10 +3007,74 @@ public class VerifyCore {
                         && releasing.contains("v2.3.0-mc1.8.9-forge"));
         check("RELEASING 写明了「先建新的、验完再删旧的」这个顺序要求",
                 releasing != null && releasing.contains("先**在原提交上建新 tag 与新 Release"));
+
+        // ---- 文档同步（一次完整审计的产物）----
+        // 起因：双版本并行之后，代码与 CHANGELOG 都改对了，但 README 的「为什么不用 Mixin」、
+        // CONTRIBUTING、issue/PR 模板、SECURITY 还停留在「只有 Fabric 一条线」的旧状态 ——
+        // 代码没问题，可**玩家和贡献者看到的是过时的说明**。所以把这些事实也钉进自检。
+        check("README 写明了 Forge 构建的方式（forge-1.8.9 + JDK 8）",
+                readme != null && readme.contains("forge-1.8.9") && readme.contains("jdk-8"));
+        check("README 的「从源码构建」覆盖两条线",
+                readme != null && readme.contains("### Forge 线（1.8.9）"));
+        check("README 写明了共享层锁定 Java 8",
+                readme != null && readme.contains("共享层锁定 Java 8"));
+        check("README 的「不用 Mixin」只针对 Fabric 线（1.8.9 线是注入字节码，不能说成模组整体）",
+                readme != null && readme.contains("为什么 Fabric 线不用 Mixin")
+                        && !readme.contains("模组**零 Mixin**"));
+        check("README 原理解释给出了两条线的对应关系",
+                readme != null && readme.contains("EntityPlayerSP.sendChatMessage"));
+        check("README 开篇就写明支持两条线（不能只在中间某个角落提一句）",
+                readme != null && readme.contains("同时支持 **26.3 + Fabric** 与 **1.8.9 + Forge** 两条线"));
+        check("README 的环境要求分两条线写（§1.1 / §1.2）",
+                readme != null && readme.contains("### 1.1 26.3 + Fabric 线")
+                        && readme.contains("### 1.2 1.8.9 + Forge 线"));
+        check("README 的安装步骤分两条线写（§2.1 / §2.2）",
+                readme != null && readme.contains("### 2.1 26.3 + Fabric 线")
+                        && readme.contains("### 2.2 1.8.9 + Forge 线"));
+
+        String contributing = readRepoFile("CONTRIBUTING.md");
+        check("CONTRIBUTING 讲清了仓库有两条线", contributing != null && contributing.contains("仓库里有两条线"));
+        check("CONTRIBUTING 写明了共享层只能用 Java 8 的语法与 API",
+                contributing != null && contributing.contains("Java 8 的语法"));
+        check("CONTRIBUTING 要求改完共享层两个构建都跑",
+                contributing != null && contributing.contains("两个构建都要跑一遍"));
+
+        String security = readRepoFile(".github/SECURITY.md");
+        check("SECURITY 说明了 1.8.9 coremod 到底改了什么（安全边界）",
+                security != null && security.contains("核心插件做了什么"));
+
+        check("Bug 模板会问「你用的是哪条线」",
+                readFileOrEmpty(".github/ISSUE_TEMPLATE/bug_report.yml").contains("你用的是哪条线"));
+        check("Bug 模板的 Markdown 兜底版也问了「哪条线」（两份必须同步，§8）",
+                readFileOrEmpty(".github/ISSUE_TEMPLATE/bug_report.md").contains("哪条线"));
+        check("PR 模板要求两条线的构建都跑过",
+                readFileOrEmpty(".github/pull_request_template.md").contains("两条线的构建都跑过"));
+        check("PR 模板点出了 Forge 装配面也不在自检覆盖内",
+                readFileOrEmpty(".github/pull_request_template.md").contains("Forge 装配面"));
+
+        // 两条线并行后 releases/latest 指向哪条线是不确定的（它只是「最近发布的那条」），
+        // 所以活的文档里不许再拿它当下载入口。
+        //
+        // 判据用 "/releases/latest"（带斜杠）而不是裸串：RELEASING §4 里有一句
+        // 「不要再写 `releases/latest`」是在**提醒别人别用**，那是正当的散文提及；
+        // 而真正的链接一定带前导斜杠。第一版判据没带斜杠，于是把这句话自己判红了。
+        for (String doc : Arrays.asList(
+                "README.md", "CONTRIBUTING.md", "RELEASING.md", ".github/SECURITY.md",
+                ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/bug_report.yml",
+                ".github/ISSUE_TEMPLATE/bug_report.md", ".github/pull_request_template.md")) {
+            check("活的文档不再把 releases/latest 当下载入口：" + doc,
+                    !readFileOrEmpty(doc).contains("/releases/latest"));
+        }
+    }
+
+    /** 读仓库文件，读不到返回空串（这样 `contains` 断言不会因为 null 抛异常）。 */
+    private static String readFileOrEmpty(String relative) {
+        String text = readRepoFile(relative);
+        return text == null ? "" : text;
     }
 
     /**
-     * v2.3.0-forge：加载器无关的日志门面（{@link Log}）。
+     * 双版本：加载器无关的日志门面（{@link Log}）。
      *
      * <p>共享层要由两个构建编译，就不能依赖任何一个日志库（Fabric 有 slf4j，
      * Forge 1.8.9 只有 log4j），于是换成自己写的门面 + 由装配层注入 sink。
@@ -3021,7 +3085,7 @@ public class VerifyCore {
      * 在结束时复位成静默，否则后面的用例会往它的列表里塞日志（用例互相污染）。
      */
     private static void logFacade() {
-        System.out.println("== v2.3.0-forge：加载器无关日志门面 ==");
+        System.out.println("== 双版本：加载器无关日志门面 ==");
 
         List<String> messages = new ArrayList<>();
         List<Log.Level> levels = new ArrayList<>();

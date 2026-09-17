@@ -75,7 +75,9 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 ## 4. 保留旧版
 
 - **旧版本的 Release 与附件一律保留**，不删除、不覆盖、不改 tag 指向。
-- 新版本走新 tag、新 Release；旧版说明里加一行指向 [最新版](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest) 即可。
+- 新版本走新 tag、新 Release；旧版说明里加一行指向 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 即可
+  —— 注意**不要**再写 `releases/latest`：两条线并行之后，「最新」只代表最近发布的那条线，
+  不一定是读者要的那条。
 - 涉及旧附件改名时，重新上传同内容的新名字附件再删旧名，**不要删掉整个 Release**。
 - 唯一的例外是**纠错**，不是常规操作，至今只发生过两次：
   - `v1.0.10` 违反 §1 的进位规则、发布仅数分钟且无人下载，被撤回并更正为 `v1.1.0`（见 §1 结尾）；
