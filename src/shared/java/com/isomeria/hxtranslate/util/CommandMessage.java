@@ -1,5 +1,6 @@
 package com.isomeria.hxtranslate.util;
 
+import java.util.Arrays;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 
 import java.util.List;
@@ -25,7 +26,7 @@ import java.util.Map;
 public final class CommandMessage {
 
     /** {@code /party chat}、{@code /guild chat} 这类「子命令 + 正文」的写法。 */
-    private static final List<String> CHAT_SUBCOMMANDS = List.of("chat");
+    private static final List<String> CHAT_SUBCOMMANDS = Arrays.asList("chat");
 
     /** 兜底翻译的门槛：正文至少这么多汉字才算「明显是一句话」，避免把玩家名当消息翻译。 */
     private static final int SENTENCE_MIN_HAN = 8;
@@ -39,10 +40,30 @@ public final class CommandMessage {
      * {@code /hxtranslate test 这是一句很长的中文} 会被取消、正文被翻译、
      * 再当成服务器命令发出去 —— 命令没执行，还往服务器发了垃圾。
      */
-    private static final List<String> ALWAYS_PROTECTED = List.of("hxtranslate", "hxt");
+    private static final List<String> ALWAYS_PROTECTED = Arrays.asList("hxtranslate", "hxt");
 
-    /** head 例如 {@code "msg Player "}，message 例如 {@code "你好"}。 */
-    public record Split(String head, String message) {
+    /**
+     * head 例如 {@code "msg Player "}，message 例如 {@code "你好"}。
+     *
+     * <p>Java 8 没有 record，写成普通不可变类，访问器名字保持 {@code head()} / {@code message()}。
+     */
+    public static final class Split {
+
+        private final String head;
+        private final String message;
+
+        public Split(String head, String message) {
+            this.head = head;
+            this.message = message;
+        }
+
+        public String head() {
+            return head;
+        }
+
+        public String message() {
+            return message;
+        }
     }
 
     private CommandMessage() {
@@ -50,7 +71,7 @@ public final class CommandMessage {
 
     /** 总入口：返回需要翻译的正文，或 null 表示这条命令不用管。 */
     public static Split resolve(String command, TranslatorConfig config) {
-        if (command == null || command.isBlank()) {
+        if (command == null || LangUtils.isBlank(command)) {
             return null;
         }
         if (isAlwaysProtected(command)) {
@@ -79,7 +100,7 @@ public final class CommandMessage {
 
     /** 命令名是否属于「本模组自己的命令」。 */
     public static boolean isAlwaysProtected(String command) {
-        if (command == null || command.isBlank()) {
+        if (command == null || LangUtils.isBlank(command)) {
             return false;
         }
         int firstSpace = command.indexOf(' ');
@@ -93,7 +114,7 @@ public final class CommandMessage {
      * @param table 命令名（小写）-> 正文之前还有几个参数
      */
     public static Split split(String command, Map<String, Integer> table) {
-        if (command == null || command.isBlank() || table == null || table.isEmpty()) {
+        if (command == null || LangUtils.isBlank(command) || table == null || table.isEmpty()) {
             return null;
         }
 
@@ -131,7 +152,7 @@ public final class CommandMessage {
         }
 
         String head = command.substring(0, position);
-        String message = command.substring(position).strip();
+        String message = LangUtils.strip(command.substring(position));
         if (message.isEmpty()) {
             return null;
         }
@@ -148,7 +169,7 @@ public final class CommandMessage {
      * </ul>
      */
     public static Split splitGuarded(String command, List<String> guardedCommands, List<String> managementKeywords) {
-        if (command == null || command.isBlank() || guardedCommands == null || guardedCommands.isEmpty()) {
+        if (command == null || LangUtils.isBlank(command) || guardedCommands == null || guardedCommands.isEmpty()) {
             return null;
         }
         int firstSpace = command.indexOf(' ');
@@ -161,7 +182,7 @@ public final class CommandMessage {
         }
 
         String afterName = command.substring(firstSpace + 1);
-        String tail = afterName.stripLeading();
+        String tail = LangUtils.stripLeading(afterName);
         if (tail.isEmpty()) {
             return null;
         }
@@ -174,7 +195,7 @@ public final class CommandMessage {
             if (tokenEnd < 0) {
                 return null; // 只有 "/party chat"，没有正文
             }
-            String message = tail.substring(tokenEnd + 1).strip();
+            String message = LangUtils.strip(tail.substring(tokenEnd + 1));
             if (message.isEmpty()) {
                 return null;
             }
@@ -190,14 +211,14 @@ public final class CommandMessage {
 
     /** 第三层：未知命令，先把命令名和后面的内容拆开。 */
     public static Split splitTail(String command) {
-        if (command == null || command.isBlank()) {
+        if (command == null || LangUtils.isBlank(command)) {
             return null;
         }
         int firstSpace = command.indexOf(' ');
         if (firstSpace <= 0 || firstSpace + 1 >= command.length()) {
             return null;
         }
-        String message = command.substring(firstSpace + 1).strip();
+        String message = LangUtils.strip(command.substring(firstSpace + 1));
         if (message.isEmpty()) {
             return null;
         }
@@ -219,7 +240,7 @@ public final class CommandMessage {
      * <p>刻意保守：短的单个词（例如 {@code /tp 小明}）不会被当成消息。
      */
     public static boolean looksLikeSentence(String tail) {
-        if (tail == null || tail.isBlank()) {
+        if (tail == null || LangUtils.isBlank(tail)) {
             return false;
         }
         if (!LangUtils.containsHan(tail)) {

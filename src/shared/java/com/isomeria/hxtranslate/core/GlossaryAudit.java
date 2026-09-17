@@ -76,7 +76,35 @@ public final class GlossaryAudit {
      * @param entry      原始条目文本（供玩家在 json 里定位）
      * @param detail     一句话说明「哪里错、怎么改」
      */
-    public record Finding(Kind kind, int entryIndex, String entry, String detail) {
+    public static final class Finding {
+
+        private final Kind kind;
+        private final int entryIndex;
+        private final String entry;
+        private final String detail;
+
+        public Finding(Kind kind, int entryIndex, String entry, String detail) {
+            this.kind = kind;
+            this.entryIndex = entryIndex;
+            this.entry = entry;
+            this.detail = detail;
+        }
+
+        public Kind kind() {
+            return kind;
+        }
+
+        public int entryIndex() {
+            return entryIndex;
+        }
+
+        public String entry() {
+            return entry;
+        }
+
+        public String detail() {
+            return detail;
+        }
 
         /** 面向玩家的一行描述。 */
         public String describe() {
@@ -115,7 +143,7 @@ public final class GlossaryAudit {
 
         for (int i = 0; i < glossary.size(); i++) {
             String entry = glossary.get(i);
-            if (entry == null || entry.isBlank()) {
+            if (entry == null || LangUtils.isBlank(entry)) {
                 findings.add(new Finding(Kind.MALFORMED, i, String.valueOf(entry),
                         "是空条目，不会生效（格式：英文=中文）"));
                 continue;
@@ -182,14 +210,20 @@ public final class GlossaryAudit {
         }
         int separator = raw.indexOf('=');
         String right = separator < 0 ? "" : raw.substring(separator + 1).trim();
-        return switch (problem) {
-            case NO_SEPARATOR -> "缺少等号「=」（格式：英文=中文），整条不会生效";
-            case EMPTY_ENGLISH -> "等号左边是空的，缺英文写法，整条不会生效";
-            case EMPTY_CHINESE -> right.isEmpty()
-                    ? "等号右边是空的，缺中文含义，整条不会生效"
-                    : "等号右边只有括号里的说明（括号内容会被当成注释去掉），整条不会生效";
-            case NONE -> "格式有问题";
-        };
+        // Java 8 没有 switch 表达式，改成经典 switch（1.8.9 那条线要用）
+        switch (problem) {
+            case NO_SEPARATOR:
+                return "缺少等号「=」（格式：英文=中文），整条不会生效";
+            case EMPTY_ENGLISH:
+                return "等号左边是空的，缺英文写法，整条不会生效";
+            case EMPTY_CHINESE:
+                return right.isEmpty()
+                        ? "等号右边是空的，缺中文含义，整条不会生效"
+                        : "等号右边只有括号里的说明（括号内容会被当成注释去掉），整条不会生效";
+            case NONE:
+            default:
+                return "格式有问题";
+        }
     }
 
     /** 英文写法是不是「单个字母」（{@code u} / {@code r} 这种）。 */
@@ -235,7 +269,7 @@ public final class GlossaryAudit {
             text.append(errors).append(" 条写错或不会生效");
         }
         if (warnings > 0) {
-            if (!text.isEmpty()) {
+            if (text.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
                 text.append('、');
             }
             text.append(warnings).append(" 条有风险");

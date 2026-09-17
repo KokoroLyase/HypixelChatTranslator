@@ -1,5 +1,6 @@
 package com.isomeria.hxtranslate.core;
 
+import java.util.Collections;
 import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.util.LangUtils;
 
@@ -103,14 +104,14 @@ public final class PromptGlossary {
                 if (!seen.add(chineseKeyOf(pair))) {
                     continue;
                 }
-                if (!table.isEmpty()) {
+                if (table.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
                     table.append('\n');
                 }
                 table.append(pair);
                 pairs++;
             }
         }
-        if (table.isEmpty()) {
+        if (table.length() == 0) {
             return null;
         }
         return "Minecraft / Hypixel / Bed Wars terminology reference "
@@ -131,7 +132,7 @@ public final class PromptGlossary {
      */
     static List<String> splitParts(String entry) {
         if (entry == null) {
-            return List.of();
+            return Collections.emptyList();
         }
         return Arrays.asList(entry.split(ENTRY_SEPARATOR));
     }
@@ -153,8 +154,33 @@ public final class PromptGlossary {
      *
      * <p>{@code english} 已去掉包裹引号，{@code chinese} 已去掉括号说明并压成一行 ——
      * 也就是**真正会被渲染进提示词的那两个值**。
+     *
+     * <p>Java 8 没有 record（1.8.9 那条线编译不过），写成普通不可变类，
+     * 访问器名字保持 {@code english()} / {@code chinese()} / {@code problem()} 不变。
      */
-    record Parsed(String english, String chinese, Problem problem) {
+    static final class Parsed {
+
+        private final String english;
+        private final String chinese;
+        private final Problem problem;
+
+        Parsed(String english, String chinese, Problem problem) {
+            this.english = english;
+            this.chinese = chinese;
+            this.problem = problem;
+        }
+
+        String english() {
+            return english;
+        }
+
+        String chinese() {
+            return chinese;
+        }
+
+        Problem problem() {
+            return problem;
+        }
 
         /** 这一组是否可用（不可用的会被渲染直接跳过）。 */
         boolean ok() {

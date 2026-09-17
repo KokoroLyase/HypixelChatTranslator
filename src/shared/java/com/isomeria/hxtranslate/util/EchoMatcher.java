@@ -33,7 +33,23 @@ public final class EchoMatcher {
      * @param text     归一化后的正文（见 {@link LangUtils#normalizeKey}）
      * @param atMillis 发送时刻，见 {@link System#currentTimeMillis()}
      */
-    public record Sent(String text, long atMillis) {
+    public static final class Sent {
+
+        private final String text;
+        private final long atMillis;
+
+        public Sent(String text, long atMillis) {
+            this.text = text;
+            this.atMillis = atMillis;
+        }
+
+        public String text() {
+            return text;
+        }
+
+        public long atMillis() {
+            return atMillis;
+        }
 
         /** 记下「刚刚发出」的一条消息。 */
         public static Sent at(String text, long atMillis) {
@@ -101,7 +117,23 @@ public final class EchoMatcher {
      * @param name     玩家名
      * @param outgoing true 表示这是<b>自己发出去</b>的消息（{@code To xxx:} 这种私聊回显）
      */
-    public record Speaker(String name, boolean outgoing) {
+    public static final class Speaker {
+
+        private final String name;
+        private final boolean outgoing;
+
+        public Speaker(String name, boolean outgoing) {
+            this.name = name;
+            this.outgoing = outgoing;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public boolean outgoing() {
+            return outgoing;
+        }
     }
 
     /**
@@ -134,7 +166,7 @@ public final class EchoMatcher {
         // 例如 "To view your stats, type: /stats" —— 以前这种整条会被当成「自己发的消息」而永不翻译。
         boolean outgoing = isOutgoingPrivateMessage(text, idx);
         // 名字是 ": " 前面最后一个词（Hypixel 的 [MVP+]、[红队]、队伍名这些前缀里都不含空格）
-        String head = text.substring(0, idx).strip();
+        String head = LangUtils.strip(text.substring(0, idx));
         int space = head.lastIndexOf(' ');
         String name = space < 0 ? head : head.substring(space + 1);
         // 「Guild > Steve」这种用 > 分隔的写法
@@ -142,7 +174,7 @@ public final class EchoMatcher {
         if (gt >= 0) {
             name = name.substring(gt + 1);
         }
-        name = name.strip();
+        name = LangUtils.strip(name);
         return isPlayerName(name) ? new Speaker(name, outgoing) : null;
     }
 
@@ -152,7 +184,7 @@ public final class EchoMatcher {
             return false;
         }
         // "To " 之后到 ": " 之前必须正好是一个玩家名（不能带空格、逗号之类的其它词）
-        return isPlayerName(text.substring(3, colonSpaceIndex).strip());
+        return isPlayerName(LangUtils.strip(text.substring(3, colonSpaceIndex)));
     }
 
     /** 名字是否像 Minecraft 玩家名：字母/数字/下划线，1~20 位（正版是 3~16 位）。 */

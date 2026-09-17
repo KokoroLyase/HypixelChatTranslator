@@ -155,7 +155,7 @@ public final class ChatTranslator {
             return;
         }
         // 先剔除 §a、§r 这类原版格式代码：它们对翻译没有意义，还可能被模型当成正文
-        String text = LangUtils.stripFormattingCodes(plain).strip();
+        String text = LangUtils.strip(LangUtils.stripFormattingCodes(plain));
         if (text.isEmpty()) {
             return;
         }
@@ -202,24 +202,30 @@ public final class ChatTranslator {
             feedback.info(line);
         });
 
+        // Java 8 没有 switch 的箭头形式（1.8.9 那条线要用），改成经典 switch
         switch (submitted) {
-            case ACCEPTED -> debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s",
-                    decision.hanRatio() * 100, shorten(text)));
-            case NOT_READY -> {
+            case ACCEPTED:
+                debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s",
+                        decision.hanRatio() * 100, shorten(text)));
+                break;
+            case NOT_READY:
                 skipIncoming("未配置 API Key", text);
                 warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/hxtranslate key <你的Key> §c配置。");
-            }
-            case RATE_LIMITED -> {
+                break;
+            case RATE_LIMITED:
                 skipIncoming("超出每分钟限流", text);
                 warnThrottled("翻译请求达到每分钟上限（" + config.requestsPerMinute
                         + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
-            }
-            case QUEUE_FULL -> {
+                break;
+            case QUEUE_FULL:
                 skipIncoming("翻译队列积压", text);
                 warnThrottled("接口变慢，排队中的翻译超过 " + config.maxPendingTranslations
                         + " 条，部分消息被先跳过（会自动恢复；持续出现可调大 §fmaxPendingTranslations§c）。");
-            }
-            case EMPTY -> skipIncoming("空消息", text);
+                break;
+            case EMPTY:
+            default:
+                skipIncoming("空消息", text);
+                break;
         }
     }
 
@@ -412,12 +418,12 @@ public final class ChatTranslator {
         if (!config.enabled || !config.translateOutgoing) {
             return true;
         }
-        if (message == null || message.isBlank() || message.startsWith("/")) {
+        if (message == null || LangUtils.isBlank(message) || message.startsWith("/")) {
             return true;
         }
         // 去掉 § 格式代码后再判断/翻译；但真要原样放行时发的还是原始字符串
         String translatable = LangUtils.stripFormattingCodes(message);
-        if (translatable.isBlank()) {
+        if (LangUtils.isBlank(translatable)) {
             return true;
         }
         // 没有中文就原样发送：这是“我输入英文则无视”的实现。
@@ -478,11 +484,15 @@ public final class ChatTranslator {
 
     /** 翻译请求没被受理的原因，写进聊天栏提示。 */
     private String rejectedReason(TranslationService.SubmitResult result) {
-        return switch (result) {
-            case RATE_LIMITED -> "本分钟翻译请求已达上限（" + config.requestsPerMinute + " 次）";
-            case QUEUE_FULL -> "翻译请求积压超过 " + config.maxPendingTranslations + " 条（接口变慢了）";
-            default -> "翻译请求未被受理";
-        };
+        // Java 8 没有 switch 表达式，改成经典 switch
+        switch (result) {
+            case RATE_LIMITED:
+                return "本分钟翻译请求已达上限（" + config.requestsPerMinute + " 次）";
+            case QUEUE_FULL:
+                return "翻译请求积压超过 " + config.maxPendingTranslations + " 条（接口变慢了）";
+            default:
+                return "翻译请求未被受理";
+        }
     }
 
     /** 翻译失败时是否按原文发出去（配置项 failureFallback）。 */
@@ -541,7 +551,7 @@ public final class ChatTranslator {
         if (!config.enabled || !config.translateCommandMessages) {
             return true;
         }
-        if (command == null || command.isBlank()) {
+        if (command == null || LangUtils.isBlank(command)) {
             return true;
         }
 
@@ -554,7 +564,7 @@ public final class ChatTranslator {
         }
         String head = split.head();
         String message = LangUtils.stripFormattingCodes(split.message());
-        if (message.isBlank()) {
+        if (LangUtils.isBlank(message)) {
             return true;
         }
         // 命令正文是英文时原样放行，但要记住，避免服务器回显时又被翻成中文

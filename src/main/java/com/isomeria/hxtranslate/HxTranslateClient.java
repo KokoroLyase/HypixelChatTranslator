@@ -13,6 +13,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.KeyMapping;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,6 +38,37 @@ public final class HxTranslateClient implements ClientModInitializer {
 
     public static final String MOD_ID = "hxtranslate";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+
+    static {
+        // 把共享层的日志出口接到 slf4j 上。Forge 1.8.9 那条线没有 slf4j，
+        // 它的入口会把同一个 sink 接到 log4j 上 —— 共享层因此对两者都无依赖。
+        // 必须在任何共享代码打日志之前完成，所以放在静态初始化里。
+        Log.setSink((level, message, error) -> {
+            switch (level) {
+                case INFO:
+                    if (error == null) {
+                        LOGGER.info(message);
+                    } else {
+                        LOGGER.info(message, error);
+                    }
+                    break;
+                case WARN:
+                    if (error == null) {
+                        LOGGER.warn(message);
+                    } else {
+                        LOGGER.warn(message, error);
+                    }
+                    break;
+                default:
+                    if (error == null) {
+                        LOGGER.error(message);
+                    } else {
+                        LOGGER.error(message, error);
+                    }
+                    break;
+            }
+        });
+    }
 
     /**
      * 默认按 F6 切换翻译开关，可在“按键设置 → 多人游戏”里修改。
@@ -63,6 +95,9 @@ public final class HxTranslateClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // 共享层不知道配置目录在哪（它不能 import 任何加载器 API），由这里注入。
+        // 必须在 load() 之前设置：否则会退回到相对路径，玩家的配置会被写到别的地方。
+        TranslatorConfig.setConfigDir(FabricLoader.getInstance().getConfigDir());
         config = TranslatorConfig.load();
         service = new TranslationService(config);
         feedback = new GameFeedback();

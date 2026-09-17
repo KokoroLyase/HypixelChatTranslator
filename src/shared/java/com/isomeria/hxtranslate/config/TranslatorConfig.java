@@ -1,5 +1,7 @@
 package com.isomeria.hxtranslate.config;
 
+import java.util.Arrays;
+import com.isomeria.hxtranslate.util.LangUtils;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -7,13 +9,13 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonSyntaxException;
 import com.isomeria.hxtranslate.Log;
-import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.time.ZoneId;
@@ -82,7 +84,7 @@ public final class TranslatorConfig {
      * <p>用来判断用户有没有动过这个列表：一条都没删，说明还是默认值，v6 迁移才会把新的
      * 横幅规则补进去（见 {@link #applyMigrations()}）。
      */
-    private static final List<String> LEGACY_DEFAULT_IGNORES = List.of(
+    private static final List<String> LEGACY_DEFAULT_IGNORES = Arrays.asList(
             "^\\+\\d+ .*(XP|Coins|Tokens)",
             "^(You|A player) (joined|left)",
             "^Sending you to");
@@ -94,7 +96,7 @@ public final class TranslatorConfig {
      * 才会删。用户只要改过一个字（例如把 {@code u=你} 改成 {@code u=您}），那一条就留着不动 ——
      * 术语表是用户资产（RELEASING §5），我们不能替他判断哪个词该丢。
      */
-    private static final List<String> LEGACY_DEFAULT_GLOSSARY_ENTRIES = List.of(
+    private static final List<String> LEGACY_DEFAULT_GLOSSARY_ENTRIES = Arrays.asList(
             "u=你",
             "ur=你的、你是",
             "r=are（例如 \"r u ok\" = 你还好吗）",
@@ -123,7 +125,7 @@ public final class TranslatorConfig {
     public static final String DEFAULT_MODEL = "deepseek-flash";
 
     /** v1.0.5 之前默认的模型名，2026-09 起 DeepSeek 已下线该名称。 */
-    private static final List<String> RETIRED_MODELS = List.of(
+    private static final List<String> RETIRED_MODELS = Arrays.asList(
             "deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
             "deepseek-coder", "deepseek-v3", "deepseek-v3.1");
 
@@ -144,18 +146,18 @@ public final class TranslatorConfig {
      * 判据是这段原文：它仍在，说明用户用的是默认提示词，可以直接升级；
      * 不在了（用户自己改过），就一个字都不动。
      */
-    private static final String OUTGOING_PROMPT_V6_TAIL = """
-            干得漂亮 -> wp
-            等我一下，马上到 -> wait for me, omw""";
+    private static final String OUTGOING_PROMPT_V6_TAIL =
+            "干得漂亮 -> wp\n"
+            + "等我一下，马上到 -> wait for me, omw";
 
     /** v1.1.4（配置 v7）的默认发送方向提示词尾部。 */
-    private static final String OUTGOING_PROMPT_V7_TAIL = """
-            干得漂亮 -> wp
-            等我一下，马上到 -> wait for me, omw
-            我们有黑曜石，直接冲他家 -> we have obby, rush their base
-            他残血了，你上 -> he is low hp, go
-            小明你来防守 -> xiaoming you def
-            ok 我来了 -> ok im coming""";
+    private static final String OUTGOING_PROMPT_V7_TAIL =
+            "干得漂亮 -> wp\n"
+            + "等我一下，马上到 -> wait for me, omw\n"
+            + "我们有黑曜石，直接冲他家 -> we have obby, rush their base\n"
+            + "他残血了，你上 -> he is low hp, go\n"
+            + "小明你来防守 -> xiaoming you def\n"
+            + "ok 我来了 -> ok im coming";
 
     private static final Gson GSON = new GsonBuilder()
             .setPrettyPrinting()
@@ -306,7 +308,7 @@ public final class TranslatorConfig {
      * <p>最后两条是给「服务器横幅」留的：{@code ▬▬▬▬} 分隔线、以及横幅里的游戏名本身
      * （{@code Bed Wars}）。它们不是给人读的句子，翻了只会多出一行没用的译文、还多花一次请求。
      */
-    public List<String> ignorePatterns = new ArrayList<>(List.of(
+    public List<String> ignorePatterns = new ArrayList<>(Arrays.asList(
             "^\\+\\d+ .*(XP|Coins|Tokens)",
             "^(You|A player) (joined|left)",
             "^Sending you to",
@@ -328,7 +330,7 @@ public final class TranslatorConfig {
      * <p>因为要反查，条目请写成「英文在左、中文在右」；中文那侧取第一个括号之前的内容，
      * 括号里可以写补充说明。清空这个列表即可关闭术语表。
      */
-    public List<String> glossary = new ArrayList<>(List.of(
+    public List<String> glossary = new ArrayList<>(Arrays.asList(
             "obby=黑曜石（obsidian）",
             "dia=钻石（diamond）",
             "dias=钻石",
@@ -441,27 +443,38 @@ public final class TranslatorConfig {
      * <p>名单依据 Hypixel 官方命令表整理，覆盖所有「玩家自己输入正文」的聊天命令。
      * v1.0.2 之前这里漏了 /shout（喊话）、/message、/pchat、/gchat、/ochat 等，导致喊话不翻译。
      */
-    public Map<String, Integer> translateCommandArgs = new LinkedHashMap<>(Map.ofEntries(
-            // 私聊 / 好友私信
-            Map.entry("msg", 1),
-            Map.entry("message", 1),
-            Map.entry("tell", 1),
-            Map.entry("w", 1),
-            Map.entry("whisper", 1),
-            Map.entry("r", 0),
-            Map.entry("reply", 0),
-            // 频道聊天
-            Map.entry("ac", 0),      // 全局聊天
-            Map.entry("achat", 0),
-            Map.entry("pc", 0),      // 队伍聊天
-            Map.entry("pchat", 0),
-            Map.entry("gc", 0),      // 公会聊天
-            Map.entry("gchat", 0),
-            Map.entry("oc", 0),      // 公会官员聊天
-            Map.entry("ochat", 0),
-            // 局内喊话（起床战争等）
-            Map.entry("shout", 0)
-    ));
+    public Map<String, Integer> translateCommandArgs = defaultTranslateCommandArgs();
+
+    /**
+     * 默认的命令名单（Java 8 写法）。
+     *
+     * <p>以前这里用的是 {@code new LinkedHashMap<>(Map.ofEntries(Map.entry(...), ...))}，
+     * 那两个 API 是 Java 9 才有的，1.8.9 那条线编译不过 —— 改成显式 put。
+     * 顺序语义不变（LinkedHashMap 保持插入顺序，自检里有对顺序敏感的用例）。
+     */
+    private static Map<String, Integer> defaultTranslateCommandArgs() {
+        Map<String, Integer> table = new LinkedHashMap<>();
+        // 私聊 / 好友私信
+        table.put("msg", 1);
+        table.put("message", 1);
+        table.put("tell", 1);
+        table.put("w", 1);
+        table.put("whisper", 1);
+        table.put("r", 0);
+        table.put("reply", 0);
+        // 频道聊天
+        table.put("ac", 0);      // 全局聊天
+        table.put("achat", 0);
+        table.put("pc", 0);      // 队伍聊天
+        table.put("pchat", 0);
+        table.put("gc", 0);      // 公会聊天
+        table.put("gchat", 0);
+        table.put("oc", 0);      // 公会官员聊天
+        table.put("ochat", 0);
+        // 局内喊话（起床战争等）
+        table.put("shout", 0);
+        return table;
+    }
 
     /**
      * 既是「管理命令」又可能是「聊天」的命令，需要额外判断。
@@ -470,10 +483,10 @@ public final class TranslatorConfig {
      * 规则：第一个词是 {@code chat} → 后面是正文；第一个词是管理子命令
      * （见 {@link #commandManagementKeywords}）→ 不动；其它情况按 {@code /party <正文>} 处理。
      */
-    public List<String> guardedCommands = new ArrayList<>(List.of("p", "party", "g", "guild"));
+    public List<String> guardedCommands = new ArrayList<>(Arrays.asList("p", "party", "g", "guild"));
 
     /** 上面那些命令的管理子命令，出现这些词就说明不是聊天内容。 */
-    public List<String> commandManagementKeywords = new ArrayList<>(List.of(
+    public List<String> commandManagementKeywords = new ArrayList<>(Arrays.asList(
             "invite", "uninvite", "kick", "promote", "demote", "transfer", "warp", "list", "disband",
             "leave", "accept", "deny", "mute", "unmute", "poll", "settings", "setting", "open", "close",
             "stream", "rename", "join", "create", "remove", "add", "help", "info", "stats", "top",
@@ -487,7 +500,7 @@ public final class TranslatorConfig {
      * 兜底翻译时要排除的命令：它们的参数是玩家名 / 物品名 / 设置项，翻译了会出事。
      * 只在「未知命令兜底」里生效，不影响上面的显式名单。
      */
-    public List<String> protectedCommands = new ArrayList<>(List.of(
+    public List<String> protectedCommands = new ArrayList<>(Arrays.asList(
             "tp", "tpa", "tpahere", "tpaccept", "tpdeny", "tpall",
             "f", "friend", "friends", "fl", "ignore", "unignore", "block",
             "report", "wdr", "watchdogreport", "chatreport", "cr", "helpop",
@@ -502,99 +515,132 @@ public final class TranslatorConfig {
     // 提示词
     // ------------------------------------------------------------------
 
-    public String incomingSystemPrompt = """
-            You are a translation engine embedded in a Minecraft client. You translate Hypixel chat
-            messages into Simplified Chinese for a Chinese-speaking player.
+    public String incomingSystemPrompt =
+            "You are a translation engine embedded in a Minecraft client. You translate Hypixel chat\n"
+            + "messages into Simplified Chinese for a Chinese-speaking player.\n"
+            + "\n"
+            + "Input format:\n"
+            + "- Messages usually start with server-added prefixes such as \"[MVP+]\", \"[VIP]\", a team tag like\n"
+            + "  \"[红队]\", or a channel tag like \"[喊话]\" (shout), followed by \"PlayerName:\".\n"
+            + "- Keep every prefix, player name, number and coordinate exactly as it is; translate only the\n"
+            + "  message itself.\n"
+            + "- A Chinese team tag such as \"[红队]\" is added by the server because the client language is\n"
+            + "  Chinese. It does NOT mean the message is Chinese: when the body is English, translate it.\n"
+            + "- Some server messages are English sentences with a Chinese suffix, e.g.\n"
+            + "  \"3_0HY was thrown into a black hole by G19sy. 最终击杀！\". Translate the English part and keep\n"
+            + "  the suffix as it is.\n"
+            + "\n"
+            + "Style:\n"
+            + "- Output natural, casual Chinese that a Chinese Minecraft player would actually type in chat.\n"
+            + "- There must be no English word left untranslated in the output. Anything that has a\n"
+            + "  natural Chinese equivalent gets translated: watchdog -> 看门狗, hacker -> 外挂,\n"
+            + "  reach -> 攻击距离, kb -> 击退, clutch -> 极限翻盘. Only keep a word in English when it\n"
+            + "  is genuinely untranslatable in chat (a player name, or a game title such as \"Bed Wars\").\n"
+            + "- Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the\n"
+            + "  English abbreviation: obby -> 黑曜石, dia -> 钻石, u def -> 你来防守, inc -> 有人进攻,\n"
+            + "  mid -> 中路, sweaty -> 太拼了, chill -> 冷静点, fr fr -> 说真的, gg -> 打得不错.\n"
+            + "- Keep it about as short as the original. Do not turn a short taunt into a long sentence.\n"
+            + "\n"
+            + "Examples:\n"
+            + "[喊话] [红队] [MVP+] Alex: ur so sweaty bro chill! fr fr\n"
+            + "-> [喊话] [红队] [MVP+] Alex: 你也太拼了吧兄弟，冷静点！说真的\n"
+            + "[MVP+] Steve: inc mid, u def\n"
+            + "-> [MVP+] Steve: 有人从中路进攻，你来防守\n"
+            + "green u have a real good range\n"
+            + "-> 绿队，你这攻击距离也太远了吧\n"
+            + "\n"
+            + "Rules:\n"
+            + "- Translate only. Do NOT answer, explain, comment on or continue the conversation.\n"
+            + "- Do NOT add quotes, prefixes, emojis or any extra text.\n"
+            + "- If the message body is already Chinese, output it unchanged.\n"
+            + "Output only the translated text.";
 
-            Input format:
-            - Messages usually start with server-added prefixes such as "[MVP+]", "[VIP]", a team tag like
-              "[红队]", or a channel tag like "[喊话]" (shout), followed by "PlayerName:".
-            - Keep every prefix, player name, number and coordinate exactly as it is; translate only the
-              message itself.
-            - A Chinese team tag such as "[红队]" is added by the server because the client language is
-              Chinese. It does NOT mean the message is Chinese: when the body is English, translate it.
-            - Some server messages are English sentences with a Chinese suffix, e.g.
-              "3_0HY was thrown into a black hole by G19sy. 最终击杀！". Translate the English part and keep
-              the suffix as it is.
-
-            Style:
-            - Output natural, casual Chinese that a Chinese Minecraft player would actually type in chat.
-            - There must be no English word left untranslated in the output. Anything that has a
-              natural Chinese equivalent gets translated: watchdog -> 看门狗, hacker -> 外挂,
-              reach -> 攻击距离, kb -> 击退, clutch -> 极限翻盘. Only keep a word in English when it
-              is genuinely untranslatable in chat (a player name, or a game title such as "Bed Wars").
-            - Expand Minecraft / Hypixel / Bed Wars slang into its Chinese meaning instead of keeping the
-              English abbreviation: obby -> 黑曜石, dia -> 钻石, u def -> 你来防守, inc -> 有人进攻,
-              mid -> 中路, sweaty -> 太拼了, chill -> 冷静点, fr fr -> 说真的, gg -> 打得不错.
-            - Keep it about as short as the original. Do not turn a short taunt into a long sentence.
-
-            Examples:
-            [喊话] [红队] [MVP+] Alex: ur so sweaty bro chill! fr fr
-            -> [喊话] [红队] [MVP+] Alex: 你也太拼了吧兄弟，冷静点！说真的
-            [MVP+] Steve: inc mid, u def
-            -> [MVP+] Steve: 有人从中路进攻，你来防守
-            green u have a real good range
-            -> 绿队，你这攻击距离也太远了吧
-
-            Rules:
-            - Translate only. Do NOT answer, explain, comment on or continue the conversation.
-            - Do NOT add quotes, prefixes, emojis or any extra text.
-            - If the message body is already Chinese, output it unchanged.
-            Output only the translated text.""";
-
-    public String outgoingSystemPrompt = """
-            You are a translation engine embedded in a Minecraft client. You translate the Chinese messages
-            a player types into natural English for the Hypixel Minecraft server.
-
-            Style:
-            - Short, casual gaming English — exactly what people type in Bed Wars chat.
-            - Common Hypixel / Bed Wars abbreviations are welcome when they are unambiguous
-              ("def", "inc", "mid", "obby", "dia", "gg", "wp", "omw", "ty"), but never mix Chinese
-              characters into the English output.
-            - Keep player names, numbers and coordinates unchanged — with one exception:
-              a Chinese player name must be written in pinyin / Roman letters
-              (user IDs are ASCII, so a Chinese character shows up as garbage for other players).
-              Never drop a player name the player actually typed.
-            - Mixed Chinese and English input must still come out as all English:
-              translate the Chinese parts and keep the English parts.
-            - You must never keep any Chinese character in the output, not even in a name.
-            - Do not add greetings, emojis, explanations or punctuation noise.
-
-            Examples:
-            你来防守 -> u def
-            中路有人进攻 -> inc mid
-            我们床没了，先撤 -> we lost our bed, fall back
-            干得漂亮 -> wp
-            等我一下，马上到 -> wait for me, omw
-            我们有黑曜石，直接冲他家 -> we have obby, rush their base
-            他残血了，你上 -> he is low hp, go
-            小明你来防守 -> xiaoming you def
-            ok 我来了 -> ok im coming
-
-            Rules:
-            - Translate only. Do NOT answer, explain, comment on or continue the conversation.
-            - Do NOT add quotes, prefixes, emojis or any extra text.
-            - Only when the whole message is already English may you output it unchanged;
-              if it contains any Chinese, the output must be fully English.
-            Output only the English translation.""";
+    public String outgoingSystemPrompt =
+            "You are a translation engine embedded in a Minecraft client. You translate the Chinese messages\n"
+            + "a player types into natural English for the Hypixel Minecraft server.\n"
+            + "\n"
+            + "Style:\n"
+            + "- Short, casual gaming English — exactly what people type in Bed Wars chat.\n"
+            + "- Common Hypixel / Bed Wars abbreviations are welcome when they are unambiguous\n"
+            + "  (\"def\", \"inc\", \"mid\", \"obby\", \"dia\", \"gg\", \"wp\", \"omw\", \"ty\"), but never mix Chinese\n"
+            + "  characters into the English output.\n"
+            + "- Keep player names, numbers and coordinates unchanged — with one exception:\n"
+            + "  a Chinese player name must be written in pinyin / Roman letters\n"
+            + "  (user IDs are ASCII, so a Chinese character shows up as garbage for other players).\n"
+            + "  Never drop a player name the player actually typed.\n"
+            + "- Mixed Chinese and English input must still come out as all English:\n"
+            + "  translate the Chinese parts and keep the English parts.\n"
+            + "- You must never keep any Chinese character in the output, not even in a name.\n"
+            + "- Do not add greetings, emojis, explanations or punctuation noise.\n"
+            + "\n"
+            + "Examples:\n"
+            + "你来防守 -> u def\n"
+            + "中路有人进攻 -> inc mid\n"
+            + "我们床没了，先撤 -> we lost our bed, fall back\n"
+            + "干得漂亮 -> wp\n"
+            + "等我一下，马上到 -> wait for me, omw\n"
+            + "我们有黑曜石，直接冲他家 -> we have obby, rush their base\n"
+            + "他残血了，你上 -> he is low hp, go\n"
+            + "小明你来防守 -> xiaoming you def\n"
+            + "ok 我来了 -> ok im coming\n"
+            + "\n"
+            + "Rules:\n"
+            + "- Translate only. Do NOT answer, explain, comment on or continue the conversation.\n"
+            + "- Do NOT add quotes, prefixes, emojis or any extra text.\n"
+            + "- Only when the whole message is already English may you output it unchanged;\n"
+            + "  if it contains any Chinese, the output must be fully English.\n"
+            + "Output only the English translation.";
 
     // ------------------------------------------------------------------
     // 读写
     // ------------------------------------------------------------------
 
     /**
+     * 配置目录，由各加载器的装配层注入。
+     *
+     * <p>共享层不能 import 任何加载器 API（它由 Fabric 与 Forge 两个构建编译同一份文件），
+     * 所以「配置放哪儿」这件事只能由装配层告诉它：Fabric 传
+     * {@code FabricLoader.getInstance().getConfigDir()}，Forge 1.8.9 传
+     * {@code Loader.instance().getConfigDir()}。两者的实际目录都是 {@code .minecraft/config}，
+     * 所以两条线的配置文件可以共用同一个（这也是有意的：玩家换版本不用重新配一次）。
+     *
+     * <p>v2.3.0 之前这里直接调用 {@code FabricLoader} 并用 {@code catch (Throwable)} 兜底，
+     * 那样在 Forge 线上会编译不过 —— 换成注入之后，两条线都不再依赖运行时类是否存在。
+     */
+    private static volatile Path configDirOverride;
+
+    /**
+     * 由各加载器的装配层调用，设置配置文件所在目录。
+     *
+     * @param dir 配置目录；传 {@code null} 表示退回相对路径
+     */
+    public static void setConfigDir(Path dir) {
+        configDirOverride = dir;
+    }
+
+    /**
      * 配置文件路径：{@code .minecraft/config/hxtranslate.json}。
      *
-     * <p>取不到 Fabric 环境（例如离线自检程序）时退回到相对路径，
+     * <p>装配层还没注入目录时（离线自检、单元测试）退回到相对路径，
      * 保证这个辅助方法本身永远不会把调用方炸掉 —— 它只被日志和读写用，
      * 不该因为环境缺失影响到翻译主流程。
      */
     public static Path configPath() {
-        try {
-            return FabricLoader.getInstance().getConfigDir().resolve("hxtranslate.json");
-        } catch (Throwable ignored) {
-            return Path.of("config", "hxtranslate.json");
+        Path dir = configDirOverride;
+        if (dir != null) {
+            return dir.resolve("hxtranslate.json");
         }
+        return Paths.get("config", "hxtranslate.json");
+    }
+
+    /**
+     * 以 UTF-8 读一个文本文件（Java 8 写法）。
+     *
+     * <p>{@code Files.readString} 是 Java 11 才有的，1.8.9 那条线编译不过；
+     * 这里用 {@code readAllBytes} 等价替代，语义完全一致（整份读入 + 指定字符集解码）。
+     */
+    private static String readUtf8(Path path) throws IOException {
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 
     /**
@@ -628,7 +674,7 @@ public final class TranslatorConfig {
         }
 
         try {
-            String json = Files.readString(path, StandardCharsets.UTF_8);
+            String json = readUtf8(path);
             TranslatorConfig loaded = GSON.fromJson(json, TranslatorConfig.class);
             if (loaded == null) {
                 throw new JsonSyntaxException("配置文件为空");
@@ -707,7 +753,7 @@ public final class TranslatorConfig {
      */
     private static void treatMissingVersionAsFirst(String diskJson, TranslatorConfig loaded) {
         try {
-            if (!JsonParser.parseString(diskJson).getAsJsonObject().has("configVersion")) {
+            if (!new JsonParser().parse(diskJson).getAsJsonObject().has("configVersion")) {
                 loaded.configVersion = VERSION_WITHOUT_FIELD;
                 Log.LOGGER.info("配置里没有 configVersion（v1.0.0 时代的文件），按 v{} 执行迁移",
                         VERSION_WITHOUT_FIELD);
@@ -742,7 +788,7 @@ public final class TranslatorConfig {
         Path fileName = path.getFileName();
         String name = (fileName == null ? "hxtranslate.json" : fileName.toString()) + ".broken-" + stamp;
         Path parent = path.getParent();
-        return parent == null ? Path.of(name) : parent.resolve(name);
+        return parent == null ? Paths.get(name) : parent.resolve(name);
     }
 
     /** 同一秒里坏两次也不覆盖上一份备份：依次尝试 {@code -2}、{@code -3}…。 */
@@ -768,10 +814,12 @@ public final class TranslatorConfig {
      */
     private void fillMissingFields(String diskJson, Path path) {
         try {
-            JsonObject onDisk = JsonParser.parseString(diskJson).getAsJsonObject();
+            JsonObject onDisk = new JsonParser().parse(diskJson).getAsJsonObject();
             JsonObject current = GSON.toJsonTree(this).getAsJsonObject();
             List<String> missing = new ArrayList<>();
-            for (String key : current.keySet()) {
+            // gson 2.2.4（1.8.9 自带）没有 JsonObject.keySet()，用 entrySet() 取键
+            for (java.util.Map.Entry<String, JsonElement> field : current.entrySet()) {
+                String key = field.getKey();
                 if (!onDisk.has(key)) {
                     missing.add(key);
                 }
@@ -917,7 +965,7 @@ public final class TranslatorConfig {
 
         // ---- v4 -> v5：DeepSeek 2026-09 起下线 deepseek-chat 等旧模型名 ----
         if (from < 5) {
-            if (model == null || model.isBlank() || RETIRED_MODELS.contains(model.trim().toLowerCase(Locale.ROOT))) {
+            if (model == null || LangUtils.isBlank(model) || RETIRED_MODELS.contains(model.trim().toLowerCase(Locale.ROOT))) {
                 Log.LOGGER.info("模型名 {} 已下线，自动切换为 {}",
                         model, defaults.model);
                 model = defaults.model;
@@ -936,7 +984,7 @@ public final class TranslatorConfig {
                 httpTimeoutSeconds = defaults.httpTimeoutSeconds;
                 changed = true;
             }
-            if (failureFallback == null || failureFallback.isBlank()) {
+            if (failureFallback == null || LangUtils.isBlank(failureFallback)) {
                 failureFallback = defaults.failureFallback;
                 changed = true;
             }
@@ -1046,7 +1094,7 @@ public final class TranslatorConfig {
     }
 
     private static boolean needsPromptUpgrade(String prompt, String[] legacyMarkers) {
-        if (prompt == null || prompt.isBlank()) {
+        if (prompt == null || LangUtils.isBlank(prompt)) {
             return true;
         }
         // 老版本的默认提示词：还带着识别标记，说明没被自定义过，可以安全替换
@@ -1096,7 +1144,7 @@ public final class TranslatorConfig {
             if (!Files.exists(path)) {
                 return GSON.toJson(current);
             }
-            JsonElement onDisk = JsonParser.parseString(Files.readString(path, StandardCharsets.UTF_8));
+            JsonElement onDisk = new JsonParser().parse(readUtf8(path));
             if (!onDisk.isJsonObject()) {
                 return GSON.toJson(current);
             }
@@ -1124,7 +1172,7 @@ public final class TranslatorConfig {
     public static boolean writeAtomically(Path path, String json) {
         Path temp = path.resolveSibling(path.getFileName() + ".tmp");
         try {
-            Files.writeString(temp, json, StandardCharsets.UTF_8);
+            Files.write(temp, json.getBytes(StandardCharsets.UTF_8));
             try {
                 Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (AtomicMoveNotSupportedException e) {
@@ -1156,10 +1204,10 @@ public final class TranslatorConfig {
                     configVersion, CURRENT_CONFIG_VERSION);
             configVersion = CURRENT_CONFIG_VERSION;
         }
-        if (apiBaseUrl == null || apiBaseUrl.isBlank()) {
+        if (apiBaseUrl == null || LangUtils.isBlank(apiBaseUrl)) {
             apiBaseUrl = "https://api.deepseek.com";
         }
-        if (model == null || model.isBlank()) {
+        if (model == null || LangUtils.isBlank(model)) {
             model = DEFAULT_MODEL;
         }
         minLatinLetters = Math.max(1, minLatinLetters);
@@ -1181,7 +1229,7 @@ public final class TranslatorConfig {
         httpTimeoutSeconds = Math.max(3, httpTimeoutSeconds);
         maxTokens = Math.min(MAX_TOKENS_LIMIT, Math.max(32, maxTokens));
         temperature = Math.min(2.0, Math.max(0.0, temperature));
-        if (failureFallback == null || failureFallback.isBlank()) {
+        if (failureFallback == null || LangUtils.isBlank(failureFallback)) {
             failureFallback = "CANCEL";
         }
         // 连字符也认：写成 send-original 的不少，而认错的代价是「消息静默不发出去」，
@@ -1263,6 +1311,6 @@ public final class TranslatorConfig {
     }
 
     public boolean hasApiKey() {
-        return apiKey != null && !apiKey.isBlank();
+        return apiKey != null && !LangUtils.isBlank(apiKey);
     }
 }

@@ -76,7 +76,8 @@ public final class TranslationService {
      * （以前是在构造时把数值固化进闭包，改配置必须重启游戏才生效。）
      */
     private Map<String, String> createCache() {
-        return new LinkedHashMap<>(16, 0.75f, true) {
+        // Java 8 不允许「菱形 + 匿名类」同时用（那是 Java 9 的改进），显式写类型参数
+        return new LinkedHashMap<String, String>(16, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
                 // 下限用配置里的常量，别在这里写魔法数字：以前这里是 Math.max(16, ...)，
@@ -114,7 +115,7 @@ public final class TranslationService {
             warnMissingKeyOnce();
             return SubmitResult.NOT_READY;
         }
-        if (text == null || text.isBlank()) {
+        if (text == null || LangUtils.isBlank(text)) {
             return SubmitResult.EMPTY;
         }
 
@@ -226,7 +227,7 @@ public final class TranslationService {
     private static String describeFailure(Throwable t) {
         String message = t.getMessage() == null ? "" : t.getMessage();
         // 消息本身是给开发者看的（可能带类名/堆栈片段），所以只留可读的那部分，并压成一行
-        return "翻译线程内部错误（详情见日志）" + (message.isBlank() ? "" : "：" + message);
+        return "翻译线程内部错误（详情见日志）" + (LangUtils.isBlank(message) ? "" : "：" + message);
     }
 
     /** 正在执行 + 排队中的翻译请求数，给状态命令用。 */

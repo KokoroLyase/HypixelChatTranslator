@@ -20,8 +20,34 @@ import com.isomeria.hxtranslate.config.TranslatorConfig;
  */
 public final class IncomingFilter {
 
-    /** 判断结果。{@code hanRatio} 是正文的汉字占比，调试输出会用到。 */
-    public record Decision(boolean translate, String reason, double hanRatio) {
+    /**
+     * 判断结果。{@code hanRatio} 是正文的汉字占比，调试输出会用到。
+     *
+     * <p>Java 8 没有 record，写成普通不可变类，访问器名字保持不变。
+     */
+    public static final class Decision {
+
+        private final boolean translate;
+        private final String reason;
+        private final double hanRatio;
+
+        public Decision(boolean translate, String reason, double hanRatio) {
+            this.translate = translate;
+            this.reason = reason;
+            this.hanRatio = hanRatio;
+        }
+
+        public boolean translate() {
+            return translate;
+        }
+
+        public String reason() {
+            return reason;
+        }
+
+        public double hanRatio() {
+            return hanRatio;
+        }
 
         public String describe() {
             return translate ? "翻译" : "跳过（" + reason + "）";
@@ -37,7 +63,7 @@ public final class IncomingFilter {
      * @param ownEcho 是否是自己的消息回显
      */
     public static Decision decide(String text, TranslatorConfig config, boolean ignored, boolean ownEcho) {
-        if (text == null || text.isBlank()) {
+        if (text == null || LangUtils.isBlank(text)) {
             return new Decision(false, "空消息", 0);
         }
         if (text.length() > config.maxIncomingChars) {

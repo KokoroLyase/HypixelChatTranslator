@@ -3,6 +3,8 @@ package com.isomeria.hxtranslate.util;
 import com.isomeria.hxtranslate.Log;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -208,7 +210,7 @@ public final class LangUtils {
      *
      * <p>只看这些词而不是全部单词，是为了避免把英文玩家名（{@code Moriarty}、{@code G19sy}）当成英文内容。
      */
-    private static final Set<String> ENGLISH_HINT_WORDS = Set.of(
+    private static final Set<String> ENGLISH_HINT_WORDS = new LinkedHashSet<>(Arrays.asList(
             // 虚词（刻意不收 a / i / u 这类单字母：它们太容易出现在玩家名或中文句子里）
             "an", "the", "is", "are", "was", "were", "be", "been", "am",
             "do", "does", "did", "have", "has", "had", "will", "would", "can", "could",
@@ -235,7 +237,7 @@ public final class LangUtils {
             "gg", "wp", "ez", "inc", "def", "mid", "rush", "rushin", "bed", "range",
             "reach", "sweaty", "chill", "tryhard", "noob", "hacker", "hack", "cheat", "cheater", "camp",
             "carry", "clutch", "obby", "dia", "dias", "gen", "pot", "void", "gap", "fb"
-    );
+    ));
 
     /**
      * 正文里出现了几个「英文信号词」。≥2 个基本可以断定这是一句英文。
@@ -273,7 +275,7 @@ public final class LangUtils {
             if (Character.isLetter(c) && c < 128) {
                 token.append(Character.toLowerCase(c));
             } else {
-                if (!token.isEmpty()) {
+                if (token.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
                     if (ENGLISH_HINT_WORDS.contains(token.toString())) {
                         count++;
                     }
@@ -338,7 +340,7 @@ public final class LangUtils {
         }
         List<Pattern> compiled = new ArrayList<>(regexes.size());
         for (String regex : regexes) {
-            if (regex == null || regex.isBlank()) {
+            if (regex == null || LangUtils.isBlank(regex)) {
                 continue;
             }
             try {
@@ -510,11 +512,11 @@ public final class LangUtils {
         if (lastSpace >= limit / 2) {
             cut = cut.substring(0, lastSpace);
         }
-        cut = cut.stripTrailing();
+        cut = stripTrailing(cut);
         // 别把代理对（emoji 之类）劈成两半：留下孤立的高位代理会变成乱码，
         // 发到服务器还可能被判定为非法字符直接拒收。
         if (!cut.isEmpty() && Character.isHighSurrogate(cut.charAt(cut.length() - 1))) {
-            cut = cut.substring(0, cut.length() - 1).stripTrailing();
+            cut = stripTrailing(cut.substring(0, cut.length() - 1));
         }
         return cut + "…";
     }
@@ -541,13 +543,111 @@ public final class LangUtils {
             if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
                 pendingSpace = true;
             } else if (c >= 0x20 && c != 0x7F) {
-                if (pendingSpace && !builder.isEmpty()) {
+                if (pendingSpace && builder.length() > 0) {
                     builder.append(' ');
                 }
                 pendingSpace = false;
                 builder.append(c);
             }
             // 其余控制字符直接丢弃
+        }
+        return builder.toString();
+    }
+
+    // ------------------------------------------------------------------
+    // Java 8 语义兼容层（双版本共编共享层的必需品）
+    //
+    // 共享层由 Fabric(Java 25) 与 Forge 1.8.9(Java 8) 两个构建**编译同一份文件**，
+    // 所以只能用 Java 8 的 API。下面这几个方法是对 Java 11+ 同名方法的**逐语义复刻**，
+    // 不是「差不多就行」的替代：
+    //
+    // - Java 的 `isBlank` / `strip*` 用的是 `Character.isWhitespace`，
+    //   而 Java 8 只有 `String.trim()`（按 `<= ' '` 裁，认不出全角空格、NBSP 之外的一些字符）。
+    //   直接用 trim() 会让两条线对同一句话给出不同判断（例如 `\u3000` 全角空格）。
+    // - `lines()` 按 \n / \r / \r\n 切分，且**不保留末尾空行**，与 split("\n") 不同。
+    // - `repeat(n)` 在 n <= 0 时返回空串。
+    //
+    // 这些差异都会直接影响翻译决策（空消息判定、命令正文提取），所以必须精确对齐。
+    // ------------------------------------------------------------------
+
+    /** {@code String.isBlank()}（Java 11）的 Java 8 复刻：null 也算空白。 */
+    public static boolean isBlank(String text) {
+        if (text == null || text.isEmpty()) {
+            return true;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            if (!Character.isWhitespace(text.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** {@code String.strip()}（Java 11）的 Java 8 复刻。 */
+    public static String strip(String text) {
+        return text == null ? null : stripTrailing(stripLeading(text));
+    }
+
+    /** {@code String.stripLeading()}（Java 11）的 Java 8 复刻。 */
+    public static String stripLeading(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        int start = 0;
+        while (start < text.length() && Character.isWhitespace(text.charAt(start))) {
+            start++;
+        }
+        return start == 0 ? text : text.substring(start);
+    }
+
+    /** {@code String.stripTrailing()}（Java 11）的 Java 8 复刻。 */
+    public static String stripTrailing(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        int end = text.length();
+        while (end > 0 && Character.isWhitespace(text.charAt(end - 1))) {
+            end--;
+        }
+        return end == text.length() ? text : text.substring(0, end);
+    }
+
+    /**
+     * {@code String.lines()}（Java 11）的 Java 8 复刻。
+     *
+     * <p>按 {@code \n} / {@code \r} / {@code \r\n} 切分，且**不保留末尾空行**：
+     * {@code "a\n"} 得到 {@code ["a"]}，空串得到空列表。
+     */
+    public static List<String> lines(String text) {
+        List<String> out = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            return out;
+        }
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n' || c == '\r') {
+                out.add(text.substring(start, i));
+                if (c == '\r' && i + 1 < text.length() && text.charAt(i + 1) == '\n') {
+                    i++;
+                }
+                start = i + 1;
+            }
+        }
+        if (start < text.length()) {
+            out.add(text.substring(start));
+        }
+        return out;
+    }
+
+    /** {@code String.repeat(int)}（Java 11）的 Java 8 复刻：n &lt;= 0 时返回空串。 */
+    public static String repeat(String text, int times) {
+        if (text == null || text.isEmpty() || times <= 0) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(text.length() * times);
+        for (int i = 0; i < times; i++) {
+            builder.append(text);
         }
         return builder.toString();
     }

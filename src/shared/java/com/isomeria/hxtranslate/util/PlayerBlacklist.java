@@ -24,7 +24,7 @@ public final class PlayerBlacklist {
             return false;
         }
         for (String entry : blacklist) {
-            if (entry != null && !entry.isBlank() && entry.trim().equalsIgnoreCase(name)) {
+            if (entry != null && !LangUtils.isBlank(entry) && entry.trim().equalsIgnoreCase(name)) {
                 return true;
             }
         }
@@ -49,7 +49,7 @@ public final class PlayerBlacklist {
         }
         String lower = text.toLowerCase(Locale.ROOT);
         for (String entry : blacklist) {
-            if (entry == null || entry.isBlank()) {
+            if (entry == null || LangUtils.isBlank(entry)) {
                 continue;
             }
             String name = entry.trim().toLowerCase(Locale.ROOT);

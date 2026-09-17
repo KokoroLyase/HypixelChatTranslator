@@ -53,8 +53,27 @@ public final class DeepSeekClient {
     /** {@code models} 输出的字符上限（在 {@link #MAX_LISTED_MODELS} 之外再兜一层长名）。 */
     private static final int MAX_MODELS_TEXT_CHARS = 400;
 
-    /** 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。 */
-    public record Result(boolean ok, String text, String error, boolean retryable) {
+    /**
+     * 翻译结果：ok 为 false 时 error 里是给用户看的失败原因。
+     *
+     * <p>Java 8 没有 record（1.8.9 那条线编译不过），所以写成普通不可变类；
+     * 访问器名字与原来的 record 完全一致（{@code ok()} / {@code text()} / {@code error()} /
+     * {@code retryable()}），调用处一处都不用改。
+     */
+    public static final class Result {
+
+        private final boolean ok;
+        private final String text;
+        private final String error;
+        private final boolean retryable;
+
+        public Result(boolean ok, String text, String error, boolean retryable) {
+            this.ok = ok;
+            this.text = text;
+            this.error = error;
+            this.retryable = retryable;
+        }
+
         public static Result success(String text) {
             return new Result(true, text, null, false);
         }
@@ -66,6 +85,52 @@ public final class DeepSeekClient {
         /** 可重试的失败：限流、服务端错误、网络抖动。 */
         public static Result retryableFailure(String error) {
             return new Result(false, null, error, true);
+        }
+
+        public boolean ok() {
+            return ok;
+        }
+
+        public String text() {
+            return text;
+        }
+
+        public String error() {
+            return error;
+        }
+
+        public boolean retryable() {
+            return retryable;
+        }
+
+        // record 会自动生成 equals/hashCode/toString，这里保持同样的语义
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof Result)) {
+                return false;
+            }
+            Result that = (Result) other;
+            return ok == that.ok && retryable == that.retryable
+                    && (text == null ? that.text == null : text.equals(that.text))
+                    && (error == null ? that.error == null : error.equals(that.error));
+        }
+
+        @Override
+        public int hashCode() {
+            int hash = ok ? 1 : 0;
+            hash = 31 * hash + (retryable ? 1 : 0);
+            hash = 31 * hash + (text == null ? 0 : text.hashCode());
+            hash = 31 * hash + (error == null ? 0 : error.hashCode());
+            return hash;
+        }
+
+        @Override
+        public String toString() {
+            return "Result[ok=" + ok + ", text=" + text + ", error=" + error
+                    + ", retryable=" + retryable + "]";
         }
     }
 
@@ -163,9 +228,9 @@ public final class DeepSeekClient {
             if (status < 200 || status >= 300) {
                 return httpError(status, response);
             }
-            JsonElement parsed = JsonParser.parseString(response);
+            JsonElement parsed = new JsonParser().parse(response);
             JsonArray data = parsed.getAsJsonObject().getAsJsonArray("data");
-            if (data == null || data.isEmpty()) {
+            if (data == null || data.size() == 0) {   // gson 2.2.4（1.8.9）没有 JsonArray.isEmpty()
                 return Result.failure("返回内容里没有模型列表");
             }
             StringBuilder names = new StringBuilder();
@@ -191,7 +256,7 @@ public final class DeepSeekClient {
                 if (id.isEmpty()) {
                     continue;
                 }
-                if (!names.isEmpty()) {
+                if (names.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
                     names.append(", ");
                 }
                 names.append(id);
@@ -382,7 +447,7 @@ public final class DeepSeekClient {
                 }
                 buffer.write(chunk, 0, read);
             }
-            return Result.success(buffer.toString(StandardCharsets.UTF_8));
+            return Result.success(buffer.toString("UTF-8"));   // ByteArrayOutputStream.toString(Charset) 是 Java 10 的
         } catch (IOException e) {
             // 与 attempt / listModels 走同一个出口（v2.2.1 漏了这一处，v2.2.2 补上）：
             // 读超时恰恰最容易在这里抛出（服务端接了连接但响应慢），
@@ -409,13 +474,13 @@ public final class DeepSeekClient {
 
     private Result parseResponse(String response, String sourceText, Direction direction) {
         try {
-            JsonElement parsed = JsonParser.parseString(response);
+            JsonElement parsed = new JsonParser().parse(response);
             if (!parsed.isJsonObject()) {
                 return Result.failure("返回内容不是 JSON");
             }
             JsonObject root = parsed.getAsJsonObject();
             JsonArray choices = root.getAsJsonArray("choices");
-            if (choices == null || choices.isEmpty()) {
+            if (choices == null || choices.size() == 0) {   // gson 2.2.4 没有 JsonArray.isEmpty()
                 return Result.failure("返回内容为空");
             }
             JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
@@ -461,23 +526,33 @@ public final class DeepSeekClient {
     private Result httpError(int status, String response) {
         String detail = extractErrorMessage(response);
 
-        return switch (status) {
-            case 400 -> Result.failure("请求被拒绝 (400)，通常是模型名不对；"
-                    + "当前模型 §f" + config.model + "§c，可改成 deepseek-flash。" + detail);
+        // Java 8 没有 switch 表达式（1.8.9 那条线编译不过），改成经典 switch。
+        switch (status) {
+            case 400:
+                return Result.failure("请求被拒绝 (400)，通常是模型名不对；"
+                        + "当前模型 §f" + config.model + "§c，可改成 deepseek-flash。" + detail);
             // 401/402/429 都补上「下一步」（v2.2.3）：这三条以前只说「出错了」，
             // 而玩家看完最需要知道的就是该做什么 —— 对照 400 那条本来就给了动作。
-            case 401 -> Result.failure("API Key 无效或已过期 (401)。用 §f/hxtranslate key <你的Key>§c 重新设置。" + detail);
-            case 402 -> Result.failure("DeepSeek 账户余额不足 (402)，需要去 platform.deepseek.com 充值。" + detail);
-            case 429 -> Result.retryableFailure("请求过于频繁被限流 (429)，可调大配置里的 §frequestsPerMinute§c。" + detail);
-            case 500, 502, 503, 504 -> Result.retryableFailure("DeepSeek 服务暂时不可用 (" + status + ") " + detail);
-            default -> Result.failure("HTTP " + status + " " + detail);
-        };
+            case 401:
+                return Result.failure("API Key 无效或已过期 (401)。用 §f/hxtranslate key <你的Key>§c 重新设置。" + detail);
+            case 402:
+                return Result.failure("DeepSeek 账户余额不足 (402)，需要去 platform.deepseek.com 充值。" + detail);
+            case 429:
+                return Result.retryableFailure("请求过于频繁被限流 (429)，可调大配置里的 §frequestsPerMinute§c。" + detail);
+            case 500:
+            case 502:
+            case 503:
+            case 504:
+                return Result.retryableFailure("DeepSeek 服务暂时不可用 (" + status + ") " + detail);
+            default:
+                return Result.failure("HTTP " + status + " " + detail);
+        }
     }
 
     private String extractErrorMessage(String response) {
         String detail = "";
         try {
-            JsonElement parsed = JsonParser.parseString(response);
+            JsonElement parsed = new JsonParser().parse(response);
             if (parsed.isJsonObject()) {
                 JsonObject error = parsed.getAsJsonObject().getAsJsonObject("error");
                 if (error != null && error.has("message")) {
@@ -487,7 +562,7 @@ public final class DeepSeekClient {
         } catch (RuntimeException ignored) {
             // 不是 JSON 就按原文截断显示
         }
-        if (detail.isEmpty() && response != null && !response.isBlank()) {
+        if (detail.isEmpty() && response != null && !LangUtils.isBlank(response)) {
             detail = response;
         }
         // 这段内容来自接口（不少用户配的是第三方中转站），对模组来说是「不可信输入」：

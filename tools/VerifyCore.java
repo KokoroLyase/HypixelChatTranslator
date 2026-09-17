@@ -1,6 +1,7 @@
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.isomeria.hxtranslate.Log;
 import com.isomeria.hxtranslate.chat.ChatClientPort;
 import com.isomeria.hxtranslate.chat.ChatTranslator;
 import com.isomeria.hxtranslate.chat.FeedbackPort;
@@ -22,6 +23,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -75,6 +77,8 @@ public class VerifyCore {
         v222SecondPassFixes();
         v214AuditFixes();
         v230GlossaryAudit();
+        logFacade();
+        sharedLayerPurity();
         versionConsistency();
         docConsistency();
 
@@ -108,12 +112,12 @@ public class VerifyCore {
 
         checkEq("短文本不截断", "hello", LangUtils.truncateForChat("hello", 256));
         checkEq("正好等于上限不截断", "abcde", LangUtils.truncateForChat("abcde", 5));
-        String longText = "word ".repeat(100).trim();
+        String longText = LangUtils.repeat("word ", 100).trim();
         String truncated = LangUtils.truncateForChat(longText, 20);
         check("超长被截断到上限内: " + truncated, truncated.length() <= 20);
         check("截断后带省略号", truncated.endsWith("…"));
         checkEq("在词边界切断", "word word word…", truncated);
-        check("连续无空格也能硬切", LangUtils.truncateForChat("a".repeat(50), 10).length() <= 10);
+        check("连续无空格也能硬切", LangUtils.truncateForChat(LangUtils.repeat("a", 50), 10).length() <= 10);
 
         // v1.0.1 新增：汉字占比 / 正文提取 / 中文标点
         checkEq("纯中文占比 1.0", 1.0, LangUtils.hanRatio("你购买了金苹果"));
@@ -203,7 +207,11 @@ public class VerifyCore {
         // ---- 老配置迁移：v1.0.1 用户的配置里没有 /shout，还误收录了 /chat ----
         TranslatorConfig legacy = new TranslatorConfig();
         legacy.configVersion = 2;
-        legacy.translateCommandArgs = new LinkedHashMap<>(Map.of("msg", 1, "r", 0, "chat", 0));
+        Map<String, Integer> legacyArgs = new LinkedHashMap<>();
+        legacyArgs.put("msg", 1);
+        legacyArgs.put("r", 0);
+        legacyArgs.put("chat", 0);
+        legacy.translateCommandArgs = legacyArgs;
         legacy.guardedCommands = new ArrayList<>();
         legacy.protectedCommands = new ArrayList<>();
         boolean migrated = legacy.applyMigrations();
@@ -294,7 +302,7 @@ public class VerifyCore {
         TranslatorConfig v3 = new TranslatorConfig();
         v3.configVersion = 3;
         v3.requestsPerMinute = 40;
-        v3.glossary = new ArrayList<>(List.of("obby=黑曜石（obsidian）"));
+        v3.glossary = new ArrayList<>(Arrays.asList("obby=黑曜石（obsidian）"));
         v3.applyMigrations();
         check("v4 迁移补上了新术语（sweaty）",
                 v3.glossary.stream().anyMatch(g -> g.startsWith("sweaty=")));
@@ -332,10 +340,10 @@ public class VerifyCore {
         TranslatorConfig config = new TranslatorConfig();
         // 带格式代码的英文喊话：清洗后应当判为「该翻译」
         String dirtyEnglish = "§7[喊话] §f[红队] §b[MVP+] §rSteve: §fgreen u have a real good range";
-        assertTranslate(config, LangUtils.stripFormattingCodes(dirtyEnglish).strip());
+        assertTranslate(config, LangUtils.strip(LangUtils.stripFormattingCodes(dirtyEnglish)));
         // 带格式代码的中文播报：清洗后仍然不该翻译
-        assertSkip(config, LangUtils.stripFormattingCodes("§c你购买了金苹果§r").strip());
-        assertSkip(config, LangUtils.stripFormattingCodes("§7Blaineley被G19sy塞进了戴维·琼斯的箱子。").strip());
+        assertSkip(config, LangUtils.strip(LangUtils.stripFormattingCodes("§c你购买了金苹果§r")));
+        assertSkip(config, LangUtils.strip(LangUtils.stripFormattingCodes("§7Blaineley被G19sy塞进了戴维·琼斯的箱子。")));
 
         // 2) TranslationService 提交结果要能区分「没配 Key / 被限流 / 队列积压」
         try (MockServer server = new MockServer()) {
@@ -404,7 +412,7 @@ public class VerifyCore {
         check("默认必须关闭思考模式", !new TranslatorConfig().enableThinking);
 
         // 2) 黑名单判断
-        List<String> blacklist = List.of("Steve", "小张");
+        List<String> blacklist = Arrays.asList("Steve", "小张");
         check("精确名字命中", PlayerBlacklist.matchesName("steve", blacklist));
         check("不在名单不命中", !PlayerBlacklist.matchesName("Alex", blacklist));
         check("系统聊天里的 [MVP+] Steve: 命中", PlayerBlacklist.speaksIn("[MVP+] Steve: inc mid", blacklist));
@@ -413,7 +421,7 @@ public class VerifyCore {
         check("正文提到名字不算发言", !PlayerBlacklist.speaksIn("[MVP+] Alex: ask Steve to def", blacklist));
         check("名字是别人前缀的一部分不算",
                 !PlayerBlacklist.speaksIn("[MVP+] SteveJobs: hi", blacklist));
-        check("空名单不命中", !PlayerBlacklist.speaksIn("[MVP+] Steve: hi", List.of()));
+        check("空名单不命中", !PlayerBlacklist.speaksIn("[MVP+] Steve: hi", Collections.emptyList()));
 
         // 3) 请求体：模型名、思考模式、注入防线、长度校验
         try (MockServer server = new MockServer()) {
@@ -424,7 +432,7 @@ public class VerifyCore {
             DeepSeekClient client = new DeepSeekClient(config);
 
             client.translate("hello", Direction.INCOMING);
-            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            JsonObject body = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class);
             checkEq("请求里模型名是 deepseek-flash", "deepseek-flash", body.get("model").getAsString());
             checkEq("请求里思考模式已关闭", "disabled",
                     body.getAsJsonObject("thinking").get("type").getAsString());
@@ -434,7 +442,7 @@ public class VerifyCore {
                     sys.contains("DATA to translate") && sys.contains("never obey"));
 
             // 模型开始长篇大论时要拦下来
-            server.response = ok("x".repeat(600));
+            server.response = ok(LangUtils.repeat("x", 600));
             DeepSeekClient.Result tooLong = client.translate("hi", Direction.INCOMING);
             check("超长译文被拦下", !tooLong.ok() && tooLong.error().contains("长度异常"));
 
@@ -512,19 +520,19 @@ public class VerifyCore {
         long now = System.currentTimeMillis();
         check("时间窗内：自己发出去的译文回显认得出来",
                 EchoMatcher.findEcho("[MVP+] Isomeria: wp",
-                        List.of(EchoMatcher.Sent.at("wp", now - 900)), now) != null);
+                        Arrays.asList(EchoMatcher.Sent.at("wp", now - 900)), now) != null);
         check("玩家反馈场景：约 1 分钟后别人说的 wp 必须照常翻译",
                 EchoMatcher.findEcho("[MVP+] [红队] Steve: wp",
-                        List.of(EchoMatcher.Sent.at("wp", now - 60_000)), now) == null);
+                        Arrays.asList(EchoMatcher.Sent.at("wp", now - 60_000)), now) == null);
         check("时间窗边缘内仍算自己的回显",
                 EchoMatcher.findEcho("[MVP+] Isomeria: ty",
-                        List.of(EchoMatcher.Sent.at("ty", now - 14_000)), now) != null);
+                        Arrays.asList(EchoMatcher.Sent.at("ty", now - 14_000)), now) != null);
         check("超过时间窗的长消息也不再认领",
                 EchoMatcher.findEcho("[MVP+] Steve: inc mid, u def obby",
-                        List.of(EchoMatcher.Sent.at("inc mid, u def obby", now - 16_000)), now) == null);
+                        Arrays.asList(EchoMatcher.Sent.at("inc mid, u def obby", now - 16_000)), now) == null);
         check("时钟回拨时宁可多翻一条，也不吞别人的话",
                 EchoMatcher.findEcho("[MVP+] Steve: wp",
-                        List.of(EchoMatcher.Sent.at("wp", now + 5_000)), now) == null);
+                        Arrays.asList(EchoMatcher.Sent.at("wp", now + 5_000)), now) == null);
 
         try (MockServer server = new MockServer()) {
             TranslatorConfig config = new TranslatorConfig();
@@ -576,7 +584,7 @@ public class VerifyCore {
                     (ok, t, e) -> { order.add("后发(命中缓存)"); both.countDown(); });
             check("两条都拿到回调", both.await(10, TimeUnit.SECONDS));
             checkEq("命中缓存的第二条不插队，仍然先发先回",
-                    List.of("先发(走网络)", "后发(命中缓存)"), List.copyOf(order));
+                    Arrays.asList("先发(走网络)", "后发(命中缓存)"), new ArrayList<>(order));
             service.shutdown();
 
             // 5) 被背压挡下的请求不该消耗每分钟配额
@@ -812,7 +820,7 @@ public class VerifyCore {
         // ---- v5 -> v6 迁移 ----
         TranslatorConfig v5 = new TranslatorConfig();
         v5.configVersion = 5;
-        v5.ignorePatterns = new ArrayList<>(List.of(
+        v5.ignorePatterns = new ArrayList<>(Arrays.asList(
                 "^\\+\\d+ .*(XP|Coins|Tokens)", "^(You|A player) (joined|left)", "^Sending you to"));
         v5.applyMigrations();
         checkEq("v5 的默认列表补上了横幅规则", 5, v5.ignorePatterns.size());
@@ -821,7 +829,7 @@ public class VerifyCore {
         // 用户自己加过规则：旧默认值还在 → 照样补缺，且不删他的
         TranslatorConfig extended = new TranslatorConfig();
         extended.configVersion = 5;
-        extended.ignorePatterns = new ArrayList<>(List.of(
+        extended.ignorePatterns = new ArrayList<>(Arrays.asList(
                 "^\\+\\d+ .*(XP|Coins|Tokens)", "^(You|A player) (joined|left)", "^Sending you to",
                 "^我的自定义规则"));
         extended.applyMigrations();
@@ -831,7 +839,7 @@ public class VerifyCore {
         // 用户删过旧默认值：说明有意调整过，不硬塞
         TranslatorConfig custom = new TranslatorConfig();
         custom.configVersion = 5;
-        custom.ignorePatterns = new ArrayList<>(List.of("^我的自定义规则"));
+        custom.ignorePatterns = new ArrayList<>(Arrays.asList("^我的自定义规则"));
         custom.applyMigrations();
         checkEq("用户删过默认值就不动它", 1, custom.ignorePatterns.size());
         checkEq("自定义内容原样保留", "^我的自定义规则", custom.ignorePatterns.get(0));
@@ -882,7 +890,7 @@ public class VerifyCore {
             legacyIgnores.add("^Sending you to");
             legacyJson.add("ignorePatterns", legacyIgnores);
             Path legacyFile = dir.resolve("hxtranslate.json");
-            Files.writeString(legacyFile, legacyJson.toString(), StandardCharsets.UTF_8);
+            Files.write(legacyFile, legacyJson.toString().getBytes(StandardCharsets.UTF_8));
 
             TranslatorConfig legacy = TranslatorConfig.load(legacyFile);
             checkEq("没有 configVersion 的旧配置：模型名换成当前的（否则每条请求 400）",
@@ -896,20 +904,20 @@ public class VerifyCore {
             check("旧配置的老提示词被换成了新默认值", legacy.incomingSystemPrompt.contains("Examples:"));
             checkEq("用户写的 API Key 原样保留", "sk-legacy", legacy.apiKey);
             check("迁移结果落盘（configVersion 已写进文件）",
-                    Files.readString(legacyFile, StandardCharsets.UTF_8)
+                    new String(Files.readAllBytes(legacyFile), StandardCharsets.UTF_8)
                             .contains("\"configVersion\": " + TranslatorConfig.CURRENT_CONFIG_VERSION));
 
             // ---- 2) 坏 JSON：备份原件 + 给玩家看的原因，且绝不静默覆盖 ----
             Path brokenFile = dir.resolve("broken.json");
             String brokenText = "{\n  \"apiKey\": \"sk-USER-SECRET\",\n  \"glossary\": [\"我的词=意思\"]\n"
                     + "  \"debugLog\": true\n}"; // 少一个逗号，正是手改配置最容易犯的错
-            Files.writeString(brokenFile, brokenText, StandardCharsets.UTF_8);
+            Files.write(brokenFile, brokenText.getBytes(StandardCharsets.UTF_8));
 
             TranslatorConfig fallback = TranslatorConfig.load(brokenFile);
             check("坏配置：给出给玩家看的警告（不是只写日志）",
                     fallback.loadWarning() != null && fallback.loadWarning().contains("JSON"));
             check("坏配置：本次退回默认值", !fallback.hasApiKey());
-            checkEq("坏配置：原文件一字未改", brokenText, Files.readString(brokenFile, StandardCharsets.UTF_8));
+            checkEq("坏配置：原文件一字未改", brokenText, new String(Files.readAllBytes(brokenFile), StandardCharsets.UTF_8));
 
             List<Path> backups = backupsOf(dir, "broken.json.broken-");
             checkEq("坏配置：生成了备份", 1, backups.size());
@@ -922,7 +930,7 @@ public class VerifyCore {
 
             // ---- 3) 数值笔误（例如 configVersion 写成 6.5）同样不能静默 ----
             Path typoFile = dir.resolve("typo.json");
-            Files.writeString(typoFile, "{\"configVersion\": 6.5, \"apiKey\": \"sk-typo\"}", StandardCharsets.UTF_8);
+            Files.write(typoFile, "{\"configVersion\": 6.5, \"apiKey\": \"sk-typo\"}".getBytes(StandardCharsets.UTF_8));
             TranslatorConfig typo = TranslatorConfig.load(typoFile);
             check("数值笔误：有警告", typo.loadWarning() != null);
             checkEq("数值笔误：原件也备份了", 1, backupsOf(dir, "typo.json.broken-").size());
@@ -933,14 +941,13 @@ public class VerifyCore {
             // 与 JsonSyntaxException 是兄弟不是父子 —— 它直接逃出 load()，而 load() 是在
             // HxTranslateClient.onInitializeClient() 里调的，等于「游戏一启动就崩」，
             // 连备份与「配置坏了」的提示都来不及做。int 字段没这个问题（实测走 JsonSyntaxException）。
-            record BadType(String label, String json, String backupPrefix) { }
-            List<BadType> badTypes = List.of(
+            List<BadType> badTypes = Arrays.asList(
                     new BadType("temperature 收到字符串", "{\"configVersion\":8,\"temperature\":\"hot\"}", "badtemp.json"),
                     new BadType("chineseRatioThreshold 收到字符串",
                             "{\"configVersion\":8,\"chineseRatioThreshold\":\"x\"}", "badratio.json"));
             for (BadType bad : badTypes) {
                 Path badFile = dir.resolve(bad.backupPrefix());
-                Files.writeString(badFile, bad.json(), StandardCharsets.UTF_8);
+                Files.write(badFile, bad.json().getBytes(StandardCharsets.UTF_8));
                 TranslatorConfig loaded = null;
                 String failure = null;
                 try {
@@ -955,7 +962,7 @@ public class VerifyCore {
                 checkEq("脏配置（" + bad.label() + "）原件已备份", 1,
                         backupsOf(dir, bad.backupPrefix() + ".broken-").size());
                 check("脏配置（" + bad.label() + "）原文件一字未改",
-                        bad.json().equals(Files.readString(badFile, StandardCharsets.UTF_8)));
+                        bad.json().equals(new String(Files.readAllBytes(badFile), StandardCharsets.UTF_8)));
             }
 
             // ---- 4) 不认识的字段不能被抹掉（用户备注 / 新版模组写过的字段）----
@@ -963,14 +970,12 @@ public class VerifyCore {
             TranslatorConfig note = new TranslatorConfig();
             note.apiKey = "sk-note";
             note.save(noteFile);
-            JsonObject withNote = JsonParser.parseString(Files.readString(noteFile, StandardCharsets.UTF_8))
-                    .getAsJsonObject();
+            JsonObject withNote = new com.google.gson.Gson().fromJson(new String(Files.readAllBytes(noteFile), StandardCharsets.UTF_8), com.google.gson.JsonObject.class);
             withNote.addProperty("myNote", "别删我");
-            Files.writeString(noteFile, withNote.toString(), StandardCharsets.UTF_8);
+            Files.write(noteFile, withNote.toString().getBytes(StandardCharsets.UTF_8));
             TranslatorConfig reloadedNote = TranslatorConfig.load(noteFile);
             reloadedNote.save(noteFile);
-            JsonObject afterSave = JsonParser.parseString(Files.readString(noteFile, StandardCharsets.UTF_8))
-                    .getAsJsonObject();
+            JsonObject afterSave = new com.google.gson.Gson().fromJson(new String(Files.readAllBytes(noteFile), StandardCharsets.UTF_8), com.google.gson.JsonObject.class);
             check("保存不会抹掉模组不认识的字段",
                     afterSave.has("myNote") && "别删我".equals(afterSave.get("myNote").getAsString()));
             checkEq("认识的字段照常写回", "sk-note", afterSave.get("apiKey").getAsString());
@@ -979,7 +984,7 @@ public class VerifyCore {
             Path atomicFile = dir.resolve("atomic.json");
             check("原子写入成功", TranslatorConfig.writeAtomically(atomicFile, "{\"hello\":1}"));
             checkEq("原子写入内容正确", "{\"hello\":1}",
-                    Files.readString(atomicFile, StandardCharsets.UTF_8));
+                    new String(Files.readAllBytes(atomicFile), StandardCharsets.UTF_8));
             check("原子写入不留下临时文件", !Files.exists(dir.resolve("atomic.json.tmp")));
 
             // ---- 6) normalize 的上下限：调大 maxOutgoingChars 会被服务器踢，调小 cacheSize 没意义 ----
@@ -1017,9 +1022,34 @@ public class VerifyCore {
         }
     }
 
+    /** {@code v113ConfigDurability} 里那个本地记录类型的 Java 8 等价写法（该语法 Java 16 才有）。 */
+    private static final class BadType {
+        private final String label;
+        private final String json;
+        private final String backupPrefix;
+
+        BadType(String label, String json, String backupPrefix) {
+            this.label = label;
+            this.json = json;
+            this.backupPrefix = backupPrefix;
+        }
+
+        String label() {
+            return label;
+        }
+
+        String json() {
+            return json;
+        }
+
+        String backupPrefix() {
+            return backupPrefix;
+        }
+    }
+
     /** 读第一份备份；没有备份时返回空串（让断言报红，而不是抛异常中断整轮自检）。 */
     private static String readIfExists(List<Path> backups) throws IOException {
-        return backups.isEmpty() ? "" : Files.readString(backups.get(0), StandardCharsets.UTF_8);
+        return backups.isEmpty() ? "" : new String(Files.readAllBytes(backups.get(0)), StandardCharsets.UTF_8);
     }
 
     /** 等一段有限的时间；超时算失败（避免用例把构建挂死）。 */
@@ -1034,8 +1064,8 @@ public class VerifyCore {
 
     /** 目录里以某个前缀开头的文件（用来找 {@code xxx.broken-<时间戳>} 备份）。 */
     private static List<Path> backupsOf(Path dir, String prefix) throws IOException {
-        try (var stream = Files.list(dir)) {
-            return stream.filter(p -> p.getFileName().toString().startsWith(prefix)).toList();
+        try (java.util.stream.Stream<Path> stream = Files.list(dir)) {
+            return stream.filter(p -> p.getFileName().toString().startsWith(prefix)).collect(java.util.stream.Collectors.toList());
         }
     }
 
@@ -1043,8 +1073,8 @@ public class VerifyCore {
         if (!Files.exists(dir)) {
             return;
         }
-        try (var stream = Files.walk(dir)) {
-            for (Path path : stream.sorted(Collections.reverseOrder()).toList()) {
+        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
+            for (Path path : stream.sorted(Collections.reverseOrder()).collect(java.util.stream.Collectors.toList())) {
                 Files.deleteIfExists(path);
             }
         }
@@ -1081,7 +1111,7 @@ public class VerifyCore {
 
             // 3) 响应体过大：以前 readAllBytes 会把客户端堆打爆，OOM 从工作线程穿出去，
             //    那条出站消息连「未能翻译」都不会计数，直接静默消失。
-            server.response = ok("x".repeat(2 * 1024 * 1024));
+            server.response = ok(LangUtils.repeat("x", 2 * 1024 * 1024));
             DeepSeekClient.Result huge = client.translate("hello there", Direction.INCOMING);
             check("超大响应被拒绝而不是打爆客户端", !huge.ok() && huge.error().contains("过大"));
 
@@ -1102,7 +1132,7 @@ public class VerifyCore {
             thinkingConfig.enableThinking = true;
             server.response = ok("ok");
             new DeepSeekClient(thinkingConfig).translate("hi", Direction.INCOMING);
-            JsonObject thinkingBody = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            JsonObject thinkingBody = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class);
             checkEq("思考模式开启时 thinking.type", "enabled",
                     thinkingBody.getAsJsonObject("thinking").get("type").getAsString());
             check("思考模式开启时不传 temperature（传了不生效）", !thinkingBody.has("temperature"));
@@ -1158,7 +1188,7 @@ public class VerifyCore {
                 hitsIgnorePattern(config, "▬▬▬▬▬▬▬▬ Bed Wars")
                         && !hitsIgnorePattern(config, "[MVP+] Steve: rush mid"));
         check("非法正则只跳过、不炸",
-                LangUtils.compilePatterns(List.of("[未闭合", "^\\\\+\\\\d+ .*(XP|Coins|Tokens)"), null).size() == 1);
+                LangUtils.compilePatterns(Arrays.asList("[未闭合", "^\\\\+\\\\d+ .*(XP|Coins|Tokens)"), null).size() == 1);
         check("空/缺省列表安全",
                 LangUtils.compilePatterns(null, null).isEmpty()
                         && !LangUtils.matchesAny("any text", LangUtils.compilePatterns(null, null)));
@@ -1246,14 +1276,14 @@ public class VerifyCore {
 
         // ---- 英→中：照旧原样列出条目，要求按含义翻成中文 ----
         String toChinese = PromptGlossary.render(
-                List.of("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.INCOMING);
+                Arrays.asList("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.INCOMING);
         check("英→中方向带对照表标题", contains(toChinese, "术语与缩写对照表"));
         check("英→中方向保留原始条目", contains(toChinese, "obby=黑曜石（obsidian）"));
         check("英→中方向要求按含义翻译", contains(toChinese, "不要保留英文原样"));
 
         // ---- 中→英：反查成「中文说法 -> 英文写法」，括号里的说明不进对照表 ----
         String toEnglish = PromptGlossary.render(
-                List.of("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.OUTGOING);
+                Arrays.asList("obby=黑曜石（obsidian）", "rush=速攻、直接冲家"), Direction.OUTGOING);
         check("中→英方向给出英文写法", contains(toEnglish, "黑曜石 -> obby"));
         check("中→英方向去掉括号说明",
                 contains(toEnglish, "黑曜石 -> obby")
@@ -1262,7 +1292,7 @@ public class VerifyCore {
         check("中→英方向要求别硬套", contains(toEnglish, "do not force"));
 
         // 一个条目里有多组对照：分号隔开，两组都要能反查
-        String multi = PromptGlossary.render(List.of("def=防守（defend）；\"u def\"=你来防守"), Direction.OUTGOING);
+        String multi = PromptGlossary.render(Arrays.asList("def=防守（defend）；\"u def\"=你来防守"), Direction.OUTGOING);
         // v2.1.4：英文写法两侧的引号会在渲染时剥掉（术语表格式不支持引号，
         // 而它和提示词里「不要加引号」的规则打架）。
         check("多组对照都进对照表",
@@ -1271,27 +1301,27 @@ public class VerifyCore {
                 !contains(multi, "\""));
 
         // 括号是半角时同样要截掉
-        check("半角括号也截掉", contains(PromptGlossary.render(List.of("dia=钻石(diamond)"), Direction.OUTGOING),
+        check("半角括号也截掉", contains(PromptGlossary.render(Arrays.asList("dia=钻石(diamond)"), Direction.OUTGOING),
                 "钻石 -> dia"));
 
         // ---- 异常输入：宁可少一段提示词，也不能让翻译请求本身出问题 ----
-        check("空术语表不注入", PromptGlossary.render(List.of(), Direction.OUTGOING) == null
+        check("空术语表不注入", PromptGlossary.render(Collections.emptyList(), Direction.OUTGOING) == null
                 && PromptGlossary.render(null, Direction.INCOMING) == null);
         check("没有等号的条目被忽略",
-                PromptGlossary.render(List.of("这不是对照表"), Direction.OUTGOING) == null);
+                PromptGlossary.render(Arrays.asList("这不是对照表"), Direction.OUTGOING) == null);
         check("缺英文写法或中文说法的条目被忽略",
-                PromptGlossary.render(List.of("=只有右边", "onlyleft="), Direction.OUTGOING) == null);
+                PromptGlossary.render(Arrays.asList("=只有右边", "onlyleft="), Direction.OUTGOING) == null);
         check("坏条目不影响好条目",
-                contains(PromptGlossary.render(List.of("这不是对照表", "obby=黑曜石"), Direction.OUTGOING),
+                contains(PromptGlossary.render(Arrays.asList("这不是对照表", "obby=黑曜石"), Direction.OUTGOING),
                         "黑曜石 -> obby"));
         check("术语表里的换行不会带进请求体",
-                !contains(PromptGlossary.render(List.of("obby=黑\n曜石"), Direction.OUTGOING), "\n曜"));
+                !contains(PromptGlossary.render(Arrays.asList("obby=黑\n曜石"), Direction.OUTGOING), "\n曜"));
         check("列表里有 null 也不炸",
                 contains(PromptGlossary.render(Arrays.asList(null, "obby=黑曜石"), Direction.OUTGOING),
                         "黑曜石 -> obby"));
         // 只数对照行（行首是汉字）；表头里也有一个 " -> "，不能拿它当条数
         String manyTable = PromptGlossary.render(manyGlossaryEntries(), Direction.OUTGOING);
-        long capped = manyTable == null ? -1 : manyTable.lines().filter(line -> line.startsWith("词")).count();
+        long capped = manyTable == null ? -1 : LangUtils.lines(manyTable).stream().filter(line -> line.startsWith("词")).count();
         check("反查条数有上限（用户写很长也不撑爆提示词） = " + capped,
                 capped == PromptGlossary.MAX_OUTGOING_PAIRS);
 
@@ -1309,7 +1339,7 @@ public class VerifyCore {
         // v2.1.4：同一中文说法只保留第一个英文写法，所以这里只能写「确定会保留的那一个」。
         // 速度药水 的两条默认写法是 speed / speed pot —— 反查表里留下的是先出现的 speed。
         check("默认术语表的常用说法没有被上限截掉",
-                List.of("残血 -> low hp", "侧翼速攻 -> side rush", "撤、退回来 -> fall back",
+                Arrays.asList("残血 -> low hp", "侧翼速攻 -> side rush", "撤、退回来 -> fall back",
                                 "床已经没了 -> bed gone", "速度药水 -> speed", "等一下 -> hold on")
                         .stream().allMatch(s -> contains(defaultTable, s)));
         // 比上一条更强的规则：默认术语表要**整份**装得下，一条都不许被静默截掉。
@@ -1333,7 +1363,7 @@ public class VerifyCore {
         // ---- v7 迁移：补词不覆盖用户自定义，提示词只动仍是默认值的 ----
         TranslatorConfig user = new TranslatorConfig();
         user.configVersion = 6;
-        user.glossary = new ArrayList<>(List.of("obby=我的黑曜石叫法", "我的词=我的意思"));
+        user.glossary = new ArrayList<>(Arrays.asList("obby=我的黑曜石叫法", "我的词=我的意思"));
         user.outgoingSystemPrompt = "Translate into English, keep it short.";
         user.applyMigrations();
         checkEq("v7 后配置版本", TranslatorConfig.CURRENT_CONFIG_VERSION, user.configVersion);
@@ -1352,7 +1382,7 @@ public class VerifyCore {
         check("仍是默认值的发送方向提示词被升级（补上 obsidian 示例）",
                 stock.outgoingSystemPrompt.contains("我们有黑曜石，直接冲他家 -> we have obby, rush their base"));
         checkEq("升级不会把示例弄重复",
-                1L, stock.outgoingSystemPrompt.lines()
+                1L, LangUtils.lines(stock.outgoingSystemPrompt).stream()
                         .filter(line -> line.contains("we have obby, rush their base")).count());
     }
 
@@ -1423,14 +1453,14 @@ public class VerifyCore {
 
             // 5) 黑名单玩家：签名链路按名字直接跳过
             Harness blacklisted = Harness.incoming(server);
-            blacklisted.config.blacklistedPlayers = new ArrayList<>(List.of("Steve"));
+            blacklisted.config.blacklistedPlayers = new ArrayList<>(Arrays.asList("Steve"));
             blacklisted.client.localPlayerName = "Isomeria";
             blacklisted.translator.onIncoming("[MVP+] Steve: hello", false, true, UUID.randomUUID(), "Steve");
             check("黑名单玩家（签名链路）不翻译", !blacklisted.client.hasChat(300));
 
             // 6) 黑名单玩家：系统消息（Hypixel）只能从正文里认说话人，也要能挡住
             Harness blacklistedText = Harness.incoming(server);
-            blacklistedText.config.blacklistedPlayers = new ArrayList<>(List.of("Steve"));
+            blacklistedText.config.blacklistedPlayers = new ArrayList<>(Arrays.asList("Steve"));
             blacklistedText.translator.onIncoming("[MVP+] Steve: hello", false, false, null, null);
             check("黑名单玩家（系统消息按名字认）不翻译", !blacklistedText.client.hasChat(300));
 
@@ -1552,7 +1582,7 @@ public class VerifyCore {
             check("没有计入「未能翻译」", h.translator.sendCounters().contains("未能翻译 §f0"));
 
             // 请求体里带的是中文原文（确认我们没把别的东西发去翻译）
-            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            JsonObject body = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class);
             checkEq("翻译的是玩家输入的原文", "我们冲中路",
                     body.getAsJsonArray("messages").get(1).getAsJsonObject().get("content").getAsString());
 
@@ -1769,7 +1799,7 @@ public class VerifyCore {
                 englishFor(table, "谢谢").size() == 1);
         // 用户自己写的条目照旧要能反查（这条不能被去重顺手改坏）
         String userTable = PromptGlossary.render(
-                List.of("obby=黑曜石（obsidian）", "我的词=我的意思"), Direction.OUTGOING);
+                Arrays.asList("obby=黑曜石（obsidian）", "我的词=我的意思"), Direction.OUTGOING);
         check("用户自定义条目仍然能反查", contains(userTable, "我的意思 -> 我的词"));
 
         // ---- 5) showErrorsInChat=false 时不能变成「消息凭空消失」----
@@ -1923,7 +1953,7 @@ public class VerifyCore {
     private static void v222RegexSafety() throws Exception {
         System.out.println("== v2.2.2：用户正则的灾难性回溯防护 ==");
         LangUtils.resetRegexCircuit(); // 用例之间互不影响
-        String worstA = "a".repeat(239) + "!";
+        String worstA = LangUtils.repeat("a", 239) + "!";
 
         // 先确认默认正则本身是安全的（别把默认值也一起熔断了）
         TranslatorConfig defaults = new TranslatorConfig();
@@ -1937,9 +1967,9 @@ public class VerifyCore {
         checkEq("默认正则没有被误熔断", 0, LangUtils.disabledRegexCount());
 
         // 灾难性回溯的正则 + 240 字符输入（maxIncomingChars 的上限）
-        List<Pattern> evil = LangUtils.compilePatterns(List.of("(.*a){20}$"), x -> { });
+        List<Pattern> evil = LangUtils.compilePatterns(Arrays.asList("(.*a){20}$"), x -> { });
         checkEq("危险正则编译成功（语法合法）", 1, evil.size());
-        String worst = "a".repeat(239) + "!";
+        String worst = LangUtils.repeat("a", 239) + "!";
         long t1 = System.nanoTime();
         boolean hit = LangUtils.matchesAny(worst, evil);
         long ms = (System.nanoTime() - t1) / 1_000_000;
@@ -1958,21 +1988,21 @@ public class VerifyCore {
 
         // 一条坏正则不能把同批的其它规则一起废掉
         List<Pattern> mixed = LangUtils.compilePatterns(
-                List.of("^\\+\\d+ .*(XP|Coins|Tokens)", "(.*a){20}$"), null);
+                Arrays.asList("^\\+\\d+ .*(XP|Coins|Tokens)", "(.*a){20}$"), null);
         check("同批里的好正则仍然生效（坏的那条被单独跳过，顺序无关）",
                 LangUtils.matchesAny("+25 SkyWars XP", mixed));
 
         // 偶发卡顿不该累积成停用：中间成功一次就把疑似计数清掉
         LangUtils.resetRegexCircuit();
         List<Pattern> mostlyFine = LangUtils.compilePatterns(
-                List.of("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
+                Arrays.asList("(.*a){20}$", "^\\+\\d+ .*(XP|Coins|Tokens)"), null);
         LangUtils.matchesAny(worst, mostlyFine);
         LangUtils.matchesAny("+25 SkyWars XP", mostlyFine);
         LangUtils.matchesAny(worst, mostlyFine);
         checkEq("中间成功过就不会被累积停用", 0, LangUtils.disabledRegexCount());
 
         // reload 会重新编译出新的 Pattern 实例：熔断按「正则文本」记，坏正则不能复活
-        List<Pattern> recompiled = LangUtils.compilePatterns(List.of("(.*a){20}$"), null);
+        List<Pattern> recompiled = LangUtils.compilePatterns(Arrays.asList("(.*a){20}$"), null);
         check("重新编译后坏正则仍然处于熔断状态（不会在 reload 后复活）",
                 !LangUtils.matchesAny(worst, recompiled));
         LangUtils.resetRegexCircuit();
@@ -1996,7 +2026,7 @@ public class VerifyCore {
             TranslationService service = new TranslationService(cfg);
             try {
                 // 先翻一次，让它进缓存（阻塞式，确定性）
-                var first = service.translateBlocking("你来防守", Direction.OUTGOING);
+                DeepSeekClient.Result first = service.translateBlocking("你来防守", Direction.OUTGOING);
                 check("第一次翻译成功并进入缓存", first.ok());
 
                 // 堆满队列：提交两条慢请求（server.delayMs 让它占住工作线程）
@@ -2167,7 +2197,7 @@ public class VerifyCore {
         for (String example : expectedExamples) {
             check("少样本示例逐行保留：" + example, outgoing.contains(example));
         }
-        long exampleLines = outgoing.lines()
+        long exampleLines = LangUtils.lines(outgoing).stream()
                 .filter(line -> line.contains(" -> ") && !line.contains("Chinese phrasing"))
                 .count();
         checkEq("发送方向的少样本示例行数符合预期（9 行：7 条原有 + 2 条新增）",
@@ -2197,30 +2227,30 @@ public class VerifyCore {
     private static void v222NoExceptionNamesToPlayers() {
         System.out.println("== v2.2.2：用户文案里不得出现 Java 异常类名 ==");
         String[] sources = {
-                "src/main/java/com/isomeria/hxtranslate/core/DeepSeekClient.java",
-                "src/main/java/com/isomeria/hxtranslate/core/TranslationService.java",
-                "src/main/java/com/isomeria/hxtranslate/chat/ChatTranslator.java",
-                "src/main/java/com/isomeria/hxtranslate/command/TranslateCommand.java",
+                "com/isomeria/hxtranslate/core/DeepSeekClient.java",
+                "com/isomeria/hxtranslate/core/TranslationService.java",
+                "com/isomeria/hxtranslate/chat/ChatTranslator.java",
+                "com/isomeria/hxtranslate/command/TranslateCommand.java",
         };
         for (String file : sources) {
-            String source = readRepoFile(file);
+            String source = readSource(file);
             String shortName = file.substring(file.lastIndexOf('/') + 1);
             if (source == null) {
                 fail("读不到源文件：" + file);
                 continue;
             }
-            long offenders = source.lines()
+            long offenders = LangUtils.lines(source).stream()
                     .filter(line -> line.contains("getClass().getSimpleName()"))
-                    .filter(line -> !line.stripLeading().startsWith("*")
-                            && !line.stripLeading().startsWith("//"))
+                    .filter(line -> !LangUtils.stripLeading(line).startsWith("*")
+                            && !LangUtils.stripLeading(line).startsWith("//"))
                     .count();
             check("不再把异常类名拼进用户文案（" + shortName + "，剩余 " + offenders + " 处）",
                     offenders == 0);
         }
         // 正向确认：统一出口确实存在且被多处使用（免得有人「修」成把文案全删了）
-        String client = readRepoFile("src/main/java/com/isomeria/hxtranslate/core/DeepSeekClient.java");
+        String client = readSource("com/isomeria/hxtranslate/core/DeepSeekClient.java");
         if (client != null) {
-            long uses = client.lines().filter(l -> l.contains("describeNetworkError(")).count();
+            long uses = LangUtils.lines(client).stream().filter(l -> l.contains("describeNetworkError(")).count();
             check("DeepSeekClient 的网络错误文案统一走 describeNetworkError（" + uses + " 处引用）",
                     uses >= 4);
         }
@@ -2237,8 +2267,8 @@ public class VerifyCore {
         LangUtils.resetRegexCircuit();
 
         // ---- 1) 正则熔断：一次超时只记「疑似」，连续两次才停用 ----
-        List<Pattern> evil = LangUtils.compilePatterns(List.of("(.*a){20}$"), null);
-        String worst = "a".repeat(239) + "!";
+        List<Pattern> evil = LangUtils.compilePatterns(Arrays.asList("(.*a){20}$"), null);
+        String worst = LangUtils.repeat("a", 239) + "!";
         LangUtils.matchesAny(worst, evil);
         checkEq("第一次超时只记疑似、不停用", 0, LangUtils.disabledRegexCount());
         LangUtils.matchesAny(worst, evil);
@@ -2274,30 +2304,30 @@ public class VerifyCore {
 
         // ---- 5) 黑名单只看说话人位置，不再因为「正文里提到」而跳过别人的消息 ----
         check("Bob 提到 Steve：不再误判为 Steve 发言",
-                !PlayerBlacklist.speaksIn("[MVP+] Bob: I saw Steve: he left", List.of("Steve")));
+                !PlayerBlacklist.speaksIn("[MVP+] Bob: I saw Steve: he left", Arrays.asList("Steve")));
         check("Steve 自己发言仍然命中（行首）",
-                PlayerBlacklist.speaksIn("Steve: hi", List.of("Steve")));
+                PlayerBlacklist.speaksIn("Steve: hi", Arrays.asList("Steve")));
         check("Steve 自己发言仍然命中（标签后）",
-                PlayerBlacklist.speaksIn("[MVP+] Steve: hi", List.of("Steve")));
+                PlayerBlacklist.speaksIn("[MVP+] Steve: hi", Arrays.asList("Steve")));
         check("公会格式仍然命中（> 之后）",
-                PlayerBlacklist.speaksIn("Guild > Steve > hi", List.of("Steve")));
+                PlayerBlacklist.speaksIn("Guild > Steve > hi", Arrays.asList("Steve")));
         check("前缀名字仍然不误判",
-                !PlayerBlacklist.speaksIn("SteveJobs: hi", List.of("Steve")));
+                !PlayerBlacklist.speaksIn("SteveJobs: hi", Arrays.asList("Steve")));
         check("URL 里的「名字:」不再误判",
-                !PlayerBlacklist.speaksIn("[MVP+] Bob: check http://x.com/a: b", List.of("a")));
+                !PlayerBlacklist.speaksIn("[MVP+] Bob: check http://x.com/a: b", Arrays.asList("a")));
 
         // ---- 6) 术语表去重键：中文说法自身含 " -> " 时不再错误合并 ----
         // 两条**不同**的中文说法（`a -> b` 与 `c -> d`）：以前 chineseKeyOf 取第一个箭头，
         // 两条的键都会退化成 `a`/`c` 之前的部分 → 后写的那条会静默消失。
         String arrowTable = PromptGlossary.render(
-                List.of("aaa=a -> b", "bbb=c -> d"), Direction.OUTGOING);
+                Arrays.asList("aaa=a -> b", "bbb=c -> d"), Direction.OUTGOING);
         check("中文说法含箭头时两条都保留（不再静默合并后写的那条）",
                 contains(arrowTable, "a -> b -> aaa") && contains(arrowTable, "c -> d -> bbb"));
         // 同一个中文说法写两遍仍然只留第一条（这是去重本身的功能，不能被上面那条改坏）
         // 注意 checkEq 用 equals 比较：int 与 long 必须显式统一类型，否则 Integer(1).equals(Long(1)) 恒假
-        String sameGloss = PromptGlossary.render(List.of("aaa=x -> y", "bbb=x -> y"), Direction.OUTGOING);
+        String sameGloss = PromptGlossary.render(Arrays.asList("aaa=x -> y", "bbb=x -> y"), Direction.OUTGOING);
         checkEq("同一个中文说法仍然只保留一条", 1,
-                PromptGlossary.outgoingPairCount(List.of("aaa=x -> y", "bbb=x -> y")));
+                PromptGlossary.outgoingPairCount(Arrays.asList("aaa=x -> y", "bbb=x -> y")));
         check("同中文说法保留的是先写的那条", contains(sameGloss, "x -> y -> aaa"));
     }
 
@@ -2672,7 +2702,7 @@ public class VerifyCore {
         check("默认术语表没问题时没有明细行", GlossaryAudit.detailLines(onDefaults, 10).isEmpty());
 
         // ---- 1) 写反：中文写在了等号左边 ----
-        List<GlossaryAudit.Finding> reversed = GlossaryAudit.audit(List.of("黑曜石=obby"));
+        List<GlossaryAudit.Finding> reversed = GlossaryAudit.audit(Arrays.asList("黑曜石=obby"));
         checkEq("写反被报 1 条", 1, reversed.size());
         check("写反判为 REVERSED 且严重度是 ERROR",
                 kindOf(reversed, 0) == GlossaryAudit.Kind.REVERSED
@@ -2683,28 +2713,28 @@ public class VerifyCore {
         check("写反的提示带条目序号（第 1 条）", contains(describe(reversed, 0), "第 1 条"));
 
         // ---- 2) 格式错：这几种都会被渲染静默丢掉 ----
-        List<GlossaryAudit.Finding> noSeparator = GlossaryAudit.audit(List.of("这不是对照表"));
+        List<GlossaryAudit.Finding> noSeparator = GlossaryAudit.audit(Arrays.asList("这不是对照表"));
         check("缺等号的条目被判为 MALFORMED / ERROR",
                 kindOf(noSeparator, 0) == GlossaryAudit.Kind.MALFORMED
                         && severityOf(noSeparator, 0) == GlossaryAudit.Severity.ERROR);
         check("缺等号的提示说明整条不会生效", contains(describe(noSeparator, 0), "不会生效"));
 
-        List<GlossaryAudit.Finding> fullWidth = GlossaryAudit.audit(List.of("obby＝黑曜石"));
+        List<GlossaryAudit.Finding> fullWidth = GlossaryAudit.audit(Arrays.asList("obby＝黑曜石"));
         check("全角等号单独给提示（中文输入法最容易手滑的一种）",
                 kindOf(fullWidth, 0) == GlossaryAudit.Kind.MALFORMED
                         && contains(describe(fullWidth, 0), "全角"));
 
         check("等号左边为空被判为 MALFORMED",
-                kindOf(GlossaryAudit.audit(List.of("=只有右边")), 0) == GlossaryAudit.Kind.MALFORMED);
+                kindOf(GlossaryAudit.audit(Arrays.asList("=只有右边")), 0) == GlossaryAudit.Kind.MALFORMED);
         check("等号右边为空被判为 MALFORMED",
-                kindOf(GlossaryAudit.audit(List.of("onlyleft=")), 0) == GlossaryAudit.Kind.MALFORMED);
-        List<GlossaryAudit.Finding> bracketsOnly = GlossaryAudit.audit(List.of("abc=（说明）"));
+                kindOf(GlossaryAudit.audit(Arrays.asList("onlyleft=")), 0) == GlossaryAudit.Kind.MALFORMED);
+        List<GlossaryAudit.Finding> bracketsOnly = GlossaryAudit.audit(Arrays.asList("abc=（说明）"));
         check("右边只剩括号说明时判为 MALFORMED，并点明括号会被当注释去掉",
                 kindOf(bracketsOnly, 0) == GlossaryAudit.Kind.MALFORMED
                         && contains(describe(bracketsOnly, 0), "括号"));
 
         // ---- 3) 右边没有汉字：中→英方向会把它当成一个「说法」 ----
-        List<GlossaryAudit.Finding> noChinese = GlossaryAudit.audit(List.of("abc=obsidian"));
+        List<GlossaryAudit.Finding> noChinese = GlossaryAudit.audit(Arrays.asList("abc=obsidian"));
         check("右边没有汉字的条目判为 NO_CHINESE / ERROR",
                 kindOf(noChinese, 0) == GlossaryAudit.Kind.NO_CHINESE
                         && severityOf(noChinese, 0) == GlossaryAudit.Severity.ERROR);
@@ -2712,7 +2742,7 @@ public class VerifyCore {
                 contains(describe(noChinese, 0), "英文=中文"));
 
         // ---- 4) 单字母英文写法：会用，但有撞车风险（默认表 v2.1.4 起已清掉） ----
-        List<GlossaryAudit.Finding> single = GlossaryAudit.audit(List.of("u=你"));
+        List<GlossaryAudit.Finding> single = GlossaryAudit.audit(Arrays.asList("u=你"));
         check("单字母英文写法判为 SINGLE_LETTER / WARNING",
                 kindOf(single, 0) == GlossaryAudit.Kind.SINGLE_LETTER
                         && severityOf(single, 0) == GlossaryAudit.Severity.WARNING);
@@ -2722,7 +2752,7 @@ public class VerifyCore {
                 contains(describe(single, 0), "忽略"));
 
         // ---- 5) 重复：整条重复 / 英文写法重复 ----
-        List<GlossaryAudit.Finding> dupEntry = GlossaryAudit.audit(List.of("obby=黑曜石", "obby=黑曜石"));
+        List<GlossaryAudit.Finding> dupEntry = GlossaryAudit.audit(Arrays.asList("obby=黑曜石", "obby=黑曜石"));
         check("整条重复判为 DUPLICATE_ENTRY / WARNING",
                 kindOf(dupEntry, 0) == GlossaryAudit.Kind.DUPLICATE_ENTRY
                         && severityOf(dupEntry, 0) == GlossaryAudit.Severity.WARNING);
@@ -2730,7 +2760,7 @@ public class VerifyCore {
                 contains(describe(dupEntry, 0), "第 1 条"));
 
         List<GlossaryAudit.Finding> dupEnglish = GlossaryAudit.audit(
-                List.of("mid=中路、中间的资源点", "mid=中路"));
+                Arrays.asList("mid=中路、中间的资源点", "mid=中路"));
         check("同一英文写法两种中文判为 DUPLICATE_ENGLISH / WARNING",
                 kindOf(dupEnglish, 0) == GlossaryAudit.Kind.DUPLICATE_ENGLISH
                         && severityOf(dupEnglish, 0) == GlossaryAudit.Severity.WARNING);
@@ -2740,42 +2770,42 @@ public class VerifyCore {
         // 同一中文说法对应多个英文写法是**默认表的有意设计**（反查只取第一条），
         // 体检查它只会变成噪音，所以刻意不检查 —— 这条断言把这个决定固定下来。
         check("同一中文说法的同义词（dia / dias）不被报为问题",
-                GlossaryAudit.audit(List.of("dia=钻石（diamond）", "dias=钻石")).isEmpty());
+                GlossaryAudit.audit(Arrays.asList("dia=钻石（diamond）", "dias=钻石")).isEmpty());
 
         // ---- 6) 一条配置里的多组对照要逐组体检 ----
         List<GlossaryAudit.Finding> multi = GlossaryAudit.audit(
-                List.of("def=防守（defend）；没有等号的组"));
+                Arrays.asList("def=防守（defend）；没有等号的组"));
         checkEq("分号隔开的多组对照逐组体检（只报坏的那一组）", 1, multi.size());
         check("结论指向条目本身（第 1 条），不是组号",
                 contains(describe(multi, 0), "第 1 条"));
 
         // ---- 7) 与渲染同源：体检说格式错的，渲染必须真的丢掉 ----
-        for (String part : List.of("这不是对照表", "=只有右边", "onlyleft=", "abc=（说明）", "obby＝黑曜石")) {
-            boolean reported = !GlossaryAudit.audit(List.of(part)).isEmpty();
-            boolean rendered = PromptGlossary.render(List.of(part), Direction.OUTGOING) != null;
+        for (String part : Arrays.asList("这不是对照表", "=只有右边", "onlyleft=", "abc=（说明）", "obby＝黑曜石")) {
+            boolean reported = !GlossaryAudit.audit(Arrays.asList(part)).isEmpty();
+            boolean rendered = PromptGlossary.render(Arrays.asList(part), Direction.OUTGOING) != null;
             check("格式错的「" + part + "」体检报错且渲染确实丢掉它（报=" + reported + " 渲染=" + rendered + "）",
                     reported && !rendered);
         }
         // 反过来：渲染能用的条目不能被误报成格式错，否则玩家会去改一条本来就正常的条目
-        for (String part : List.of("obby=黑曜石（obsidian）", "you def=你来防守", "u=你", "abc=obsidian")) {
-            boolean malformed = countOf(GlossaryAudit.audit(List.of(part)),
+        for (String part : Arrays.asList("obby=黑曜石（obsidian）", "you def=你来防守", "u=你", "abc=obsidian")) {
+            boolean malformed = countOf(GlossaryAudit.audit(Arrays.asList(part)),
                     GlossaryAudit.Kind.MALFORMED) > 0;
-            boolean rendered = PromptGlossary.render(List.of(part), Direction.OUTGOING) != null;
+            boolean rendered = PromptGlossary.render(Arrays.asList(part), Direction.OUTGOING) != null;
             check("能用的「" + part + "」不被误报为格式错（渲染=" + rendered + "）",
                     rendered && !malformed);
         }
 
         // ---- 8) 异常输入：抗自己的失败，不能抛异常 ----
         check("术语表为 null 时不炸且无结论", GlossaryAudit.audit(null).isEmpty());
-        check("空术语表无结论", GlossaryAudit.audit(List.of()).isEmpty());
+        check("空术语表无结论", GlossaryAudit.audit(Collections.emptyList()).isEmpty());
         check("列表里有 null 条目不炸，并报为格式错",
                 countOf(GlossaryAudit.audit(Arrays.asList(null, "obby=黑曜石")),
                         GlossaryAudit.Kind.MALFORMED) == 1);
         check("空白条目不炸，并报为格式错",
-                countOf(GlossaryAudit.audit(List.of("   ")), GlossaryAudit.Kind.MALFORMED) == 1);
+                countOf(GlossaryAudit.audit(Arrays.asList("   ")), GlossaryAudit.Kind.MALFORMED) == 1);
 
         // ---- 9) 摘要与明细：启动最多几行，其余指路到命令 ----
-        List<GlossaryAudit.Finding> mixed = GlossaryAudit.audit(List.of(
+        List<GlossaryAudit.Finding> mixed = GlossaryAudit.audit(Arrays.asList(
                 "黑曜石=obby", "u=你", "这不是对照表", "mid=中路、中间的资源点", "mid=中路"));
         checkEq("混合术语表体检出 4 条（写反 1 + 单字母 1 + 格式 1 + 英文重复 1）",
                 4, mixed.size());
@@ -2794,12 +2824,12 @@ public class VerifyCore {
 
         // ---- 10) 条目文本是不可信内容：明细必须清洗成单行、控制长度 ----
         List<String> dirty = GlossaryAudit.detailLines(
-                GlossaryAudit.audit(List.of("§c坏§r条目\n第二行（没有等号）")), 5);
+                GlossaryAudit.audit(Arrays.asList("§c坏§r条目\n第二行（没有等号）")), 5);
         check("带 § 与换行的条目也能体检出结论", !dirty.isEmpty());
         check("明细里没有 § 格式代码", dirty.stream().noneMatch(line -> line.indexOf('§') >= 0));
         check("明细被压成一行", dirty.stream().noneMatch(line -> line.indexOf('\n') >= 0));
         List<String> longLine = GlossaryAudit.detailLines(
-                GlossaryAudit.audit(List.of("a".repeat(200))), 5);
+                GlossaryAudit.audit(Arrays.asList(LangUtils.repeat("a", 200))), 5);
         check("超长条目在明细里被截断（实测 " + lengthOf(at(longLine, 0)) + " 字符）",
                 !longLine.isEmpty() && lengthOf(at(longLine, 0)) <= 80);
     }
@@ -2838,6 +2868,189 @@ public class VerifyCore {
     /** 字符串长度；null 返回 -1（避免断言里出现 NPE）。 */
     private static int lengthOf(String text) {
         return text == null ? -1 : text.length();
+    }
+
+    /**
+     * 双版本布局守卫（v2.3.0-forge 起）。
+     *
+     * <p>从这一版开始仓库同时维护 Fabric(26.3) 与 Forge(1.8.9) 两条线，共享层
+     * {@code src/shared/java} 由两个构建**编译同一份文件**。这个前提只有在共享层
+     * 真的不碰游戏/加载器 API 时才成立 —— 一旦有人在共享层写下 {@code import net.minecraft...}，
+     * Fabric 线照样编译通过（它有 MC 类路径），而 Forge 线会以一种很难懂的方式炸掉，
+     * 甚至可能直到发布才被发现。
+     *
+     * <p>所以这里直接读源文件做**静态**检查：共享层不许出现任何游戏/加载器 import。
+     * 这条检查在两条线的构建里都会跑，是「一份源码、两个版本」这个承诺的门禁。
+     */
+    private static void sharedLayerPurity() {
+        System.out.println("== 双版本布局：共享层纯净性 ==");
+        String[] forbidden = {"net.minecraft", "net.fabricmc", "net.minecraftforge",
+                "com.mojang", "org.lwjgl", "org.apache.logging.log4j", "org.slf4j"};
+        List<Path> files = new ArrayList<>();
+        Path root = Paths.get("src/shared/java");
+        if (Files.isDirectory(root)) {
+            try (java.util.stream.Stream<Path> walk = Files.walk(root)) {
+                walk.filter(path -> path.toString().endsWith(".java")).forEach(files::add);
+            } catch (IOException | RuntimeException e) {
+                fail("遍历共享层源码失败：" + e);
+                return;
+            }
+        }
+        check("共享层有源码（" + files.size() + " 个文件）", !files.isEmpty());
+
+        int offenders = 0;
+        for (Path file : files) {
+            String text = readRepoFile(file.toString().replace('\\', '/'));
+            if (text == null) {
+                fail("读不到共享层源文件：" + file);
+                continue;
+            }
+            for (String line : text.split("\n")) {
+                String trimmed = line.trim();
+                if (!trimmed.startsWith("import ")) {
+                    continue;
+                }
+                for (String bad : forbidden) {
+                    if (trimmed.contains(bad)) {
+                        fail("共享层不能 import 游戏/加载器 API：" + file + " -> " + trimmed);
+                        offenders++;
+                    }
+                }
+            }
+        }
+        check("共享层没有任何游戏/加载器 import（违规 " + offenders + " 处）", offenders == 0);
+
+        // Fabric 专属装配面必须留在 src/main/java：放进共享层就会被 Forge 构建一起编译
+        for (String fabricOnly : Arrays.asList(
+                "HxTranslateClient.java", "chat/GameClient.java",
+                "chat/GameFeedback.java", "command/TranslateCommand.java")) {
+            check("Fabric 专属层保留 " + fabricOnly,
+                    readRepoFile("src/main/java/com/isomeria/hxtranslate/" + fabricOnly) != null);
+            check("Fabric 专属层没有混进共享层：" + fabricOnly,
+                    readRepoFile("src/shared/java/com/isomeria/hxtranslate/" + fabricOnly) == null);
+        }
+    }
+
+    /**
+     * v2.3.0-forge：加载器无关的日志门面（{@link Log}）。
+     *
+     * <p>共享层要由两个构建编译，就不能依赖任何一个日志库（Fabric 有 slf4j，
+     * Forge 1.8.9 只有 log4j），于是换成自己写的门面 + 由装配层注入 sink。
+     * 它是**纯逻辑**，所以格式化语义（占位符、末尾异常、多余参数）必须在这里钉死 ——
+     * 两条线的日志行为不一样的话，排错时会得出完全不同的结论。
+     *
+     * <p>{@link Log} 的 sink 是**全局静态**的。这条用例必须把自己造的捕获 sink
+     * 在结束时复位成静默，否则后面的用例会往它的列表里塞日志（用例互相污染）。
+     */
+    private static void logFacade() {
+        System.out.println("== v2.3.0-forge：加载器无关日志门面 ==");
+
+        List<String> messages = new ArrayList<>();
+        List<Log.Level> levels = new ArrayList<>();
+        List<Throwable> errors = new ArrayList<>();
+        Log.Sink capture = (level, message, error) -> {
+            levels.add(level);
+            messages.add(message);
+            errors.add(error);
+        };
+
+        try {
+            // ---- 0) 默认静默：sink 没注入时不能有任何副作用，也不能抛 ----
+            Log.setSink(null);
+            try {
+                Log.LOGGER.info("静默 {}", 1);
+                check("默认 sink 是静默的且不抛异常", messages.isEmpty());
+            } catch (Throwable t) {
+                check("默认 sink 是静默的且不抛异常: " + t, false);
+            }
+
+            Log.setSink(capture);
+
+            // ---- 1) 占位符替换（slf4j 语义，调用处一行没改，所以必须等价）----
+            Log.LOGGER.info("a {} b {}", 1, 2);
+            checkEq("info 替换两个占位符", "a 1 b 2", lastOf(messages));
+            check("info 路由到 INFO", lastOf(levels) == Log.Level.INFO);
+
+            Log.LOGGER.warn("[x] 丢弃 {}", "文本");
+            checkEq("warn 替换单个占位符", "[x] 丢弃 文本", lastOf(messages));
+            check("warn 路由到 WARN", lastOf(levels) == Log.Level.WARN);
+
+            Log.LOGGER.error("失败: {}", "原因");
+            checkEq("error 替换占位符", "失败: 原因", lastOf(messages));
+            check("error 路由到 ERROR", lastOf(levels) == Log.Level.ERROR);
+
+            // 没有占位符就不动原文
+            Log.LOGGER.info("没有占位符");
+            checkEq("没有占位符时原样输出", "没有占位符", lastOf(messages));
+
+            // ---- 2) 末尾异常：参数比占位符多、且最后一个参数是异常时，它当异常 ----
+            IllegalStateException boom = new IllegalStateException("炸了");
+            Log.LOGGER.error("翻译任务异常（{} {}）: {}", "收", "hi", boom.toString(), boom);
+            check("多余参数里的末尾异常被识别为异常", lastOf(errors) == boom);
+            checkEq("异常本身不进文本（走 Throwable 参数）",
+                    "翻译任务异常（收 hi）: java.lang.IllegalStateException: 炸了", lastOf(messages));
+
+            // 参数比占位符多、但最后一个是普通文本：接在末尾，不丢信息
+            Log.LOGGER.info("x {}", 1, 2);
+            checkEq("多余的非异常参数接在末尾", "x 1 2", lastOf(messages));
+
+            // 占位符比参数多：多出来的占位符原样保留（slf4j 也是这样）
+            Log.LOGGER.info("{} {}", 1);
+            checkEq("占位符比参数多时保留原样的占位符", "1 {}", lastOf(messages));
+
+            // null 参数打印成 "null"，不能抛
+            Log.LOGGER.info("v={}", (Object) null);
+            checkEq("null 参数打成 null", "v=null", lastOf(messages));
+
+            // ---- 3) Log.warn(String, Throwable) 便捷重载 ----
+            Log.warn("吞掉异常：", boom);
+            check("Log.warn(String, Throwable) 路由到 WARN 且带上异常",
+                    lastOf(levels) == Log.Level.WARN && lastOf(errors) == boom);
+
+            // ---- 4) 出口坏掉绝不能影响调用方（v2.1.0 的静默丢消息就是打日志打死工作线程）----
+            Log.setSink((level, message, error) -> {
+                throw new IllegalStateException("模拟 sink 故障");
+            });
+            boolean survived = true;
+            try {
+                Log.LOGGER.info("x {}", 1);
+                Log.warn("y", boom);
+            } catch (Throwable t) {
+                survived = false;
+            }
+            check("sink 自己抛异常时日志调用方不受影响", survived);
+
+            // toString 抛异常同样不能带崩
+            Log.setSink(capture);
+            Object badToString = new Object() {
+                @Override
+                public String toString() {
+                    throw new IllegalStateException("toString 炸了");
+                }
+            };
+            boolean survivedToString = true;
+            try {
+                Log.LOGGER.info("v={}", badToString);
+            } catch (Throwable t) {
+                survivedToString = false;
+            }
+            check("参数 toString 抛异常时日志调用方不受影响", survivedToString);
+
+            // ---- 5) null 格式串 ----
+            Log.LOGGER.info(null, 1);
+            check("格式串为 null 时不抛", lastOf(messages) != null);
+        } finally {
+            // 必须复位成静默：这是全局静态状态，不复位会污染后面的用例
+            Log.setSink(null);
+        }
+        messages.clear();
+        Log.LOGGER.info("复位之后不该再进捕获列表");
+        check("用例结束后 sink 已复位成静默（隔离性）", messages.isEmpty());
+    }
+
+    /** 取列表最后一个元素；空则返回 null（用例要抗自己的失败）。 */
+    private static <T> T lastOf(List<T> list) {
+        return list == null || list.isEmpty() ? null : list.get(list.size() - 1);
     }
 
     private static void versionConsistency() {
@@ -2881,19 +3094,35 @@ public class VerifyCore {
     /** 读仓库根目录下的文件；读不到返回 null（用例要抗自己的失败，不能抛异常）。 */
     private static String readRepoFile(String relative) {
         try {
-            Path path = Path.of(relative);
-            return Files.exists(path) ? Files.readString(path, StandardCharsets.UTF_8) : null;
+            Path path = Paths.get(relative);
+            return Files.exists(path) ? new String(Files.readAllBytes(path), StandardCharsets.UTF_8) : null;
         } catch (IOException | RuntimeException e) {
             return null;
         }
     }
 
+    /**
+     * 按包路径读一份生产源码：先找共享层 {@code src/shared/java}，再找 Fabric 专属层
+     * {@code src/main/java}。
+     *
+     * <p>用「按名字找」而不是写死完整路径，是因为双版本并行之后文件会在两个源码根之间
+     * 移动（v2.3.0 抽共享层时就搬过一次）。写死路径的用例会在搬运时集体变红，
+     * 而那时红的是用例本身、不是产品缺陷 —— 噪音会掩盖真正的问题。
+     *
+     * @param packagePath 形如 {@code com/isomeria/hxtranslate/core/DeepSeekClient.java}
+     * @return 源码文本；两个根都找不到时返回 null
+     */
+    private static String readSource(String packagePath) {
+        String shared = readRepoFile("src/shared/java/" + packagePath);
+        return shared != null ? shared : readRepoFile("src/main/java/" + packagePath);
+    }
+
     /** 从 properties 文本里取一个键；没有则返回 null。 */
     private static String property(String properties, String key) {
         for (String line : properties.split("\n")) {
-            String trimmed = line.strip();
+            String trimmed = LangUtils.strip(line);
             if (trimmed.startsWith(key + "=")) {
-                return trimmed.substring(key.length() + 1).strip();
+                return LangUtils.strip(trimmed.substring(key.length() + 1));
             }
         }
         return null;
@@ -2909,12 +3138,21 @@ public class VerifyCore {
         }
     }
 
+    /** Java 8 没有 {@code InputStream.readAllBytes()}（Java 9 才有）：把流读干。 */
+    private static byte[] readAll(java.io.InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            out.write(buffer, 0, read);
+        }
+        return out.toByteArray();
+    }
+
     private static void httpSuccess() throws Exception {
         System.out.println("== DeepSeek 正常返回 ==");
         try (MockServer server = new MockServer()) {
-            server.response = """
-                    {"id":"1","choices":[{"index":0,"message":{"role":"assistant","content":"你好，世界"},"finish_reason":"stop"}]}
-                    """;
+            server.response = "{\"id\":\"1\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"你好，世界\"},\"finish_reason\":\"stop\"}]}\n";
             DeepSeekClient client = clientFor(server, "sk-test-key");
 
             DeepSeekClient.Result result = client.translate("Hello world", Direction.INCOMING);
@@ -2927,9 +3165,7 @@ public class VerifyCore {
 
         // 模型有时会加引号
         try (MockServer server = new MockServer()) {
-            server.response = """
-                    {"choices":[{"message":{"role":"assistant","content":"\\"Where are you?\\""}}]}
-                    """;
+            server.response = "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"\\\"Where are you?\\\"\"}}]}\n";
             DeepSeekClient.Result result = clientFor(server, "sk-test").translate("你在哪", Direction.OUTGOING);
             check("去掉模型加的引号", result.ok() && "Where are you?".equals(result.text()));
         }
@@ -2967,7 +3203,7 @@ public class VerifyCore {
 
             new DeepSeekClient(config).translate("Hello world", Direction.INCOMING);
 
-            JsonObject body = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            JsonObject body = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class);
             checkEq("model", "deepseek-chat", body.get("model").getAsString());
             check("stream=false", !body.get("stream").getAsBoolean());
             check("temperature 存在", body.has("temperature"));
@@ -2986,7 +3222,7 @@ public class VerifyCore {
             check("提示词说明了要保留 [红队] 这类前缀", systemPrompt.contains("[红队]"));
 
             new DeepSeekClient(config).translate("你好", Direction.OUTGOING);
-            JsonObject outgoing = JsonParser.parseString(server.lastBody).getAsJsonObject();
+            JsonObject outgoing = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class);
             String outgoingPrompt = outgoing.getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
             check("发送方向提示词提示了英文", outgoingPrompt.contains("English"));
             // v1.1.4：术语表从「只给接收方向」改成两个方向都用 —— 发送方向反查成
@@ -3006,12 +3242,12 @@ public class VerifyCore {
             DeepSeekClient client = new DeepSeekClient(config);
 
             client.translate("Hello world", Direction.INCOMING);
-            String incomingPrompt = JsonParser.parseString(server.lastBody).getAsJsonObject()
+            String incomingPrompt = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class)
                     .getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
             check("清空术语表后接收方向没有对照表", !incomingPrompt.contains("对照表"));
 
             client.translate("你好", Direction.OUTGOING);
-            String outgoingPrompt = JsonParser.parseString(server.lastBody).getAsJsonObject()
+            String outgoingPrompt = new com.google.gson.Gson().fromJson(server.lastBody, com.google.gson.JsonObject.class)
                     .getAsJsonArray("messages").get(0).getAsJsonObject().get("content").getAsString();
             check("清空术语表后发送方向没有对照表", !outgoingPrompt.contains("terminology reference"));
         }
@@ -3156,7 +3392,7 @@ public class VerifyCore {
                 lastPath = exchange.getRequestURI().getPath();
                 lastMethod = exchange.getRequestMethod();
                 lastAuth = exchange.getRequestHeaders().getFirst("Authorization");
-                lastBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                lastBody = new String(readAll(exchange.getRequestBody()), StandardCharsets.UTF_8);
                 if (delayMs > 0) {
                     try {
                         Thread.sleep(delayMs);
