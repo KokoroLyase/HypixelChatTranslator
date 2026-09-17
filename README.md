@@ -11,7 +11,8 @@
 > 仓库：<https://github.com/KokoroLyase/HypixelChatTranslator>
 > 下载：见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)（也可以点 [Actions](https://github.com/KokoroLyase/HypixelChatTranslator/actions) 里任意一次成功构建，在 Artifacts 里下载）。
 > 更新记录：[CHANGELOG.md](CHANGELOG.md)。
-> 第一次用请**直接看 [最新版 Release](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)** —— 下面一律以最新版为准。
+> 第一次用请**直接看 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases)**，
+> 按下表的文件名挑对应你游戏版本的那一个 —— `latest` 只是「最近发布的那条线」，不一定是你要的线。
 
 ---
 
@@ -31,13 +32,16 @@
 
 > **本模组同时提供两条线，版本号相同、按文件名区分**（v2.3.0 起双版本并行）：
 >
-> | 你玩的版本 | 下载哪个 | 加载器 |
-> | --- | --- | --- |
-> | Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric |
-> | Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge |
+> | 你玩的版本 | 下载哪个 | 加载器 | Release 名 |
+> | --- | --- | --- | --- |
+> | Minecraft **26.3** | `hx-chat-translator-<版本>+mc26.3-fabric.jar` | Fabric | `v<版本>-fabric` |
+> | Minecraft **1.8.9** | `hx-chat-translator-<版本>+mc1.8.9-forge.jar` | Forge | `v<版本>-forge` |
 >
 > 两条线的功能、配置格式、配置文件位置、命令**完全一致**（编译的是同一份核心逻辑），
 > 所以 1.8.9 的配置文件可以直接拿去 26.3 用，反之亦然。
+>
+> 加 `-fabric` / `-forge` 后缀是**从 v2.3.0 起**的规矩；更早的版本（`v2.2.3`、`v1.1.3` …
+> 全是 Fabric 版）保留原来的名字，不重命名。
 
 ### 1.8.9 + Forge 的额外说明
 
@@ -66,7 +70,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 1. 安装 **Fabric Loader ≥ 0.19.5**（[官方安装器](https://fabricmc.net/use/installer/)）。
 2. 把 **Fabric API** 放进 `mods` 文件夹：
    `fabric-api-0.160.5+26.3.jar`（[下载](https://modrinth.com/mod/fabric-api/versions?g=26.3)）。
-3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（最新版见 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest)）放进同一个 `mods` 文件夹：
+3. 把本模组 **`hx-chat-translator-<版本>+mc26.3-fabric.jar`**（在 [Releases](https://github.com/KokoroLyase/HypixelChatTranslator/releases) 里找 `v<版本>-fabric` 的那一条）放进同一个 `mods` 文件夹：
    - Windows：`%appdata%\.minecraft\mods`
    - macOS：`~/Library/Application Support/minecraft/mods`
    - Linux：`~/.minecraft/mods`

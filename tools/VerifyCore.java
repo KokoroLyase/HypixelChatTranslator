@@ -2964,8 +2964,20 @@ public class VerifyCore {
                     forgeWorkflow.contains("'v*-forge'"));
         }
         String fabricWorkflow = readRepoFile(".github/workflows/build.yml");
-        check("Fabric 的 CI 已排除 -forge 结尾的标签（否则同一标签会被两条线各建一次 Release）",
-                fabricWorkflow != null && fabricWorkflow.contains("endsWith(github.ref, '-forge')"));
+        check("Fabric 线有 CI workflow", fabricWorkflow != null);
+        if (fabricWorkflow != null) {
+            // 双版本并行后 Release 名按加载器加后缀（RELEASING §10.2）：
+            // Fabric 只认 v*-fabric，Forge 只认 v*-forge。两边都写死在这里，
+            // 免得以后改了一处忘了另一处 —— 那会导致同一个标签被两条线各建一次 Release，
+            // 或者某条线压根不发版。
+            check("Fabric CI 只在 v*-fabric 标签上发 Release",
+                    fabricWorkflow.contains("'v*-fabric'"));
+            check("Fabric CI 不再用「匹配所有 v* 再排除 -forge」的旧写法",
+                    !fabricWorkflow.contains("tags: [ 'v*' ]"));
+        }
+        check("两条线的标签后缀互不重叠（Fabric=-fabric / Forge=-forge）",
+                fabricWorkflow != null && forgeWorkflow != null
+                        && fabricWorkflow.contains("v*-fabric") && forgeWorkflow.contains("v*-forge"));
 
         // 文档：双版本说明必须真的写在 README 里
         String readme = readRepoFile("README.md");
@@ -2976,7 +2988,11 @@ public class VerifyCore {
         String releasing = readRepoFile("RELEASING.md");
         check("RELEASING 有双版本章节（§10）", releasing != null && releasing.contains("## 10. 双版本并行"));
         check("RELEASING 写明了 Forge 线的标签约定（-forge）",
-                releasing != null && releasing.contains("-forge"));
+                releasing != null && releasing.contains("v<版本>-forge"));
+        check("RELEASING 写明了 Fabric 线的标签约定（-fabric）",
+                releasing != null && releasing.contains("v<版本>-fabric"));
+        check("RELEASING 记下了 v2.3.0 改名这件事（免得以后被当成「违规动过已发布内容」）",
+                releasing != null && releasing.contains("v2.3.0` → `v2.3.0-fabric"));
     }
 
     /**

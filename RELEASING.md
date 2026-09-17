@@ -77,9 +77,15 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 - **旧版本的 Release 与附件一律保留**，不删除、不覆盖、不改 tag 指向。
 - 新版本走新 tag、新 Release；旧版说明里加一行指向 [最新版](https://github.com/KokoroLyase/HypixelChatTranslator/releases/latest) 即可。
 - 涉及旧附件改名时，重新上传同内容的新名字附件再删旧名，**不要删掉整个 Release**。
-- 唯一的例外是**纠错**，不是常规操作：`v1.0.10` 违反 §1 的进位规则、发布仅数分钟且无人下载，
-  被撤回并更正为 `v1.1.0`（见 §1 结尾的说明）。号写错要在**打 tag 之前**发现 ——
-  推上去之后再改就得动 tag 与 Release，代价和风险都比改一个数字大得多。
+- 唯一的例外是**纠错**，不是常规操作，至今只发生过两次：
+  - `v1.0.10` 违反 §1 的进位规则、发布仅数分钟且无人下载，被撤回并更正为 `v1.1.0`（见 §1 结尾）；
+  - `v2.3.0` → `v2.3.0-fabric`（2026-09-17）：双版本并行后 Release 名要按加载器加后缀，
+    于是给 Fabric 线补上 `-fabric`。做法是**先**在同一个提交上建新 tag 与新 Release，
+    核对新附件 sha256 与旧 Release **逐字节相同**（证明只改名、没改内容），**再**删旧 tag 与旧 Release ——
+    顺序反了就会出现「这段时间没有 Fabric 版可下」的空窗。
+    ≤ v2.2.3 的历史 Release 一律**保持旧名不动**。
+  号写错或名字要改，都请在**打 tag 之前**想清楚 —— 推上去之后再动 tag 与 Release，
+  代价和风险都比改一个字符串大得多。
 
 ## 5. 配置兼容
 
@@ -222,11 +228,20 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
 
 - `mod_version` 只有**一个来源**：仓库根目录的 `gradle.properties`；
   `forge-1.8.9/build.gradle` 从那里读，两条线永远同号。
-- **标签按线区分**：Fabric 用 `v<版本>`（如 `v2.3.0`），Forge 用 `v<版本>-forge`（如 `v2.3.0-forge`）。
-  两条线各建自己的 Release —— 已发布的 Release 一律不动（§4），所以不给旧 Release 追加附件。
-- 根目录 `build.yml` 已排除 `-forge` 结尾的标签，Forge 线由 `build-forge.yml` 负责。
-  **改标签约定时两处都要改**，否则同一个标签会被两条线各建一次 Release。
-- Forge 线的 Release 说明同样必须写三段（§3），并且要写明它是 coremod。
+- **tag 与 Release 名按加载器加后缀**（v2.3.0 起）：
+
+  | 线 | tag / Release 名 | 例 |
+  | --- | --- | --- |
+  | Fabric | `v<版本>-fabric` | `v2.3.0-fabric` |
+  | Forge | `v<版本>-forge` | `v2.3.0-forge` |
+
+  两条线各建自己的 Release，附件文件名已经带 `mc<版本>-<加载器>`，不会混。
+- **历史遗留**：≤ v2.2.3 的 Release 用的是加后缀之前的旧名（`v2.2.3`、`v1.1.3` …），
+  一律**保持原样不动**（§4）。唯一的改名是 `v2.3.0` → `v2.3.0-fabric`（经过见 §4）。
+- 两个 workflow 各盯自己的后缀：`build.yml` 只在 `v*-fabric` 上发 Release，
+  `build-forge.yml` 只在 `v*-forge` 上发。**改标签约定时两处都要改**，
+  否则要么同一个标签被两条线各建一次 Release，要么某条线压根不发。
+- 两条线的 Release 说明都必须写三段（§3）；Forge 线还要写明它是 coremod。
 
 ### 10.3 产物可复现性与核对方式（两条线不一样，别用错判据）
 
