@@ -13,8 +13,10 @@ import com.isomeria.hxtranslate.util.PlayerBlacklist;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
@@ -45,6 +47,14 @@ public final class ChatTranslator {
     /** 同一条聊天栏告警的最小间隔，避免接口异常时刷屏。 */
     private static final long WARN_INTERVAL_MS = 30_000L;
 
+    /**
+     * 最多同时跟踪多少条不同文案的「被节流条数」。
+     *
+     * <p>告警文案是有限几种（失败原因 / 限流 / 队列积压 / 未配 Key），8 已经远大于实际；
+     * 设上限只是为了防「接口每次返回不同错误正文」这种情况把 Map 撑大。
+     */
+    private static final int MAX_TRACKED_WARNINGS = 8;
+
     /** 调试输出里原文的截断长度。 */
     private static final int DEBUG_TEXT_LIMIT = 60;
 
@@ -67,9 +77,18 @@ public final class ChatTranslator {
      */
     public static final String CHAT_PREFIX = "§8[§bsct§8]";
 
-    /** 「没配 Key」的统一提示。 */
+    /**
+     * 「没配 Key」的统一提示。
+     *
+     * <p><b>不能在这里拼 {@link #CHAT_PREFIX}</b>（v3.0.8 修）：这两条文案只经由
+     * {@code fallbackToOriginal → notifyFallback → feedback.error/hint} 出去，
+     * 而两个装配层的 {@code error()}/{@code hint()} **自己就会加上前缀** ——
+     * 在这里再拼一遍的结果是聊天栏显示两个 {@code [sct]}：
+     * {@code §8[§bsct§8] §c§8[§bsct§8] §c未配置 DeepSeek API Key…}。
+     * 前缀只有一个来源（装配层），与 {@code warnThrottled} 的文案保持同一种形状。
+     */
     private static final String NO_KEY_HINT =
-            CHAT_PREFIX + " §c未配置 DeepSeek API Key（用 §f/translator key <你的Key>§c 配置）";
+            "未配置 DeepSeek API Key（用 §f/translator key <你的Key>§c 配置）";
     /** 聊天方向多给一条退路：干脆关掉发送翻译。 */
     private static final String NO_KEY_HINT_WITH_OFF =
             NO_KEY_HINT + "，或 §f/translator outgoing off§c 关掉发送翻译";
@@ -111,13 +130,17 @@ public final class ChatTranslator {
     private volatile String lastWarning;
     private volatile long lastWarningAt;
     /**
-     * 被节流窗口省掉的告警条数（v3.0.7）。
+     * 被节流窗口省掉的告警条数，**按文案分桶**（v3.0.8 修）。
      *
-     * <p>用原子量而不是普通 int：入站失败的回调跑在**工作线程**、出站降级在**主线程**，
-     * 两边都会调 {@link #warnThrottled}。原有那两个字段是一读一写、最坏只是少报一次，
-     * 而计数器是「读-改-写」，普通 int 会丢计数 —— 那正是这条修复要解决的问题本身。
+     * <p>v3.0.7 用的是一个全局计数器，于是「刚才被省掉的 3 条超时提示」会被挂到
+     * 下一条**完全不同**的告警后面，而且文案写着「同类」—— 报出来的数字是错的，
+     * 比不报更误导。现在按文案各自计数，只报自己那一条被省掉几条。
+     *
+     * <p>桶数上限 {@link #MAX_TRACKED_WARNINGS}：告警文案本来就只有固定几种
+     * （失败原因 / 限流 / 队列积压 / 未配 Key），上限只是防「接口每次返回不同错误正文」
+     * 这种极端情况把 Map 撑大。
      */
-    private final AtomicInteger suppressedWarnings = new AtomicInteger();
+    private final Map<String, Integer> suppressedWarnings = new LinkedHashMap<>();
 
     /** 生产环境用的构造器：日志走 slf4j，时钟走系统时间。 */
     public ChatTranslator(TranslatorConfig config, TranslationService service,
@@ -343,23 +366,42 @@ public final class ChatTranslator {
      * （实测 2026-09-19：一局里 2 条失败，聊天栏只留下 1 行提示，第 2 条被这个窗口吞掉）。
      * 现在把窗口内省掉的条数攒起来，下一次真正打出来的告警后面附一句
      * 「另有 N 条同类提示已省略」：信息一条不少，也不会刷屏。
+     *
+     * <p><b>整个方法加 {@code synchronized}</b>（v3.0.8）：入站失败的回调在**工作线程**、
+     * 出站降级在**主线程**，两边都会进来；「读 lastWarning → 比较 → 写回」以及
+     * 「按文案分别累加计数」都是读-改-写，不加锁会丢计数（正是这条修复要解决的问题本身）。
+     * 锁里只做 Map 操作与一次 {@code feedback.error}，而两个装配层的 error 都只是
+     * 「切回主线程 / 排进任务队列」后立即返回，不存在回道回调本类的路径。
      */
-    private void warnThrottled(String message) {
+    private synchronized void warnThrottled(String message) {
         long now = clock.getAsLong();
         if (message.equals(lastWarning) && now - lastWarningAt < WARN_INTERVAL_MS) {
-            suppressedWarnings.incrementAndGet();
+            noteSuppressed(message);
             return;
         }
         // lastWarning 必须记**原始**文本（不带下面那句后缀），否则下一轮的相等判断永远不成立，
         // 节流会整个失效、退化成每条刷一行。
         lastWarning = message;
         lastWarningAt = now;
-        int suppressed = suppressedWarnings.getAndSet(0);
-        if (suppressed > 0) {
+        // 只取**这一条文案**自己攒下的数（v3.0.8）：以前是全局一个计数器，
+        // 会把另一条告警被省掉的条数算到头上，还写成「同类」。
+        Integer suppressed = suppressedWarnings.remove(message);
+        if (suppressed != null && suppressed > 0) {
             feedback.error(message + "（期间另有 " + suppressed + " 条同类提示已省略）");
             return;
         }
         feedback.error(message);
+    }
+
+    /** 记一次「这条文案被节流省掉了」，并保证桶数不无限增长（按插入顺序淘汰最旧的）。 */
+    private void noteSuppressed(String message) {
+        Integer previous = suppressedWarnings.get(message);
+        suppressedWarnings.put(message, previous == null ? 1 : previous + 1);
+        while (suppressedWarnings.size() > MAX_TRACKED_WARNINGS) {
+            java.util.Iterator<String> oldest = suppressedWarnings.keySet().iterator();
+            oldest.next();
+            oldest.remove();
+        }
     }
 
     private void debug(String message) {

@@ -297,7 +297,12 @@ public final class TranslatorConfig {
     /** 出错时在聊天栏提示。 */
     public boolean showErrorsInChat = true;
 
-    /** 调试模式：把每条消息的处理结果写进 latest.log，并同步打印到聊天栏。 */
+    /**
+     * 调试模式：把每条消息的处理结果写进日志，并同步打印到聊天栏。
+     *
+     * <p>日志文件按线不同（v3.0.8 更正）：Fabric 线是 {@code logs/latest.log}，
+     * **1.8.9 线是 {@code logs/fml-client-latest.log}** —— 实测同一个实例里前者 0 行、后者 126 行。
+     */
     public boolean debugLog = false;
 
     // ------------------------------------------------------------------

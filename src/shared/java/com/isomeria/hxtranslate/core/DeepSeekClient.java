@@ -323,7 +323,11 @@ public final class DeepSeekClient {
         } catch (IOException e) {
             return Result.failure(describeNetworkError(e));
         } catch (RuntimeException e) {
-            return Result.failure("解析失败: " + e.getMessage());
+            // 异常消息里可能**带着接口返回的原始正文**：gson 的 IllegalStateException 就是
+            // 「Not a JSON Object: <整个 JSON>」这种形态，而 /translator models 这条文案
+            // 会直接进聊天栏 —— 所以必须按不可信文本清洗（v3.0.8），
+            // 否则中转站能借它把 § 颜色代码写进我们自己的提示行里。
+            return Result.failure("解析失败: " + describeExceptionText(e));
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -399,7 +403,8 @@ public final class DeepSeekClient {
             return Result.retryableFailure(describeNetworkError(e));
         } catch (RuntimeException e) {
             Log.LOGGER.warn("翻译请求异常: {}", e.toString());
-            return Result.failure("请求异常: " + e.getMessage());
+            // 同 listModels：这条也会进聊天栏，异常文本同样是不可信输入
+            return Result.failure("请求异常: " + describeExceptionText(e));
         } finally {
             if (connection != null) {
                 connection.disconnect();
@@ -523,6 +528,20 @@ public final class DeepSeekClient {
         return LangUtils.sanitizeOneLine(text);
     }
 
+    /**
+     * 把异常消息压成可以进聊天栏的一行。
+     *
+     * <p>v3.0.8 新增。这类文案（{@code 解析失败: …} / {@code 请求异常: …}）会经
+     * {@code FeedbackPort.error} 直接显示给玩家，而异常消息**不是我们写的**：
+     * gson 抛的 {@code IllegalStateException} 消息形如 {@code Not a JSON Object: <整个 JSON>}，
+     * 里面就是接口返回的原文 —— 对模组是不可信输入（用户可以配第三方中转站）。
+     * {@code GameFeedback}/{@code ForgeFeedback} 保留 {@code §}（那是给调用方拼高亮用的），
+     * 所以清洗必须在内容进入它们之前做，否则中转站能把颜色代码写进我们的提示行。
+     */
+    private static String describeExceptionText(Throwable e) {
+        return e == null ? "" : cleanApiText(e.getMessage());
+    }
+
     private Result parseResponse(String response, String sourceText, Direction direction) {
         try {
             JsonElement parsed = new JsonParser().parse(response);
@@ -604,7 +623,10 @@ public final class DeepSeekClient {
         } catch (RuntimeException e) {
             // 异常类型写进日志给排错用，给玩家的文案里不带类名（v2.2.2 统一）
             Log.LOGGER.warn("解析接口返回内容失败: {}", e.toString());
-            return Result.failure("解析接口返回的内容失败（详情见 logs/latest.log）");
+            // 这条会直接进聊天栏，所以要把两个文件名都写出来（v3.0.8）：
+            // 1.8.9 线的模组日志落在 fml-client-latest.log，只写 latest.log 会让玩家找不到。
+            return Result.failure("解析接口返回的内容失败（详情见日志：logs/latest.log；"
+                    + "1.8.9 线为 logs/fml-client-latest.log）");
         }
     }
 

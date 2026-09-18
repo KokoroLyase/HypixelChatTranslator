@@ -1,3 +1,4 @@
+import com.isomeria.hxtranslate.forge.asm.HxHooks;
 import com.isomeria.hxtranslate.forge.asm.HxTransformer;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
@@ -56,6 +57,10 @@ public final class VerifyCoremod {
             return;
         }
 
+        // 前置：本 JVM 里还没跑过转换，标志必须是「没见过」（v3.0.8）。
+        // 这一条同时也证明下面那条「见过之后置上」不是在断言一个恒真的东西。
+        check("前置：还没转换过任何类，标志是「没见过目标类」", !HxHooks.sawTargetClass());
+
         HxTransformer transformer = new HxTransformer();
 
         // ---- 1) 真实的 MCP 命名类：应当被注入 ----
@@ -65,6 +70,25 @@ public final class VerifyCoremod {
         check("原版指令没有被删掉（注入的是早退分支，不是重写方法体）",
                 methodSize(patched) > methodSize(original));
         check("maxStack 被抬高（否则校验器会拒绝）", maxStack(patched) > maxStack(original));
+        check("类名命中后置上「见过目标类」标志（装配层靠它在进世界后自检注入是否生效）",
+                HxHooks.sawTargetClass());
+
+        // ---- 1b) 注入必须**只**落在 sendChatMessage 上（v3.0.8 补的反向验证） ----
+        //
+        // 这是这组用例里最容易「怎么改都绿」的地方，2026-09-19 审计实测：
+        // EntityPlayerSP 里 **有两个描述符完全相同**的方法 ——
+        //   public void sendChatMessage(java.lang.String)
+        //   public void setClientBrand(java.lang.String)
+        // 而 hasInjectedHook / methodSize / maxStack 都只按描述符找「第一个」，且
+        // hasInjectedHook 是「任意一个 (String)V 方法里有钩子就算过」——
+        // 于是把 TARGET_METHODS 的方法名过滤写坏、连 setClientBrand 一起注入，
+        // 11 项断言可以**全绿**，而真实后果是 setClientBrand 被早退吞掉（客户端品牌报不出去）。
+        check("前置：deobf 类里确实存在同描述符的 setClientBrand(String)（否则下一条是空断言）",
+                hasMethodNamed(original, "setClientBrand"));
+        check("注入只落在 sendChatMessage 上（按方法名取，而不是「第一个同描述符的方法」）",
+                hasInjectedHookInMethodNamed(patched, "sendChatMessage"));
+        check("反向验证：同描述符的 setClientBrand(String) 一个字节都没动",
+                same(methodBytes(original, "setClientBrand"), methodBytes(patched, "setClientBrand")));
 
         // ---- 2) 真 JVM 校验：把改造后的类放在 deobf jar 之前加载 ----
         Path patchedJar = outDir.resolve("patched-entityplayersp.jar");
@@ -108,6 +132,31 @@ public final class VerifyCoremod {
         ClassNode node = new ClassNode();
         new ClassReader(bytes).accept(node, 0);
         return node.name;
+    }
+
+    /**
+     * 取出「按名字」指定的那个 {@code (String)V} 方法，单独序列化成字节，供逐字节比对。
+     *
+     * <p>为什么要按名字取，而不是按描述符取第一个：{@code EntityPlayerSP} 里有**两个**
+     * 描述符一模一样的方法（{@code sendChatMessage(String)} 与 {@code setClientBrand(String)}），
+     * 只按描述符取「第一个」的写法恰好命中了目标方法，但**发现不了**「注入了另一个」。
+     * 把那个方法单独装进一个最小 ClassNode 再写出，字节序列是确定的，可以直接比。
+     */
+    private static byte[] methodBytes(byte[] classBytes, String name) {
+        ClassNode node = new ClassNode();
+        new ClassReader(classBytes).accept(node, 0);
+        ClassNode only = new ClassNode();
+        only.name = node.name;
+        only.version = node.version;
+        for (int i = 0; i < node.methods.size(); i++) {
+            MethodNode method = (MethodNode) node.methods.get(i);
+            if (name.equals(method.name) && "(Ljava/lang/String;)V".equals(method.desc)) {
+                only.methods.add(method);
+            }
+        }
+        ClassWriter writer = new ClassWriter(0);
+        only.accept(writer);
+        return writer.toByteArray();
     }
 
     /** 类里是否存在名为 {@code name} 且描述符为 (String)V 的方法。 */

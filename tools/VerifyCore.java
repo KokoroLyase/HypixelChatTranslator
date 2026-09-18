@@ -80,6 +80,7 @@ public class VerifyCore {
         v300AuditFixes();
         v304AuditFixes();
         v307UntranslatedEcho();
+        v308AuditFixes();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -4471,6 +4472,208 @@ public class VerifyCore {
                     echo.feedback.awaitInfo(5000, 1) && echo.feedback.hasInfo("冲中路"));
             check("（阳性对照）正常消息计进「译」",
                     echo.translator.counters().contains("译 §f1"));
+        }
+    }
+
+    /**
+     * v3.0.8 洁净度审计：修掉的一批「行为与文档/承诺不符」的真实缺陷。
+     *
+     * <p>这一组的特点：每一条都不是「新功能」，而是**代码做的事和它自己写的话不一样**——
+     * 所以断言全部指向那个差异点。
+     *
+     * <p><b>反向验证</b>（把修复逐条中和掉，确认对应用例真的变红）：
+     * ① {@code singleLineLayout} 的条件改回 {@code c >= 0x20 && c != 0x7F} → C1 那两条红；
+     * ② {@code isProtected} 空名单改回 {@code return true} → 「空名单不排除任何命令」红；
+     * ③ {@code NO_KEY_HINT} 改回带 {@code CHAT_PREFIX} → 「只带一个前缀」红；
+     * ④ {@code warnThrottled} 换回全局计数器 → 「不同文案不共享条数」红；
+     * ⑤ {@code describeExceptionText} 换回 {@code e.getMessage()} → 清洗那三条红。
+     */
+    private static void v308AuditFixes() throws Exception {
+        System.out.println("== v3.0.8 洁净度审计：行为与文档不符的修复 ==");
+
+        // ---- 1) singleLineLayout 漏掉了 C1 控制字符（javadoc 一直写着「C0/C1 都丢」） ----
+        //
+        // C1（U+0080–U+009F）里有 U+0085（NEL，Unicode 里的「下一行」）与 U+009B（CSI）。
+        // 判定以前写的是 `c >= 0x20 && c != 0x7F`，C1 全部高于 0x20，于是被原样放进聊天栏。
+        // 这条出口是装配层（GameFeedback / ForgeFeedback）唯一兜底，必须与 javadoc 一致。
+        checkEq("singleLineLayout：C0 控制字符丢弃", "ab", LangUtils.singleLineLayout("a\u0000b"));
+        checkEq("singleLineLayout：DEL 丢弃", "ab", LangUtils.singleLineLayout("a\u007Fb"));
+        checkEq("singleLineLayout：C1 控制字符也丢弃（NEL + CSI）",
+                "ab", LangUtils.singleLineLayout("a\u0085\u009Bb"));
+        checkEq("singleLineLayout：Unicode 行/段分隔符丢弃（U+2028/U+2029）",
+                "ab", LangUtils.singleLineLayout("a\u2028\u2029b"));
+        checkEq("singleLineLayout：C1 不吞掉其它字符（表情与汉字照常保留）",
+                "你好🎉", LangUtils.singleLineLayout("你好🎉"));
+        checkEq("sanitizeOneLine 同样处理 C1（两条出口共用同一份版式实现）",
+                "ab", LangUtils.sanitizeOneLine("a\u0085\u009Bb"));
+
+        // ---- 2) protectedCommands 为空时「未知命令兜底」整体失效（与 README 定义相反） ----
+        //
+        // README 把它定义为「兜底翻译时**排除**的命令」。空名单的语义显然是「不排除任何命令」，
+        // 而旧实现返回 true（= 全都保护），于是把名单清空的玩家会莫名其妙地失去兜底翻译 ——
+        // 想关掉兜底应该用 translateUnknownCommands=false（另一个含义明确的开关）。
+        TranslatorConfig cfg = new TranslatorConfig();
+        check("空名单不排除任何命令", !CommandMessage.isProtected("foo", new ArrayList<String>()));
+        check("null 名单不排除任何命令", !CommandMessage.isProtected("foo", null));
+        check("名单里的命令仍然被排除",
+                CommandMessage.isProtected("tp", cfg.protectedCommands));
+        check("名单外的命令不在排除之列",
+                !CommandMessage.isProtected("shout", cfg.protectedCommands));
+        // 端到端：把名单清空后，兜底翻译必须照常工作（这条在旧实现下会返回 null）
+        cfg.protectedCommands = new ArrayList<>();
+        check("名单清空后未知命令的兜底翻译仍然生效（旧实现会整条失效）",
+                CommandMessage.resolve("newcmd 我们一起去打中路", cfg) != null);
+        // 对照组：名单里有的命令仍然不翻
+        TranslatorConfig guarded = new TranslatorConfig();
+        check("对照组：名单里的 /tp 仍然不翻",
+                CommandMessage.resolve("tp 一个小伙伴", guarded) == null);
+
+        // ---- 3) 未配 Key 的提示带了两个 [sct] 前缀（两个装配层自己会加一个） ----
+        //
+        // NO_KEY_HINT 以前自己拼了 ChatTranslator.CHAT_PREFIX，而它只经由
+        // fallbackToOriginal → notifyFallback → feedback.error/hint 出去，
+        // 两个装配层的 error/hint **自己就会加前缀** —— 聊天栏里因此出现两个 [sct]。
+        try (MockServer server = new MockServer()) {
+            Harness noKey = Harness.outgoing(server);
+            noKey.config.apiKey = "";
+            noKey.translator.onSendChat("你们好");
+            String line = noKey.feedback.errors.isEmpty() ? "" : noKey.feedback.errors.get(0);
+            // 自检用的是 FakeFeedback（装配层不在自检类路径里），所以这里看到的是
+            // **ChatTranslator 交出去的那串字符**：它必须**一个前缀都不带** ——
+            // 前缀由两个装配层的 error()/hint() 各加一次。旧实现自己拼了一个，
+            // 玩家侧的表现就是聊天栏里两个 [sct]。
+            checkEq("未配 Key 的文案里不带 [sct] 前缀（前缀只能由装配层加一次）",
+                    0, countOccurrences(line, ChatTranslator.CHAT_PREFIX));
+            check("提示里仍然说清要做什么: " + line, line.contains("未配置 DeepSeek API Key"));
+            check("聊天方向仍然给了「关掉发送翻译」这条退路: " + line, line.contains("outgoing off"));
+
+            Harness noKeyCmd = Harness.outgoing(server);
+            noKeyCmd.config.apiKey = "";
+            noKeyCmd.translator.onSendCommand("shout 你们好");
+            String cmdLine = noKeyCmd.feedback.errors.isEmpty() ? "" : noKeyCmd.feedback.errors.get(0);
+            checkEq("命令方向同样不带前缀（同一条文案、同一个出口）",
+                    0, countOccurrences(cmdLine, ChatTranslator.CHAT_PREFIX));
+        }
+
+        // 装配层那边只能用**源码门禁**钉（它们 import Minecraft，不在自检类路径里）：
+        // error/hint 各拼一次前缀，info 不拼。三个文件里任何一处加减一次都会被这条拦下。
+        String[][] feedbacks = {
+                {"Fabric", readRepoFile("src/main/java/com/isomeria/hxtranslate/chat/GameFeedback.java")},
+                {"Forge", readRepoFile("forge-1.8.9/src/main/java/com/isomeria/hxtranslate/forge/ForgeFeedback.java")},
+        };
+        for (String[] pair : feedbacks) {
+            String errorBody = methodBodyOf(pair[1], "public void error(String text)");
+            String hintBody = methodBodyOf(pair[1], "public void hint(String text)");
+            String infoBody = methodBodyOf(pair[1], "public void info(String text)");
+            check(pair[0] + " 装配层找得到 error/hint/info 三个实现",
+                    errorBody != null && hintBody != null && infoBody != null);
+            check(pair[0] + " 装配层 error() 只拼一次 [sct] 前缀",
+                    errorBody != null && countOccurrences(errorBody, "CHAT_PREFIX") == 1);
+            check(pair[0] + " 装配层 hint() 只拼一次 [sct] 前缀",
+                    hintBody != null && countOccurrences(hintBody, "CHAT_PREFIX") == 1);
+            check(pair[0] + " 装配层 info() 不拼前缀（启动横幅自己带一个）",
+                    infoBody != null && countOccurrences(infoBody, "CHAT_PREFIX") == 0);
+        }
+
+        // ---- 4) 被节流省掉的条数必须**按文案分桶**，不能算到别的告警头上 ----
+        //
+        // v3.0.7 用的是全局计数器，于是「刚才被省掉的 2 条未配 Key 提示」会被挂到
+        // 下一条完全不同（限流）的告警后面，还写着「同类」—— 数字是错的，比不报更误导。
+        Harness throttle = Harness.incoming(null);
+        throttle.config.apiKey = "";
+        throttle.config.requestsPerMinute = 0;
+        for (int i = 0; i < 3; i++) {
+            // 前 3 条都是「未配 Key」：第 1 条打出来，第 2、3 条被节流省掉
+            throttle.translator.onIncoming("[MVP+] Steve: hello " + i, false, false, null, null);
+        }
+        checkEq("同一条文案 30 秒内只打一行", 1, throttle.feedback.errors.size());
+        check("窗口内不急着报条数（仍然只刷一行）", !throttle.feedback.errors.get(0).contains("已省略"));
+
+        // 换一条**不同**的告警（配了 Key 但把每分钟上限设成 0 → 限流）
+        throttle.config.apiKey = "sk-test";
+        throttle.translator.onIncoming("[MVP+] Steve: hello limited", false, false, null, null);
+        checkEq("不同文案的告警照常打出来", 2, throttle.feedback.errors.size());
+        check("不同文案的告警**不**挂上别条的条数（v3.0.7 会把 2 挂在它后面）: "
+                        + throttle.feedback.errors.get(1),
+                !throttle.feedback.errors.get(1).contains("已省略"));
+
+        // 切回第一条文案：它自己攒的 2 条必须还在（分桶的意义就在这里）
+        throttle.config.apiKey = "";
+        throttle.translator.onIncoming("[MVP+] Steve: hello back", false, false, null, null);
+        checkEq("切回原文案后仍会打出来", 3, throttle.feedback.errors.size());
+        check("报出的是**它自己**被省掉的 2 条: " + throttle.feedback.errors.get(2),
+                throttle.feedback.errors.get(2).contains("另有 2 条同类提示已省略"));
+
+        // 报出后清零：再攒 1 条就该报 1 —— 报 3 说明没清零
+        throttle.translator.onIncoming("[MVP+] Steve: hello again", false, false, null, null);
+        throttle.clock.advance(31_000);
+        throttle.translator.onIncoming("[MVP+] Steve: hello window 2", false, false, null, null);
+        checkEq("第二轮照常打出来", 4, throttle.feedback.errors.size());
+        check("条数在报出后清零（只报新一轮的 1 条）: " + throttle.feedback.errors.get(3),
+                throttle.feedback.errors.get(3).contains("另有 1 条同类提示已省略"));
+
+        // ---- 5) 异常文本会进聊天栏，必须按不可信文本清洗 ----
+        //
+        // 「解析失败: …」「请求异常: …」这两条会经 FeedbackPort.error 直接显示给玩家，
+        // 而异常消息**不是我们写的**（gson 的 IllegalStateException 就把整段接口原文拼在消息里）。
+        // 这里用非法接口地址稳定地造出「消息里带 § 与换行」的异常：
+        // URI.create 会抛 IllegalArgumentException，消息里原样带着我们传进去的那串地址。
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig hostile = new TranslatorConfig();
+            hostile.apiKey = "sk-test";
+            hostile.apiBaseUrl = "http://127.0.0.1:1/\u00A7cFAKE\nboom";
+            DeepSeekClient client = new DeepSeekClient(hostile);
+
+            DeepSeekClient.Result r = client.translate("hi", Direction.INCOMING);
+            check("接口地址非法时不抛异常、给的是可读文案: " + r.error(),
+                    !r.ok() && r.error().contains("请求异常"));
+            check("异常文本里的 § 被清洗（否则能把颜色代码写进我们自己的提示行）: " + r.error(),
+                    !r.error().contains("§"));
+            check("异常文本里的换行被压掉（否则一条提示会被拆成两行）: " + r.error(),
+                    !r.error().contains("\n"));
+
+            DeepSeekClient.Result m = client.listModels();
+            check("模型列表那条走同一个清洗出口: " + m.error(),
+                    !m.ok() && !m.error().contains("§") && !m.error().contains("\n"));
+        }
+
+        // describeFailure 只会在「翻译任务里逃出 Throwable」时触发，离线造不出来 ——
+        // 按仓库惯例用**源码门禁**钉住它调用了清洗（与「日志前缀四处逐字一致」同一套路）。
+        String serviceSource = readRepoFile("src/shared/java/com/isomeria/hxtranslate/core/TranslationService.java");
+        check("TranslationService.describeFailure 把异常消息过了 sanitizeOneLine",
+                contains(methodBodyOf(serviceSource, "private static String describeFailure(Throwable t)"),
+                        "LangUtils.sanitizeOneLine"));
+
+        // ---- 6) 1.8.9 线的日志文件必须被文档写清（v3.0.8）----
+        //
+        // 实测：同一个 1.8.9 实例里 `server_chat_translator` 在 logs/fml-client-latest.log
+        // 出现 126 次、在 logs/latest.log 里 0 次。而 README / 两份 issue 模板 / SECURITY.md
+        // 原来都只写 latest.log —— 等于让玩家照着文档去一个空文件里搜。
+        // 这条门禁把「必须写明另一个文件名」钉住，防止以后文档又漂回去。
+        check("README 写明了 1.8.9 线的日志文件 fml-client-latest.log",
+                contains(readRepoFile("README.md"), "fml-client-latest.log"));
+        check("README 说明了两条线各看哪个日志文件（不是只丢一个文件名）",
+                contains(readRepoFile("README.md"), "1.8.9 / Forge 线上，模组自己写的行落在"));
+        check("两份 issue 模板也都写明了（模板不在自检类路径里，只能读源码文本）",
+                contains(readRepoFile(".github/ISSUE_TEMPLATE/bug_report.md"), "fml-client-latest.log")
+                        && contains(readRepoFile(".github/ISSUE_TEMPLATE/bug_report.yml"),
+                        "fml-client-latest.log"));
+    }
+
+    /** 子串出现次数（给「前缀只能有一个」这类断言用）。 */
+    private static int countOccurrences(String text, String part) {
+        if (text == null || part == null || part.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        int from = 0;
+        while (true) {
+            int at = text.indexOf(part, from);
+            if (at < 0) {
+                return count;
+            }
+            count++;
+            from = at + part.length();
         }
     }
 

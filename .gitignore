@@ -49,9 +49,20 @@ bin/
 .classpath
 .project
 
-# macos
+# macos / windows 系统垃圾文件
+# Thumbs.db 与 Desktop.ini 是 Windows 侧的同类东西；本仓库主开发平台是 Windows，
+# 而 .editorconfig / .gitattributes 都为 *.bat 单列了 CRLF，说明两边都在用 —— 对称补上。
+# （v3.0.8 洁净度审计；当时仓库里还没有这两个文件，属于预防）
 
 *.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 会话工具的项目数据目录（记忆、技能稿等本地笔记）
+# RELEASING §3 的发布流程写的是 `git add -A && git commit`，不加这一行就会把
+# 52 KB 的本机笔记一起提交上去（v3.0.8 洁净度审计发现它一直是未跟踪状态）。
+# 注意：这是**忽略**，不是删除 —— 目录本身要保留。
+/.workbuddy/
 
 # fabric
 

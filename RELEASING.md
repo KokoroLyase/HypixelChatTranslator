@@ -167,6 +167,11 @@ CI 建的 Release 只有一句自动生成的 `**Full Changelog**` 占位（v1.0
   （Fabric 线由加载器提供，1.8.9 线是游戏自带的 2.2.4，所以共享层只能用它俩都有的 API，见 §10.1）；
   其余只用 Fabric API 与 JDK 自带的 `HttpURLConnection`（1.8.9 线连 Fabric API 都没有）。
   引入新依赖前先想清楚是否值得 —— 目前整包约 110 KB（产物实测，别在这里写一个会漂移的数字）。
+- **日志落点（v3.0.8 补）**：**1.8.9 线的模组日志落在 `logs/fml-client-latest.log`，不在
+  `logs/latest.log`**（实测：同一个实例里 `server_chat_translator` 在前者出现 126 次、后者 0 次；
+  Fabric 线正常落在 `latest.log`）。凡是要告诉玩家「去日志里搜什么」的文案，
+  都必须按线把两个文件名写清 —— 只写 `latest.log` 会让 1.8.9 的玩家搜到空文件，
+  等于把排查路径堵死（v3.0.8 修的就是这个）。自检里有门禁盯着 README 与两份 issue 模板。
 - **日志**：一律用 `com.isomeria.hxtranslate.Log.LOGGER`，**不要**用入口类的
   `HxTranslateClient.LOGGER`。入口类实现 `ClientModInitializer`，引它会连带加载 Fabric
   加载器 API：万一那个类不可用（或以后挪了包名），打日志就会抛 `NoClassDefFoundError`，

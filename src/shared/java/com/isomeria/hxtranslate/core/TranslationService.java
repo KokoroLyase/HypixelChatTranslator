@@ -270,8 +270,12 @@ public final class TranslationService {
      * {@code Log.LOGGER.error(..., t)}），排错信息一点没少。
      */
     private static String describeFailure(Throwable t) {
-        String message = t.getMessage() == null ? "" : t.getMessage();
-        // 消息本身是给开发者看的（可能带类名/堆栈片段），所以只留可读的那部分，并压成一行
+        // v3.0.8：这条文案会**直接进聊天栏**（经 ChatTranslator 的失败分支），而异常消息
+        // 可能夹带任意文本 —— 类名、第三方库的提示、甚至被上游拼进来的原始数据。
+        // 原注释写着「只留可读的那部分，并压成一行」，但当时**根本没有调用任何清洗**，
+        // 只是把 getMessage() 原样拼进去（含换行与 §）。现在按不可信文本清洗，
+        // sanitizeOneLine 会压成一行、剥掉 § 与非可见格式字符，null 安全。
+        String message = LangUtils.sanitizeOneLine(t == null ? null : t.getMessage());
         return "翻译线程内部错误（详情见日志）" + (LangUtils.isBlank(message) ? "" : "：" + message);
     }
 

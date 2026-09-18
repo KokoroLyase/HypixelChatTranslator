@@ -76,8 +76,13 @@ public final class ForgeClient implements ChatClientPort {
             } else {
                 allow = current.onSendChat(message);
             }
-        } catch (RuntimeException e) {
-            Log.LOGGER.error("发送拦截出错，本条原样放行: {}", e.toString());
+        } catch (Throwable t) {
+            // catch **Throwable** 而不是 RuntimeException（v3.0.8）。静态初始化失败抛的是
+            // Error（例如共享层某个类加载不到 → NoClassDefFoundError），它会被
+            // HxHooks 的兜底接住并**静默放行**，玩家看到的是「打中文没被翻译、日志里什么都没有」。
+            // 接收方向（onChatReceived）与 Fabric 线四个入口本来就是 catch Throwable，
+            // 这里漏掉的恰好是最需要留线索的那条路径；v3.0.6 的注释已经写成「两个方向都齐了」。
+            Log.LOGGER.error("发送拦截出错，本条原样放行: {}", t.toString(), t);
             return false;
         }
         // 注入点在原版发送之前：返回 true = 取消原版发送（翻译完由模组重发）

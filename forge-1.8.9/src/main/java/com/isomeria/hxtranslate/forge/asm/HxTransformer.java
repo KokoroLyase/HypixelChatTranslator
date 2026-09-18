@@ -84,8 +84,14 @@ public final class HxTransformer implements IClassTransformer {
             return null;
         }
         if (!isTargetClass(name) && !isTargetClass(transformedName)) {
+            // 这里**不能**打日志：FML 会把每一个类都送进来，逐类输出等于把日志刷爆。
+            // 但「一层名字都没命中」这件事本身必须能被发现 —— 否则 FML 哪天换了命名/调用方式，
+            // 注入就是**静默失效**，玩家只看到「打中文不翻译」，而按 README 去日志里搜
+            // [server_chat_translator] 什么都搜不到（v3.0.6 的 CHANGELOG 记着这个缺口）。
+            // 解法是记下「见过目标类」，由装配层在进世界之后检查一次（见 HxHooks.sawTargetClass）。
             return basicClass;
         }
+        HxHooks.markTargetClassSeen();
         // patchedFlag 是「是否真的注入了至少一个方法」的出参：类名命中但一个方法都没注入
         // （映射层换了 / 签名变了）以前是**完全静默**的，表现和「注入抛异常」一样 ——
         // 发送方向不翻译，而日志里一个字都没有（见下面 reportFailure 的说明）。

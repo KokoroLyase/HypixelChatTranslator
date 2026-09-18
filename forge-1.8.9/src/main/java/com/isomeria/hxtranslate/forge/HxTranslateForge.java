@@ -6,6 +6,7 @@ import com.isomeria.hxtranslate.chat.FeedbackPort;
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 import com.isomeria.hxtranslate.core.GlossaryAudit;
 import com.isomeria.hxtranslate.core.TranslationService;
+import com.isomeria.hxtranslate.forge.asm.HxHooks;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.settings.KeyBinding;
 import net.minecraftforge.client.ClientCommandHandler;
@@ -142,6 +143,17 @@ public final class HxTranslateForge {
             return;
         }
         startupNoticeShown = true;
+
+        // 注入结果的一次性自检（v3.0.8）。能走到这里说明玩家实体已经建出来，
+        // 也就是说 EntityPlayerSP 早就被 FML 加载过、转换器必然被叫过 ——
+        // 若那时我们连类名都没命中，注入就是**静默失效**：发送方向完全不翻译，
+        // 而日志里一个字都没有（README 让玩家搜 [server_chat_translator] 会搜不到）。
+        // 这里报出来，等于把那条第 5 步的排查路径补上。
+        if (!HxHooks.sawTargetClass()) {
+            LOGGER.warn("[server_chat_translator] 从未见过目标类 EntityPlayerSP —— "
+                    + "字节码注入似乎没有生效，发送方向将不翻译（其余功能不受影响）。"
+                    + "请把这一行连同 Minecraft / Forge 版本反馈给作者");
+        }
         showStartupNotice();
     }
 

@@ -203,7 +203,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | `blacklistedPlayers` | `[]` | 永不翻译这些玩家的消息（写游戏名即可），朋友是中国人时很有用 |
 | `connectTimeoutSeconds` | `5` | 建立连接超时 |
 | `showErrorsInChat` | `true` | 出错时在聊天栏提示。**关掉只是把红字降为灰色提示，不会静默**：出错/取消时仍会告诉你这条有没有发出去（v2.2.0 起） |
-| `debugLog` | `false` | 调试模式：把每条消息的处理结果写进 `logs/latest.log` 并同步打印到聊天栏（`/translator debug on`） |
+| `debugLog` | `false` | 调试模式：把每条消息的处理结果写进日志（Fabric 线 `logs/latest.log`，**1.8.9 线 `logs/fml-client-latest.log`**）并同步打印到聊天栏（`/translator debug on`） |
 | `incomingSystemPrompt` / `outgoingSystemPrompt` | 见文件 | 两个方向的提示词（内含少样本示例），可自行微调语气 |
 | `configVersion` | 当前版本号 | 配置结构版本，请勿手改；升级模组时会自动把老版提示词/术语表升级到新默认值，你自定义过的内容不会被覆盖 |
 
@@ -309,21 +309,30 @@ DeepSeek 会更换模型名（2026-09 就把 `deepseek-chat` 换成了 `deepseek
 2. 把 `httpTimeoutSeconds` 调大（默认 **30** 秒，网络特别差可以试 60），`/translator reload`；
 3. 如果你用了中转站，检查 `apiBaseUrl` 能不能在浏览器里打开；
 4. 代理/加速器换线路，或先 `/translator incoming off` 把接收方向关掉，避免每条消息都白等一轮；
-5. 仍然不行就看 `logs/latest.log` 里的 `翻译请求失败:` 那一行 —— **具体的异常类型只有日志里有**
+5. 仍然不行就看日志里的 `翻译请求失败:` 那一行 —— **具体的异常类型只有日志里有**
    （聊天栏里为了让你看得懂，已经换成中文说明与建议了）。
+
+> **日志在哪个文件？** 26.3 / Fabric 线是 `logs/latest.log`。
+> **1.8.9 / Forge 线上，模组自己写的行落在 `logs/fml-client-latest.log`**（不是 `latest.log`）——
+> 这是实测结果，不是猜的（同一个实例里 `server_chat_translator` 在 `fml-client-latest.log` 出现 126 次、
+> 在 `latest.log` 里 0 次）。所以 1.8.9 线排查时**两个文件都看一眼**，或者直接看
+> `fml-client-latest.log`。本版（v3.0.8）之前文档只写了 `latest.log`，等于把这条路堵住了。
 
 > v2.2.1 起聊天栏不再显示 `SocketTimeoutException` 这类 Java 异常类名。如果你看到的是那种
 > 原始类名，说明模组版本低于 v2.2.1，升级即可（顺带把读超时默认值从 15 秒提到了 30 秒）。
 
 **1.8.9 线：打中文完全没被翻译，其它功能却正常**
 多半是**核心插件（coremod）的字节码注入没生效**。这种情况日志里会有一行明确的说明，
-在 `logs/latest.log` 里搜 `[server_chat_translator]` 就能找到：
+在 1.8.9 线的日志文件（`logs/fml-client-latest.log`，见上面那条提示）里搜
+`[server_chat_translator]` 就能找到：
 
 ```
 [server_chat_translator] EntityPlayerSP 字节码注入失败，发送方向将不翻译（其余功能不受影响）: …
 ```
 
 注入失败**绝不静默**（这条路径执行得极早，用不了日志框架，所以写进 `System.err`）。
+v3.0.8 起还补了**最后一个静默缺口**：万一 FML 换了命名方式、连目标类名都没命中过，
+进世界时会额外警告一次 `从未见过目标类 EntityPlayerSP`（在那之前这种情况一个字都不会打）。
 常见原因是**装了别的核心插件也在改聊天发送路径**（见 §1.2）—— 两个 coremod 改同一个类时可能互相干扰。
 把那行连同后面的堆栈一起贴进 issue 即可定位。
 
@@ -480,7 +489,8 @@ v1.1.4 起术语表对发送方向也生效：模组会把术语表**反查**成
 - **不会上传**账号、密码、坐标、背包等游戏数据；模组只读取聊天栏文本，并且只把需要翻译的那一条发出去。
 - **API Key** 只存在你本机的 `.minecraft/config/server_chat_translator.json`，只用于直连 DeepSeek。本模组没有任何自建服务器，不会把 Key 或聊天内容转发到别处。
 - **不要**把配置文件或日志发给别人：配置里有你的 API Key（明文）；打开 `/translator debug on`
-  之后，`logs/latest.log` 里还会有**聊天正文与译文**。仓库的 `.gitignore` 已排除本地配置。
+  之后，日志里还会有**聊天正文与译文**（Fabric 线 `logs/latest.log`，1.8.9 线 `logs/fml-client-latest.log`）。
+  仓库的 `.gitignore` 已排除本地配置。
 - **服务器规则**：本模组只做「读聊天 + 代替你发送你亲手输入的文本」，不会自动操作游戏、不会自动刷屏。但个别服务器把「自动代发」视为宏，请自行查阅所在服务器规则（Hypixel 见 *Allowed Modifications*）。
 - **DeepSeek 服务条款**：使用即表示你同意 <https://api-docs.deepseek.com/zh-cn/> 的条款与计费方式。
 

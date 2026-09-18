@@ -67,6 +67,23 @@ sourceSets {
 task generateVersionSource {
     def outDir = file("$buildDir/generated/source/hxversion")
     outputs.dir outDir
+
+    // 这两行是 v3.0.8 修的**真实缺陷**，别删。
+    //
+    // 只声明 outputs.dir 而不声明任何 inputs 时，Gradle 的增量判定只看「输出有没有变」——
+    // 输出一直是它自己写的那份，于是任务**永远**被判定为 up-to-date 而跳过整个 doLast。
+    // 后果：改完根目录 gradle.properties 的 mod_version 之后，**不带 clean 的构建**
+    // 仍然沿用上一次生成的 HxVersion.java，产出一个自相矛盾的 jar：
+    // mcmod.info 是新版本号（processResources 有自己的 inputs.property，所以会重跑），
+    // 而 HxVersion.VERSION / @Mod(version=…) 还是旧版本号 —— Forge 的模组列表里显示旧版本。
+    // 2026-09-19 实测复现：3.0.7 的 jar 里 HxVersion 写着 "3.0.6"。
+    // CI 每次都是全新检出（build/ 不存在）所以看不出来，本机开发则必然踩到。
+    //
+    // 版本号来自 ../gradle.properties（见文件开头读 rootProps 的那段），所以两样都要声明：
+    // property 让「值变了」可被比较，file 让「文件被编辑了」也算输入变化。
+    inputs.property "version", modVersion
+    inputs.file file('../gradle.properties')
+
     doLast {
         def pkgDir = new File(outDir, "com/isomeria/hxtranslate/forge")
         pkgDir.mkdirs()
@@ -263,5 +280,9 @@ jar {
 // 任务名是 ForgeGradle 2.1 提供的 sourceJar（不是 Fabric 那边的 sourcesJar）。
 tasks.matching { it.name == 'sourceJar' }.all { task ->
     task.archiveName = "${archivesBaseName}_${modVersion}_mc${mcVersion}-${loaderTag}-sources.jar"
+    // 源码包的内容来自 sourceSets.main.allSource，里面含 generateVersionSource 生成的那个目录，
+    // 所以必须显式依赖它（v3.0.8）：compileJava.dependsOn 管不到 sourceJar，
+    // 单独执行 `gradle sourceJar` 时会漏掉 HxVersion.java（或拿到上一版的）。
+    task.dependsOn generateVersionSource
 }
 

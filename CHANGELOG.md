@@ -1,5 +1,143 @@
 # 更新日志
 
+## v3.0.8 — 2026-09-19（洁净度审计：构建增量陷阱、行为与文档不符的 6 处、核心插件最后的静默口）
+
+按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.8**。
+配置结构未变（`configVersion` 仍是 9），**换 jar 即可**。
+
+这一版是对**整个工程项目**（本仓库全部跟踪文件 + 两条构建 + 装配层 + 核心插件 + 文档与 CI）
+做的一轮完整审计，分三路并行查（共享层与 Fabric 装配层、Forge 线与核心插件、仓库洁净度与元数据），
+每条结论都由我逐字读源码复核后才动手（不接受未验证的推断）。共改 8 处，全部是
+**「代码做的事和它自己写的话不一致」**这类问题 —— 构建与自检都看不见它们。
+
+### 这一版改了什么
+
+**1. Forge 线的增量构建会产出「一个 jar 里两个版本号」（最严重的一条）**
+
+`forge-1.8.9/build.gradle` 的 `generateVersionSource` 只声明了 `outputs.dir`、
+**没有任何 inputs**。Gradle 的增量判定因此只看「输出有没有变」，而输出就是它自己写的那份 ——
+任务**永远**被判为最新，`doLast` 再也不执行。
+
+后果（本机实测复现）：改完根目录 `gradle.properties` 的 `mod_version` 之后**不带 clean** 构建，
+`sources.jar` 与 `mcmod.info` 里都是新版本号，而 `HxVersion.VERSION` 与 `@Mod(version=…)`
+**还是旧版本号** —— 更名后的 v3.0.7 jar 里写着 `3.0.6`，Forge 的模组列表也显示旧版本。
+CI 每次都是全新检出（`build/` 不存在）所以永远看不出来，**只有本机开发者会踩到**。
+
+修法：给该任务补 `inputs.property "version", modVersion` 与 `inputs.file file('../gradle.properties')`
+（两样都要：前者让「值变了」可比较，后者让「文件被编辑过」也算输入变化），
+并让 `sourceJar` 显式依赖它（`compileJava.dependsOn` 管不到 `sourceJar`，
+单独跑 `gradle sourceJar` 会漏掉 `HxVersion.java`）。
+
+**2. 未配 API Key 时的提示会显示两个 `[sct]` 前缀**
+
+`ChatTranslator.NO_KEY_HINT` 自己拼了 `CHAT_PREFIX`，而它只经由
+`fallbackToOriginal → notifyFallback → feedback.error/hint` 出去，**两个装配层的
+`error()`/`hint()` 自己就会加前缀** —— 聊天栏里显示的是
+`§8[§bsct§8] §c§8[§bsct§8] §c未配置 DeepSeek API Key…`。去掉内嵌的那个，
+并补一条门禁：ChatTranslator 交出去的文案**不带**前缀，装配层的 `error`/`hint` 各**只**拼一次。
+
+**3. 被节流省掉的失败提示，条数会被算到另一条告警头上**
+
+v3.0.7 加「另有 N 条同类提示已省略」时用的是**一个全局计数器**。于是「刚才被省掉的 2 条未配 Key 提示」
+会挂到**下一条完全不同**（限流）的告警后面，还写着「同类」—— 数字是错的，比不报更误导。
+现在按文案分桶（每桶一个计数，报出即清零），桶数上限 8 防止极端情况撑大 Map；
+整个方法加 `synchronized`：入站失败回调在工作线程、出站降级在主线程，而这是读-改-写。
+
+**4. `singleLineLayout` 漏掉了 C1 控制字符（而它的 javadoc 一直写着「C0/C1 都丢」）**
+
+判定写的是 `c >= 0x20 && c != 0x7F`，C1（U+0080–U+009F）全部高于 0x20 因而被**原样放行** ——
+其中 `U+0085`（NEL）在 Unicode 里就是「下一行」，`U+009B` 是 CSI。
+这条出口是装配层（`GameFeedback`/`ForgeFeedback`）唯一兜底，必须与 javadoc 一致。
+顺带补上 `U+2028`/`U+2029`（Unicode 行/段分隔符）。自检以前只测了 `\u0000`，所以一直没暴露。
+
+**5. 接口异常文本会绕过清洗直接进聊天栏**
+
+`解析失败: …`（`listModels`）与 `请求异常: …`（`attempt`）两条文案会经 `FeedbackPort.error`
+显示给玩家，而异常消息**不是我们写的**：gson 的 `IllegalStateException` 就把整段接口返回的
+JSON 拼在消息里，用户可以配第三方中转站。而两个装配层的 `clean` 为了保住调用方自己拼的颜色
+**刻意保留 `§`** —— 清洗必须在内容进入它们之前做。现在这两处与
+`TranslationService.describeFailure`（它的注释一直写着「压成一行」，但当时根本没调用任何清洗）
+统一走 `LangUtils.sanitizeOneLine`。
+
+**6. `protectedCommands` 为空时「未知命令兜底」整体失效（与 README 的定义相反）**
+
+README 把它定义为「兜底翻译时**排除**的命令」，而 `isProtected` 在名单为 null/空时返回 `true`
+（= 全都保护）—— 把名单清空的玩家会莫名其妙地失去兜底翻译。空名单的语义显然是
+「不排除任何命令」；想关掉兜底应该用含义明确的 `translateUnknownCommands=false`。
+
+**7. 核心插件「绝不静默」的最后一个缺口（类名一层都没命中时）**
+
+v3.0.6 的 CHANGELOG 把这条列为待堵的缺口（只修了「按内容去重」那一半）。这里**不能**逐类打日志
+（FML 会把每一个类都送进来），所以改成：类名命中时记一个**系统属性**，装配层在
+「玩家实体已经建出来」的那一刻检查一次 —— 那时 `EntityPlayerSP` 必然被加载过，
+没有标志就说明注入静默失效，于是警告一次 `从未见过目标类 EntityPlayerSP`。
+用系统属性而不是静态字段：核心插件的类与模组类是否同一个 `LaunchClassLoader` 离线无法验证，
+万一不是，静态字段会让**每个玩家**都看到一条假警报 —— 假警报比沉默更糟。
+
+**8. Forge 线的发送拦截只 catch `RuntimeException`，`Error` 会被静默吞掉**
+
+静态初始化失败抛的是 `Error`（例如共享层某个类加载不到 → `NoClassDefFoundError`），
+它会被 `HxHooks` 的兜底接住并静默放行，玩家看到「打中文没被翻译、日志里什么都没有」。
+接收方向（`onChatReceived`）与 Fabric 线四个入口本来就是 `catch Throwable`，
+这里漏掉的恰好是最需要留线索的那条路径（v3.0.6 的注释已写成「两个方向都齐了」）。
+现在两边都改成 `catch Throwable` + 记日志，`HxHooks` 的兜底也补一次（只报第一次，不刷屏）。
+
+**9. 文档把玩家指到了错的日志文件（1.8.9 线）**
+
+README、两份 issue 模板、`SECURITY.md` 都让玩家去 `logs/latest.log` 搜 `[server_chat_translator]`，
+而**实测**同一个 1.8.9 实例里：`server_chat_translator` 在 `fml-client-latest.log` 出现 **126 次**、
+在 `latest.log` 里 **0 次**。等于把文档给出的排查路径堵死。全部改成按线写明两个文件。
+
+**10. 仓库洁净度（小项）**
+
+`.gitignore` 补 `/.workbuddy/`（RELEASING §3 的发布流程写的是 `git add -A && git commit`，
+不加这行会把 52 KB 本机笔记一起提交）与 `Thumbs.db` / `Desktop.ini`（与既有的 `*.DS_Store` 对称）。
+
+### 审计范围与**明确不改**的项
+
+审计覆盖：`git ls-files` 全部 63 个跟踪文件、索引行尾与可执行位、编码/BOM/行尾空白、
+被跟踪文件里的密钥形态串、7 份 Markdown 的全部相对链接与锚点、两条 workflow 的 tag glob 与权限、
+issue 模板两份一致性、以及全部 Java 源码。**未发现生成物入库、密钥泄漏、死信链接或版本号不一致。**
+
+复核后**决定不改**的（附理由，避免以后被当成漏项）：
+
+- **`LangUtils.matchesAny` 的「疑似超时」计数只在命中时清零**：注释写的是「有任何一次顺利
+  完成就清零」，与代码不符 —— 但按注释改会**削弱**保护：一次判定会跑过用户配的全部正则，
+  而「不命中」是绝大多数正则的常态，在那里清零会让真正在灾难性回溯的坏正则被别的正则反复
+  抹掉计数、永远到不了 2 次。所以只把**注释改成与代码一致**，行为不动。
+- **CHANGELOG 与回归用例里的真实玩家名**（`qMilass`、`G19sy` 等）：它们是定位 bug 的原始证据，
+  仓库从 v1.0.x 起一直是这个做法，且属于公开对局里的显示名。改历史条目只会削弱回归用例的价值。
+
+### 升级后你要做什么
+
+- **换 jar 即可**：配置结构未变（`configVersion` 仍是 9），不需要改配置、不需要删旧配置文件；
+- 产物名照旧：`Server-Chat-Translator_3.0.8_mc26.3-fabric.jar` /
+  `Server-Chat-Translator_3.0.8_mc1.8.9-forge.jar`；
+- 玩家侧能感知的变化只有两处：**未配 Key 的提示不再显示两个 `[sct]`**；
+  1.8.9 线的注入若彻底失效，进世界时会**多一条明确的警告**（以前一个字都没有）。
+
+### 验证
+
+- 离线自检：**982 项，0 失败**（v3.0.7 基线 945 项，本版 **+37** 项）；Forge 线另有核心插件验证
+  **16 项，0 失败**（v3.0.7 是 11 项，新增 5 项，见下）；
+- **反向验证 6 组**，逐条把修复中和掉、确认对应用例真的变红：
+  ① `singleLineLayout` 条件改回 `c >= 0x20 && c != 0x7F` → C1 断言红；
+  ② `isProtected` 空名单改回 `return true` → 兜底翻译断言红；
+  ③ `NO_KEY_HINT` 改回带前缀 → 双前缀断言红；
+  ④ `warnThrottled` 换回全局计数器 → 「不同文案不共享条数」红；
+  ⑤ `describeExceptionText` 换回 `e.getMessage()` → 清洗断言红；
+  ⑥ `build.gradle` 去掉 inputs、把 `mod_version` 改成 3.0.9 → 非 clean 构建出的 jar 里
+  `HxVersion` **仍是** 3.0.8（复现缺陷）；加回 inputs 后同样条件下正确变成 3.0.9；
+- **核心插件验证新增 5 项**，堵住一个真实的「怎么改都绿」：`EntityPlayerSP` 里
+  `sendChatMessage(String)` 与 `setClientBrand(String)` **描述符完全相同**，而原有断言
+  （`hasInjectedHook` / `methodSize` / `maxStack`）都只按描述符找「第一个」、且「任意一个命中就算过」——
+  把方法名过滤写坏、连 `setClientBrand` 一起注入，11 项断言可以全绿，而真实后果是
+  客户端品牌报不出去。现在按**方法名**取方法，并断言 `setClientBrand` 逐字节未改动。
+- **无自动化覆盖**（按 RELEASING §6）：`ChatTranslator` 的计数分支与装配层仍靠源码门禁 + 代码审查；
+  `TranslationService.describeFailure` 只在「翻译任务里逃出 Throwable」时触发，离线造不出来，
+  按仓库惯例用源码门禁钉住它调用了清洗；核心插件在**游戏内**的实际注入效果、以及
+  「从未见过目标类」那条警告的真实触发，都需要真实对局才能确认。
+
 ## v3.0.7 — 2026-09-19（翻译失败误报：闸门与提示词自相矛盾、告警被节流吞掉）
 
 按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.7**。

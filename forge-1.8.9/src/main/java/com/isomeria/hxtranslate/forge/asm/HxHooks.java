@@ -1,5 +1,7 @@
 package com.isomeria.hxtranslate.forge.asm;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * 注入字节码与模组逻辑之间的唯一桥梁。
  *
@@ -36,6 +38,44 @@ public final class HxHooks {
 
     private static volatile SendGate gate;
 
+    /**
+     * 「发送闸门出错」这件事是否已经报过（v3.0.8）。
+     *
+     * <p>发送路径每条消息都会走一遍，反复往 {@code System.err} 打会把控制台刷满；
+     * 但一次都不打又让「打中文没被翻译」变成完全无线索 —— 所以只报第一次。
+     */
+    private static final AtomicBoolean reportedSwallowed = new AtomicBoolean();
+
+    /**
+     * 「FML 至少把目标类交给过转换器」这个事实记录在哪个系统属性里（v3.0.8）。
+     *
+     * <p><b>为什么用系统属性，而不是 HxTransformer 里的一个静态字段</b>：核心插件的类
+     * （{@link HxTransformer}）与模组类（{@code HxTranslateForge}）是否由同一个
+     * {@code LaunchClassLoader} 加载，**离线无法验证** —— 而这个判断只用于「报警」，
+     * 万一两边不是同一个类加载器，静态字段会让装配层读到「没见过目标类」，
+     * 于是**每个玩家**都会看到一条「注入似乎没生效」的假警报。假警报比沉默更糟，所以
+     * 这里刻意挑了一个 JVM 全局、与类加载器无关的载体。
+     *
+     * <p>反过来说，这条判断不会漏报：只有转换器**真的**见过目标类名才会置上它，
+     * 没置上就说明 FML 从来没让我们碰过那个类（注入必然没生效）。
+     */
+    private static final String TARGET_SEEN_PROPERTY = "server_chat_translator.targetClassSeen";
+
+    /** 由 {@link HxTransformer} 在类名命中时调用。 */
+    public static void markTargetClassSeen() {
+        System.setProperty(TARGET_SEEN_PROPERTY, "1");
+    }
+
+    /**
+     * 本 JVM 里 FML 是否至少把目标类交给过转换器 —— 给装配层做一次性自检用。
+     *
+     * <p>装配层在「玩家实体已经建出来」的那一刻问一次：那时 {@code EntityPlayerSP}
+     * 必然已经被加载过，转换器也就必然被叫过。答案是否，就说明注入静默失效了。
+     */
+    public static boolean sawTargetClass() {
+        return "1".equals(System.getProperty(TARGET_SEEN_PROPERTY));
+    }
+
     private HxHooks() {
     }
 
@@ -67,6 +107,15 @@ public final class HxHooks {
         } catch (Throwable t) {
             // 翻译逻辑出任何问题都不能卡住玩家发消息：放行原版行为是最安全的降级。
             // 这里同样 catch Throwable —— 静态初始化失败抛的是 Error。
+            //
+            // v3.0.8：**降级不等于静默**。以前这条路一个字都不打，玩家看到的是
+            // 「打中文没被翻译，而日志里什么都搜不到」—— 正好把 README 给出的排查路径堵死。
+            // 只用 System.err（不碰日志框架，见类注释），且只报第一次（发送路径每条消息都会经过）。
+            if (reportedSwallowed.compareAndSet(false, true)) {
+                System.err.println("[server_chat_translator] 发送闸门出错，本条原样发出"
+                        + "（其余功能不受影响）: " + t);
+                t.printStackTrace();
+            }
             return false;
         }
     }

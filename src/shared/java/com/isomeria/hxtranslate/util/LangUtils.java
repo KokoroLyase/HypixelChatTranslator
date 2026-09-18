@@ -494,9 +494,14 @@ public final class LangUtils {
                 }
                 continue;
             }
-            // 匹配成功就清掉全部「疑似」计数（v2.2.2）：一条正则在同一条消息上连着两次超时
-            // 才说明它真的有问题；中间只要有**任何**一次匹配顺利完成，就说明这两次超时
-            // 之间系统没有持续卡顿，更可能只是 GC/加载造成的偶发停顿，不该累积成停用。
+            // 匹配**命中**才清掉全部「疑似」计数：一条正则连着两次超时才说明它真的有问题，
+            // 中间若有过一次真的命中，说明这期间系统没有持续卡顿，计数不该继续累积。
+            //
+            // v3.0.8 把措辞改准（旧注释写的是「有任何一次匹配顺利完成就清零」，与代码不符）：
+            // 代码清的是 hit==true，**非命中的正常完成不清零**，而这是刻意的，不能照旧注释改。
+            // 原因：一次判定的循环会跑过用户配的全部正则，而「不命中」是绝大多数正则的常态 ——
+            // 若在那里清零，一条真正在灾难性回溯的坏正则每跑一条消息就会被别的正则抹掉计数，
+            // 永远到不了 2 次，等于把这道保护拆掉（真灾难性回溯会让渲染线程每条消息冻 0.5 秒）。
             if (hit) {
                 timeoutStrikes.clear();
                 return true;
@@ -692,6 +697,12 @@ public final class LangUtils {
      * {@code [译]} 前缀、看起来像服务器自己说的话 —— 这是必须由装配层兜住的最后一道。
      * 连续的空白压成一个空格，理由同 {@link #sanitizeOneLine}。
      *
+     * <p><b>v3.0.8 修</b>：这段 javadoc 一直写着「丢弃 C0/C1」，而判定写的是
+     * {@code c >= 0x20 && c != 0x7F} —— <b>C1（U+0080–U+009F）因此全部被放行</b>。
+     * 同一次还补上了 {@code U+2028}/{@code U+2029}（Unicode 里就是行/段分隔符，
+     * 名字里带「LINE SEPARATOR」的东西不该出现在「只保证一行」的实现里）。
+     * 自检以前只测了 {@code \u0000}，所以这个缺口一直没暴露。
+     *
      * <p>Java 8 实现（共享层两个构建共编，不能用 Java 9+ 的 API）。
      */
     public static String singleLineLayout(String text) {
@@ -704,14 +715,16 @@ public final class LangUtils {
             char c = text.charAt(i);
             if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
                 pendingSpace = true;
-            } else if (c >= 0x20 && c != 0x7F) {
+            } else if (c >= 0x20 && c != 0x7F && (c < 0x80 || c > 0x9F)
+                    && c != '\u2028' && c != '\u2029') {
                 if (pendingSpace && builder.length() > 0) {
                     builder.append(' ');
                 }
                 pendingSpace = false;
                 builder.append(c);
             }
-            // 其余控制字符直接丢弃
+            // 其余控制字符直接丢弃：C0（<0x20，上面已按空白处理过）、DEL(0x7F)、
+            // C1(0x80-0x9F)，以及 U+2028/U+2029 这两个 Unicode 行/段分隔符
         }
         return builder.toString();
     }

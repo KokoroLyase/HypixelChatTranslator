@@ -6,7 +6,7 @@
 | --- | --- |
 | **DeepSeek API Key**（`sk-` 开头） | 拿到它就能用你的余额，等同于你的账号密码 |
 | 完整的 `config/server_chat_translator.json` | 里面有 `apiKey` 明文 |
-| 未删减的 `logs/latest.log` | 可能包含上面两者 |
+| 未删减的 `logs/latest.log`（1.8.9 线是 `logs/fml-client-latest.log`） | 可能包含上面两者 |
 
 贴日志前请先搜一遍 `sk-` 并删掉。想只贴配置结构的话，把 `apiKey` 的值改成 `""` 再贴。
 

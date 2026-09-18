@@ -100,7 +100,7 @@ body:
     id: logs
     attributes:
       label: 日志
-      description: "logs/latest.log 里搜 server_chat_translator 的相关行。贴之前请先删掉 API Key（sk- 开头）；Key 泄露了就去 platform.deepseek.com 撤销重发。"
+      description: "日志里搜 server_chat_translator 的相关行：Fabric 线在 logs/latest.log，1.8.9 线在 logs/fml-client-latest.log。贴之前请先删掉 API Key（sk- 开头）；Key 泄露了就去 platform.deepseek.com 撤销重发。"
       render: text
 
   - type: checkboxes

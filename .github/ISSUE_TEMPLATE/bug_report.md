@@ -31,7 +31,8 @@ labels: bug
 >
 > **1.8.9 的玩家请注意**：那一条线是核心插件（coremod）。如果「打中文没被翻译」
 > 而其它功能（收消息翻译、F6、命令）都正常，多半是字节码注入没生效 ——
-> `logs/latest.log` 里会有 `[server_chat_translator] EntityPlayerSP 字节码注入失败…`，请务必贴上那一行。
+> 1.8.9 线看 `logs/fml-client-latest.log`（Fabric 线是 `logs/latest.log`），
+> 里面会有 `[server_chat_translator] EntityPlayerSP 字节码注入失败…`，请务必贴上那一行。
 
 ## 现象
 
@@ -57,7 +58,7 @@ labels: bug
 
 ## 日志
 
-`logs/latest.log` 里搜 `server_chat_translator` 的相关行（**贴之前请先删掉 API Key**）：
+日志里搜 `server_chat_translator` 的相关行（Fabric 线 `logs/latest.log`，**1.8.9 线 `logs/fml-client-latest.log`**；**贴之前请先删掉 API Key**）：
 
 ```
 

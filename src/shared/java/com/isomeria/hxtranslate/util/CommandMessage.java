@@ -225,9 +225,20 @@ public final class CommandMessage {
         return new Split(command.substring(0, firstSpace + 1), message);
     }
 
+    /**
+     * 这条命令是否属于「兜底翻译时排除」的名单。
+     *
+     * <p><b>v3.0.8 修</b>：名单为 {@code null} 或空时以前返回 {@code true}（等于「全都保护」），
+     * 于是玩家把 {@code protectedCommands} 写成 {@code []}（或 json 里显式 {@code null}）之后，
+     * 「未知命令兜底翻译」会**整体失效** —— 名单外的命令全被当成受保护，一条都不会翻。
+     * 而 README 把它定义为「兜底翻译时**排除**的命令」，空名单的语义显然是「不排除任何命令」。
+     * 想关掉兜底应该用另一个含义明确的开关 {@code translateUnknownCommands=false}。
+     *
+     * @return true 表示这条命令在排除名单里（不参与兜底翻译）
+     */
     public static boolean isProtected(String command, List<String> protectedCommands) {
         if (command == null || protectedCommands == null || protectedCommands.isEmpty()) {
-            return true;
+            return false;
         }
         int firstSpace = command.indexOf(' ');
         String name = (firstSpace < 0 ? command : command.substring(0, firstSpace)).toLowerCase(Locale.ROOT);
