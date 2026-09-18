@@ -37,6 +37,24 @@ def loaderTag = 'forge'
 sourceCompatibility = JavaVersion.VERSION_1_8
 targetCompatibility = JavaVersion.VERSION_1_8
 
+// ------------------------------------------------------------------
+// 源码一律按 UTF-8 读（v3.0.5 修）。
+//
+// Fabric 线的 build.gradle 一直显式写着 options.encoding = "UTF-8"，这条线**漏了** ——
+// 在 macOS / Linux / CI（默认字符集都是 UTF-8）上完全看不出问题，
+// 但在**中文 Windows（默认 GBK）**上 javac 会按 GBK 去读 UTF-8 源码：
+// LangUtils.stripWrappingQuotes 里用的是全角引号 '“' / '”'，这两个字符被解成乱码后，
+// 编译直接报「未结束的字符文字 / 非法字符」，一次 100 个错误，而且报错那一行看着完全正常。
+//
+// 显式钉住编码之后，构建结果不再取决于运行环境的默认字符集 ——
+// 也就是不再需要 JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 这类外部绕过。
+// 注意 JavaCompile 覆盖的是**全部** Java 编译任务（含 verifyCore / verifyCoremod 那两个自检源集，
+// 它们同样含中文），所以这一条必须写在 tasks.withType 上，而不是只配某一个任务。
+// ------------------------------------------------------------------
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
 sourceSets {
     main {
         java.srcDirs = ['src/main/java', '../src/shared/java']
@@ -188,6 +206,17 @@ task verifyCoremod(type: JavaExec, dependsOn: 'verifyCoremodClasses') {
 check.dependsOn verifyCoremod
 
 processResources {
+    // 资源文件同样按 UTF-8 处理（与上面 JavaCompile 那条同一个根因，v3.0.5 一起修）。
+    //
+    // mcmod.info 里有中文描述，而它要过一遍 `expand` 做 ${version} / ${mcversion} 替换 ——
+    // Gradle 2.14 的 expand 用的是**运行环境的默认字符集**，中文 Windows（GBK）上会把
+    // 「）。纯客户端，服务器无需安装。」这类字符写成 U+FFFD 替换字符，产出坏掉的 mcmod.info。
+    // 这个坑更隐蔽：构建是**绿的**，jar 也能装，只有游戏内模组列表里的中文变成乱码。
+    // CI（Ubuntu，默认 UTF-8）与 macOS / Linux 都看不出来，所以从没在 CI 上暴露过。
+    //
+    // 注：assets/*/lang/*.lang 不走 expand（它们是原样拷贝），不受影响。
+    filteringCharset = 'UTF-8'
+
     inputs.property "version", modVersion
     inputs.property "mcversion", mcVersion
 

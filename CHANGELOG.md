@@ -1,5 +1,93 @@
 # 更新日志
 
+## v3.0.5 — 2026-09-18（构建修复：Forge 线在默认字符集非 UTF-8 的机器上编译不过、且产物里的 mcmod.info 会变乱码）
+
+按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.5**。
+配置结构未变（`configVersion` 仍是 9），**换 jar 即可**。
+
+**玩家侧运行行为没有任何变化**：这一版只动 `forge-1.8.9/build.gradle` 的构建配置，
+运行期代码一行未改。已经在用 v3.0.4 的人**不需要升级**；
+这条是为「在默认字符集不是 UTF-8 的机器上从源码构建」修的（典型是中文 Windows）。
+
+### 这一版改了什么
+
+同一个根因（构建脚本没有显式钉住字符集，于是用了运行环境的默认值）造成的**两处**问题，
+都在 `forge-1.8.9/build.gradle`：
+
+**1. `options.encoding = 'UTF-8'` —— 编译直接不过**
+
+Fabric 线的 `build.gradle` 一直显式钉着编译编码，**Forge 线漏了**。
+于是 javac 用的是运行环境默认字符集：
+
+- macOS / Linux / CI（Ubuntu）默认 UTF-8 → 一切正常，所以这个问题**从来没在 CI 上暴露过**；
+- 中文 Windows 默认 GBK → javac 按 GBK 去解 UTF-8 源码，
+  `LangUtils.stripWrappingQuotes` 里那对全角引号 `'“'` / `'”'` 被解成乱码，
+  报「未结束的字符文字 / 不是语句 / 非法字符: '\ufffd'」，**一次 100 个编译错误**，
+  而报错那一行在编辑器里看着完全正常 —— 很难第一眼看出根因是字符集。
+
+刻意写成 `tasks.withType(JavaCompile)` 而不是只配主源码：
+`verifyCore` / `verifyCoremod` 这两个自检源集同样含中文，漏配它们会在自检编译阶段再炸一次。
+
+**2. `filteringCharset = 'UTF-8'` —— 编译过了，但产物里的中文是乱码**
+
+这一处更隐蔽：**构建是绿的、jar 也能正常加载**，只有游戏内模组列表里的中文变成 `\ufffd`。
+
+`mcmod.info` 里有中文描述，而它要过一遍 `expand` 做 `${version}` / `${mcversion}` 替换；
+Gradle 2.14 的 expand 用的是运行环境默认字符集，UTF-8 的中文被按 GBK 解读后再写回，
+于是 `）。纯客户端，服务器无需安装。` 这一段就变成了替换字符。
+
+两处都是**做第 1 条修复时顺手复核产物才发现的** —— 只看 `BUILD SUCCESSFUL` 完全看不出来。
+两条线的对照结论也一并记下：Fabric 线（Gradle 9）不受影响，`fabric.mod.json` 完好；
+`assets/*/lang/*.lang` 不走 expand（原样拷贝），同样不受影响。
+**只有 Forge 线的 mcmod.info 中招。**
+
+### 为什么自检没抓到
+
+两处都是**构建期**问题，而且自检的视角天然够不到：
+
+- 第 1 处在编译**之前**，而 `tools/VerifyCore.java` 跑在编译之后 —— 编译不过就轮不到它；
+- 第 2 处发生在 `processResources` 里，而自检读的是**仓库里的源文件**，不是 jar 里的产物。
+  源文件一直是好的，所以自检怎么跑都是绿的。
+
+真正的门禁只能是「换一台默认字符集不是 UTF-8 的机器构建一次，**并解开产物核对内容**」。
+
+### 验证
+
+**Windows（这次改动所在的机器）**
+
+- Forge 线（JDK 8）在**不依赖任何外部环境变量**的前提下 `clean build` 成功：
+  此前同样条件必红（100 个编译错误），修后 `BUILD SUCCESSFUL`；
+- 解开 jar 核对：`mcmod.info` 中文完好、无 `\ufffd`；`LICENSE` 与
+  `FMLCorePlugin` / `FMLCorePluginContainsFMLMod` 清单项都在；
+- Fabric 线（JDK 25）在同样条件下照常通过。
+
+**Linux（CI 跑的就是 ubuntu-latest）—— 为什么这次改动不会影响它**
+
+两处修改都是「把原本取决于环境的默认值显式写成 UTF-8」，而 Ubuntu 的默认本来就是 UTF-8，
+所以在 Linux 上等价于**空操作**。这一点不是靠推理，而是用产物**逐条内容比对**证明的
+（照 RELEASING §10.3 的规矩：Forge 线比内容，不比整包 sha256）：
+
+- 取 GitHub 上 v3.0.4 的官方产物（ubuntu-latest + Gradle 2.14 + JDK 8 构建）与本次本地产物比对：
+  两包都是 58 个条目、**没有增删**，其中 **55 个条目内容逐字节相同**；
+- 只有 3 个条目不同，且**全部只差版本号**：`mcmod.info`（版本占位符展开）、
+  `HxVersion.class` 与 `HxTranslateForge.class`（javac 把编译期常量 `HxVersion.VERSION`
+  内联进了常量池）。把 CI 产物里的 `3.0.4` 换成 `3.0.5` 之后，这 3 个条目与本地产物
+  **逐字节相同**，两个 class 的长度也一模一样（392 / 8512 字节，常量池规模没变）；
+- 结论：**改动后的 Windows 构建结果 == Ubuntu 构建结果，除版本号外零差异。**
+
+**仓库与文本层面（Linux 检出的常见坑）**
+
+- 三个被改的文件都是 **LF 行尾**、**无行尾空白**、**文件末尾有换行**、可按 UTF-8 解码，
+  符合 `.gitattributes` / `.editorconfig`，Linux 检出不会出现「只改了行尾」的假 diff；
+- 工具链要求没有变化：Forge 线仍是 JDK 8 + Gradle 2.14.1、Fabric 线仍是 JDK 25 + Gradle 9，
+  两个 workflow（ubuntu-latest）一行都不用改。
+
+**自检**
+
+- 项数与 v3.0.4 持平（Forge 线共享自检 917 项 + 核心插件验证 11 项），未增未减 ——
+  本次没有新增断言，因为**没有新增任何运行期逻辑**；
+- **无自动化覆盖的部分**：无。运行期代码零改动。
+
 ## v3.0.4 — 2026-09-18（综合审计：修 10 类真实缺陷，含 2 处会永久抹掉/污染用户数据的）
 
 按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.4**。
