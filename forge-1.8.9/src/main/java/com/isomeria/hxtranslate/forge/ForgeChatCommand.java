@@ -249,7 +249,12 @@ public final class ForgeChatCommand extends CommandBase {
             @Override
             public void run() {
                 DeepSeekClient.Result result = service.translateBlocking(text, direction);
-                if (result.ok()) {
+                // 「无可译内容」（v3.0.7）必须先判：它 ok() 为 false 但**不是**失败，
+                // 直接走下面的失败分支会打出「测试失败: null」。
+                if (result.isNothingToTranslate()) {
+                    feedback.hint("这条没有可译内容（模型判定原文里全是玩家名 / 无需翻译的词），"
+                            + "测试另一个更长的句子试试。");
+                } else if (result.ok()) {
                     feedback.success("测试译文（" + direction.label() + "）: §f" + result.text());
                 } else {
                     feedback.error("测试失败: " + result.error());

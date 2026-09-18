@@ -21,9 +21,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class TranslationService {
 
-    /** 翻译完成回调。ok 为 false 时 error 里是失败原因。 */
+    /**
+     * 翻译完成回调。
+     *
+     * <p>v3.0.7 起直接回传 {@link DeepSeekClient.Result}，不再拆成
+     * {@code (ok, text, error)} 三个参数：译文现在有**三个**结果状态
+     * （成功 / 失败 / {@link DeepSeekClient.Result#nothingToTranslate() 无可译内容}），
+     * 用布尔量表达不出来 —— 老写法里「无可译内容」只能伪装成失败，
+     * 于是玩家看到一条莫名其妙的红字（这正是 v3.0.7 修的问题）。
+     */
     public interface Callback {
-        void onResult(boolean ok, String text, String error);
+        void onResult(DeepSeekClient.Result result);
     }
 
     /** 提交结果：区分「没配 Key」「被限流」「队列积压」等不同降级原因。 */
@@ -176,7 +184,7 @@ public final class TranslationService {
             String hit = cached;
             pool.execute(() -> {
                 try {
-                    callback.onResult(true, hit, null);
+                    callback.onResult(DeepSeekClient.Result.success(hit));
                 } catch (Throwable t) {
                     // 同上：回调必被调用，且它自己抛错也不能弄死工作线程
                     reportFailure(text, direction, t);
@@ -212,10 +220,17 @@ public final class TranslationService {
                     if (config.debugLog) {
                         Log.LOGGER.info("[translate] {} {} -> {}", direction.label(), text, result.text());
                     }
+                } else if (result.isNothingToTranslate()) {
+                    // 「本条无可译内容」（v3.0.7）：模型按提示词要求把原文原样退回 ——
+                    // 不写缓存（没有译文可缓存，而且模型下次可能给出别的结果），
+                    // 但要留一行日志：玩家开 debug 排查「怎么没翻译」时，这行就是答案。
+                    if (config.debugLog) {
+                        Log.LOGGER.info("[nothing-to-translate] {} {}", direction.label(), text);
+                    }
                 } else if (config.debugLog) {
                     Log.LOGGER.info("[translate-fail] {} {}: {}", direction.label(), text, result.error());
                 }
-                callback.onResult(result.ok(), result.text(), result.error());
+                callback.onResult(result);
             } catch (Throwable t) {
                 // 兜底：**回调必须被调用**（submit 的契约），否则这条消息会永远停在「⏳ 翻译中…」，
                 // 在发送方向更是「玩家打了中文，然后什么都没发生」。
@@ -227,7 +242,7 @@ public final class TranslationService {
                 // 这里转成「翻译失败」，而不是让线程死掉。
                 reportFailure(text, direction, t);
                 try {
-                    callback.onResult(false, null, describeFailure(t));
+                    callback.onResult(DeepSeekClient.Result.failure(describeFailure(t)));
                 } catch (Throwable fromCallback) {
                     // 连调用方都抛了：仍然不能让线程死掉（否则后续排队的请求全部丢失）
                     reportFailure(text, direction, fromCallback);

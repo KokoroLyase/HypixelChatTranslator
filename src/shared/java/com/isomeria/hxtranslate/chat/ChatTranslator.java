@@ -110,6 +110,14 @@ public final class ChatTranslator {
 
     private volatile String lastWarning;
     private volatile long lastWarningAt;
+    /**
+     * 被节流窗口省掉的告警条数（v3.0.7）。
+     *
+     * <p>用原子量而不是普通 int：入站失败的回调跑在**工作线程**、出站降级在**主线程**，
+     * 两边都会调 {@link #warnThrottled}。原有那两个字段是一读一写、最坏只是少报一次，
+     * 而计数器是「读-改-写」，普通 int 会丢计数 —— 那正是这条修复要解决的问题本身。
+     */
+    private final AtomicInteger suppressedWarnings = new AtomicInteger();
 
     /** 生产环境用的构造器：日志走 slf4j，时钟走系统时间。 */
     public ChatTranslator(TranslatorConfig config, TranslationService service,
@@ -208,15 +216,27 @@ public final class ChatTranslator {
             return;
         }
 
-        TranslationService.SubmitResult submitted = service.submit(text, Direction.INCOMING, (ok, translated, error) -> {
-            if (!ok) {
+        TranslationService.SubmitResult submitted = service.submit(text, Direction.INCOMING, result -> {
+            // 必须**先**判「无可译内容」（v3.0.7）：它既不是成功（没有译文）也不是失败
+            // （模型没做错事），直接按失败处理会打出「翻译失败: null」。
+            //
+            // 典型输入就是整条消息只有一个玩家名（`hansert`、`kubo`、一串名字）：
+            // 提示词本来就允许这类词原样保留，于是模型什么都翻不出来。以前它被判成
+            // 「注入得逞」，在聊天栏刷一条红字；现在静默跳过 —— 原文那一行玩家已经看到了，
+            // 再贴一遍译文没有任何意义。开 debug 时留一行「跳过（…）」便于排查。
+            if (result.isNothingToTranslate()) {
+                skippedCount.incrementAndGet();
+                debug("跳过（模型判定没有可译内容，原样返回）: " + shorten(text));
+                return;
+            }
+            if (!result.ok()) {
                 failedCount.incrementAndGet();
                 if (config.debugLog) {
-                    debug("翻译失败: " + error + " §8| " + shorten(text));
+                    debug("翻译失败: " + result.error() + " §8| " + shorten(text));
                 }
                 // 出错提示做去重节流：接口挂了的时候不能每条消息刷一行红字
                 if (config.showErrorsInChat && config.enabled) {
-                    warnThrottled("翻译失败: " + error);
+                    warnThrottled("翻译失败: " + result.error());
                 }
                 return;
             }
@@ -227,8 +247,8 @@ public final class ChatTranslator {
             // 拼进聊天栏的原文同样只能是一行：服务器可以下发多行消息，
             // 换行会被原版拆成多条聊天行，把「[译] …」那行挤掉前缀、看起来像服务器说的话。
             String line = config.includeOriginalInIncoming
-                    ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + config.incomingPrefix + translated
-                    : config.incomingPrefix + translated;
+                    ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + config.incomingPrefix + result.text()
+                    : config.incomingPrefix + result.text();
             feedback.info(line);
         });
 
@@ -316,14 +336,29 @@ public final class ChatTranslator {
      *
      * <p>接口挂了、Key 无效、被限流时，如果不节流就会每条消息刷一行红字，
      * 把聊天栏冲得没法看。
+     *
+     * <p><b>v3.0.7：被节流掉的数量不能再无声无息地丢掉。</b>玩家反馈的「有些消息没有译文」
+     * 有一半来自这里 —— 两条**同样**的失败隔几秒先后发生，第二条一个字都不打，
+     * 玩家只看到「有原文、没译文」，既不知道为什么，也不知道总共中招几条
+     * （实测 2026-09-19：一局里 2 条失败，聊天栏只留下 1 行提示，第 2 条被这个窗口吞掉）。
+     * 现在把窗口内省掉的条数攒起来，下一次真正打出来的告警后面附一句
+     * 「另有 N 条同类提示已省略」：信息一条不少，也不会刷屏。
      */
     private void warnThrottled(String message) {
         long now = clock.getAsLong();
         if (message.equals(lastWarning) && now - lastWarningAt < WARN_INTERVAL_MS) {
+            suppressedWarnings.incrementAndGet();
             return;
         }
+        // lastWarning 必须记**原始**文本（不带下面那句后缀），否则下一轮的相等判断永远不成立，
+        // 节流会整个失效、退化成每条刷一行。
         lastWarning = message;
         lastWarningAt = now;
+        int suppressed = suppressedWarnings.getAndSet(0);
+        if (suppressed > 0) {
+            feedback.error(message + "（期间另有 " + suppressed + " 条同类提示已省略）");
+            return;
+        }
         feedback.error(message);
     }
 
@@ -533,7 +568,7 @@ public final class ChatTranslator {
         Object originConnection = client.currentConnection();
 
         TranslationService.SubmitResult submitted = service.submit(translatable, Direction.OUTGOING,
-                (ok, translated, error) -> client.execute(() -> {
+                result -> client.execute(() -> {
                     if (!client.isSameConnection(originConnection)) {
                         // 连接已断开就静默放弃（玩家已经在主菜单）；换过服才提示
                         if (client.currentConnection() != null) {
@@ -541,14 +576,23 @@ public final class ChatTranslator {
                         }
                         return;
                     }
-                    if (!ok) {
-                        // 配置成「失败就发原文」时才降级发送
-                        if (fallbackToOriginal("翻译失败: " + error, "本条")) {
+                    if (result.isNothingToTranslate()) {
+                        // 理论上到不了这里：「无可译内容」只在「英→中」方向判定，而这条是「中→英」。
+                        // 但状态是共享的，所以照样收口到同一个降级出口 ——
+                        // 不能落到下面的失败分支去，那会打出「翻译失败: null」。
+                        if (fallbackToOriginal("模型判定这条没有可译内容", "本条")) {
                             sendProgrammatically(message, false);
                         }
                         return;
                     }
-                    String outgoing = truncateTranslated(translated, config.maxOutgoingChars, "");
+                    if (!result.ok()) {
+                        // 配置成「失败就发原文」时才降级发送
+                        if (fallbackToOriginal("翻译失败: " + result.error(), "本条")) {
+                            sendProgrammatically(message, false);
+                        }
+                        return;
+                    }
+                    String outgoing = truncateTranslated(result.text(), config.maxOutgoingChars, "");
                     if (!sendProgrammatically(outgoing, false)) {
                         // 发送本身失败：sendProgrammatically 已经在聊天栏报错，这里不再谎报成功。
                         // 也**不能**把它记进回显名单（v2.1.4）：这段英文从未出现在服务器上，
@@ -680,22 +724,30 @@ public final class ChatTranslator {
         Object originConnection = client.currentConnection();
 
         TranslationService.SubmitResult submitted = service.submit(message, Direction.OUTGOING,
-                (ok, translated, error) -> client.execute(() -> {
+                result -> client.execute(() -> {
                     if (!client.isSameConnection(originConnection)) {
                         if (client.currentConnection() != null) {
                             feedback.error("期间切换了服务器，这条命令已取消，没有发出去。");
                         }
                         return;
                     }
-                    if (!ok) {
-                        if (fallbackToOriginal("命令内容翻译失败: " + error, "这条命令")) {
+                    if (result.isNothingToTranslate()) {
+                        // 同 onSendChat：发送方向理论上不会走到这里，但收口到同一个降级出口，
+                        // 免得掉进失败分支打出「翻译失败: null」。
+                        if (fallbackToOriginal("模型判定这条命令没有可译内容", "这条命令")) {
+                            sendProgrammatically(head + message, true);
+                        }
+                        return;
+                    }
+                    if (!result.ok()) {
+                        if (fallbackToOriginal("命令内容翻译失败: " + result.error(), "这条命令")) {
                             sendProgrammatically(head + message, true);
                         }
                         return;
                     }
                     // 命令总长同样受原版 256 字符限制，命令名 + 玩家名（head）也要占额度，
                     // 否则给名字很长的玩家发长句时整条命令会超限被服务器拒绝
-                    String outgoing = truncateTranslated(translated,
+                    String outgoing = truncateTranslated(result.text(),
                             Math.max(16, config.maxOutgoingChars - head.length()),
                             "（要给命令本身留位置）");
                     String payload = head + outgoing;

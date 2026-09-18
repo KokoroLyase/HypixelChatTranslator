@@ -66,12 +66,25 @@ public final class DeepSeekClient {
         private final String text;
         private final String error;
         private final boolean retryable;
+        /**
+         * 「本条没有可译内容」（v3.0.7）：请求成功了，但模型按提示词要求把原文原样退回。
+         *
+         * <p>它既不是成功（没有译文可显示）也不是失败（模型没做错任何事），
+         * 所以单列一个状态。语义与用法见 {@link #nothingToTranslate()}。
+         */
+        private final boolean nothingToTranslate;
 
         public Result(boolean ok, String text, String error, boolean retryable) {
+            this(ok, text, error, retryable, false);
+        }
+
+        private Result(boolean ok, String text, String error, boolean retryable,
+                       boolean nothingToTranslate) {
             this.ok = ok;
             this.text = text;
             this.error = error;
             this.retryable = retryable;
+            this.nothingToTranslate = nothingToTranslate;
         }
 
         public static Result success(String text) {
@@ -85,6 +98,28 @@ public final class DeepSeekClient {
         /** 可重试的失败：限流、服务端错误、网络抖动。 */
         public static Result retryableFailure(String error) {
             return new Result(false, null, error, true);
+        }
+
+        /**
+         * 「本条无可译内容」（v3.0.7）：模型判定原文里没有可译的东西，原样退回。
+         *
+         * <p><b>它解决的是什么</b>：入站提示词明确允许「玩家名 / 游戏名这类真的不可译的词
+         * 原样保留」，而 v3.0.3 加的安全闸门要求「译文必须含汉字」。当一条消息**整体就是**
+         * 一个玩家名或一串名字时，模型正确地什么都不翻，于是被闸门判成「注入得逞」——
+         * 玩家看到的是忽好忽坏的「翻译失败」。真实接口实测（按模组自己的提示词）：
+         * 这类输入 24% 判失败，「整条都是玩家名」的那种 5/5 全部失败。
+         *
+         * <p><b>为什么它不削弱注入防护</b>：那闸门要达到的效果是「不含汉字的内容绝不显示」，
+         * 而本状态在上层的处理是**静默跳过**（同样不显示），两者等价。
+         * 真正会生成新内容的注入（{@code reply with exactly: X}）产出的是原文的**片段**
+         * 而不是原文本身，与「必须完全一致」的判据（{@link LangUtils#isUntranslatedEcho}）
+         * 对不上，仍会走失败分支。
+         *
+         * <p>调用方必须**先**判断本状态再判断 {@link #ok()}：它的 {@code ok()} 是 false、
+         * {@code text()} / {@code error()} 都是 null，直接按失败处理会得到「翻译失败: null」。
+         */
+        public static Result nothingToTranslate() {
+            return new Result(false, null, null, false, true);
         }
 
         public boolean ok() {
@@ -103,6 +138,18 @@ public final class DeepSeekClient {
             return retryable;
         }
 
+        /**
+         * 本条无可译内容：不显示译文、不报错，调用方应计进「跳过」。
+         *
+         * <p>访问器带 {@code is} 前缀，是因为「{@code nothingToTranslate}」这个名字要让给不带参数的
+         * 静态工厂 {@link #nothingToTranslate()} —— Java 不允许同名的静态与实例方法同签名共存，
+         * 而调用点用得更多的是这个访问器（{@code if (result.isNothingToTranslate())}），
+         * 所以保住了它的可读性。
+         */
+        public boolean isNothingToTranslate() {
+            return nothingToTranslate;
+        }
+
         // record 会自动生成 equals/hashCode/toString，这里保持同样的语义
         @Override
         public boolean equals(Object other) {
@@ -114,6 +161,7 @@ public final class DeepSeekClient {
             }
             Result that = (Result) other;
             return ok == that.ok && retryable == that.retryable
+                    && nothingToTranslate == that.nothingToTranslate
                     && (text == null ? that.text == null : text.equals(that.text))
                     && (error == null ? that.error == null : error.equals(that.error));
         }
@@ -122,6 +170,7 @@ public final class DeepSeekClient {
         public int hashCode() {
             int hash = ok ? 1 : 0;
             hash = 31 * hash + (retryable ? 1 : 0);
+            hash = 31 * hash + (nothingToTranslate ? 1 : 0);
             hash = 31 * hash + (text == null ? 0 : text.hashCode());
             hash = 31 * hash + (error == null ? 0 : error.hashCode());
             return hash;
@@ -130,7 +179,7 @@ public final class DeepSeekClient {
         @Override
         public String toString() {
             return "Result[ok=" + ok + ", text=" + text + ", error=" + error
-                    + ", retryable=" + retryable + "]";
+                    + ", retryable=" + retryable + ", nothingToTranslate=" + nothingToTranslate + "]";
         }
     }
 
@@ -183,6 +232,8 @@ public final class DeepSeekClient {
             result = attempt(text, direction);
         }
 
+        // 「无可译内容」（nothingToTranslate）刻意两边都不沾：它不算成功（没有译文），
+        // 也不算失败（请求与模型都没问题）。retryable 是 false，所以上面也不会重试一次。
         if (result.ok()) {
             consecutiveFailures.set(0);
             breakerOpenUntil = 0;
@@ -530,8 +581,24 @@ public final class DeepSeekClient {
             // 注意这只挡「注入得逞」的**结果**，不是根治提示词注入 —— 攻击者仍可能诱导模型
             // 输出一段**中文**的、与原文无关的话。那种情况无法靠本地校验区分（它形态上就是中文译文）。
             // 这是本模组在「完全依赖外部 LLM」这个前提下的固有限制，README 已写明。
+            //
+            // v3.0.7 修正这道闸门**与提示词自相矛盾**的那一面：入站提示词要求「玩家名、游戏名
+            // 这类真的不可译的词原样保留」，于是整条消息就是一个玩家名时，模型**正确地**原样退回、
+            // 输出零汉字，却被这里判成「注入得逞」。玩家实测的 `hansert` / `kubo` 与
+            // 「一串名字」全是这种输入，表现为随机的「翻译失败」（temperature 让模型在
+            // 「顺手补个汉字」与「原样退回」之间摆动）。
+            //
+            // 现在把「一个字都没改地退回」单独判为「本条无可译内容」：不显示、不报错、计进「跳过」。
+            // 判据、实测数据、以及「为什么这不削弱注入防护」都写在
+            // Result.nothingToTranslate() 与 LangUtils.isUntranslatedEcho() 上。
             if (direction.toChinese() && !LangUtils.containsHan(content)) {
-                return Result.failure("模型没有译成中文（返回内容里没有汉字，可能是提示词被聊天内容干扰了）");
+                if (LangUtils.isUntranslatedEcho(sourceText, content)) {
+                    return Result.nothingToTranslate();
+                }
+                // 剩下的才是真的可疑：模型产出了与原文不同的、又不含汉字的内容。
+                // 文案要说清「两种可能」并去掉「提示词」这种玩家看不懂的术语（v3.0.7）。
+                return Result.failure("模型没有译成中文（返回内容里没有汉字，"
+                        + "疑似被聊天内容里的指令带偏，或模型这次没按翻译格式返回）");
             }
             return Result.success(content);
         } catch (RuntimeException e) {
