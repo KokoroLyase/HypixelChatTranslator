@@ -18,6 +18,7 @@ import org.objectweb.asm.tree.VarInsnNode;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 把 {@code EntityPlayerSP.sendChatMessage(String)} 的方法头改成：
@@ -64,13 +65,18 @@ public final class HxTransformer implements IClassTransformer {
     private static final String HOOK_DESC = "(Ljava/lang/String;)Z";
 
     /**
-     * 「目标类命中了、但一个方法都没注入」只大声说一次。
+     * 已经报告过的失败，**按内容去重**。
      *
-     * <p>FML 在启动时会用多个命名层各转换一次（{@code bew} 与 MCP 名），所以同一条失败会
-     * 被重复报告；而玩家按文档去日志里搜 {@code [server_chat_translator]} 时，
+     * <p>FML 在启动时会用多个命名层各转换一次（{@code bew} 与 MCP 名），所以同一条失败会被
+     * 重复报告；而玩家按文档去日志里搜 {@code [server_chat_translator]} 时，
      * 满屏重复反而找不到重点。
+     *
+     * <p>v3.0.6 从「一个全局 boolean」改成「按内容去重」。原来的写法只要先到的那一层报了失败，
+     * 后面**真正不同**的那条失败（例如另一层是抛异常而不是「找不到方法」）就一个字都不会打 ——
+     * 这与「注入失败绝不静默」的硬约束相冲突。用 {@link Set#add} 的返回值去重是原子的，
+     * 不需要额外加锁。
      */
-    private static volatile boolean patchFailureReported;
+    private static final Set<String> reportedFailures = ConcurrentHashMap.newKeySet();
 
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
@@ -108,10 +114,10 @@ public final class HxTransformer implements IClassTransformer {
 
     /** 注入失败/找不到注入点时统一往 {@code System.err} 打一行可被文档关键词搜到的说明。 */
     private static void reportFailure(String what, String detail) {
-        if (patchFailureReported) {
+        // 按内容去重（见 reportedFailures 的说明）：不同内容的失败都要报出来
+        if (!reportedFailures.add(what + '|' + detail)) {
             return;
         }
-        patchFailureReported = true;
         System.err.println("[server_chat_translator] " + what + "，" + detail
                 + "（其余功能不受影响）");
     }
@@ -155,6 +161,14 @@ public final class HxTransformer implements IClassTransformer {
             // 所以必须显式转型；新版本 ASM 才有泛型。
             MethodNode method = (MethodNode) node.methods.get(i);
             if (!TARGET_DESC.equals(method.desc) || !TARGET_METHODS.contains(method.name)) {
+                continue;
+            }
+            // 只认实例方法（v3.0.6）。注入的代码是 ALOAD 1（取第一个参数）并把 this 写进栈帧，
+            // 这两件事都预设「第 0 个局部变量是 this」。如果类里恰好存在同名同描述的
+            // static / bridge 方法，注入后 ALOAD 1 会越界、帧也不成立 —— 那是 VerifyError，
+            // 发生在**游戏启动期**，直接崩。真实类里目前没有这种方法（所以 verifyCoremod 是绿的），
+            // 但这是潜伏的，加一个 access 过滤成本为零。
+            if ((method.access & (Opcodes.ACC_STATIC | Opcodes.ACC_BRIDGE)) != 0) {
                 continue;
             }
             if (method.instructions == null || method.instructions.size() == 0) {

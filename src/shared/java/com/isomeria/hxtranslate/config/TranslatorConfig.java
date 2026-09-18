@@ -829,7 +829,10 @@ public final class TranslatorConfig {
 
     /** 备份文件名：{@code server_chat_translator.json.broken-20260915-140312}，与配置同目录。纯函数，可离线测试。 */
     public static Path brokenBackupPath(Path path, long timestampMillis) {
-        String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+        // Locale.ROOT（v3.0.6）：ofPattern 不带 Locale 时，数字会用 Locale.getDefault() 的
+        // DecimalStyle 来格式化 —— 阿拉伯语等区域下会写出非 ASCII 数字的**文件名**
+        // （20260915 变成 ٢٠٢٦٠٩١٥）。备份名是要被玩家照着敲/找的，必须与区域无关。
+        String stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT)
                 .withZone(ZoneId.systemDefault())
                 .format(Instant.ofEpochMilli(timestampMillis));
         Path fileName = path.getFileName();

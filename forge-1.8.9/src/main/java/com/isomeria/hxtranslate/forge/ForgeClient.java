@@ -84,21 +84,32 @@ public final class ForgeClient implements ChatClientPort {
         return !allow;
     }
 
-    /** 服务器发来的所有聊天都从这里进（type 2 是物品栏上方的状态提示）。 */
+    /**
+     * 服务器发来的所有聊天都从这里进（type 2 是物品栏上方的状态提示）。
+     *
+     * <p>整个方法体包一层兜底（v3.0.6）：1.8.9 的 {@code ClientChatReceivedEvent} 也是同步回调，
+     * 异常从 {@link ChatTranslator} 逃出来会沿事件总线穿到 {@code GuiIngame}，最坏是崩游戏。
+     * 发送方向本来就有两道兜底（{@link #interceptSend} 与 {@code HxHooks.onSendChatMessage}），
+     * 只有接收方向是裸的 —— 现在两条线、两个方向都齐了。
+     */
     @SubscribeEvent
     public void onChatReceived(ClientChatReceivedEvent event) {
         ChatTranslator current = translator;
         if (current == null || event == null || event.message == null) {
             return;
         }
-        IChatComponent component = event.message;
-        // 1.8.9 的 getUnformattedText() 会把 § 格式代码一并带出来（现代版本的
-        // Component.getString() 不会），而 Fabric 线送进过滤器的正是没有 § 的纯文本。
-        // 为了两条线的判定完全一致，这里统一剥掉格式代码。
-        String text = LangUtils.stripFormattingCodes(component.getUnformattedText());
-        boolean overlay = event.type == 2;
-        // senderId / senderName 一律为 null：1.8.9 拿不到发送者（见类注释）
-        current.onIncoming(text, overlay, false, null, null);
+        try {
+            IChatComponent component = event.message;
+            // 1.8.9 的 getUnformattedText() 会把 § 格式代码一并带出来（现代版本的
+            // Component.getString() 不会），而 Fabric 线送进过滤器的正是没有 § 的纯文本。
+            // 为了两条线的判定完全一致，这里统一剥掉格式代码。
+            String text = LangUtils.stripFormattingCodes(component.getUnformattedText());
+            boolean overlay = event.type == 2;
+            // senderId / senderName 一律为 null：1.8.9 拿不到发送者（见类注释）
+            current.onIncoming(text, overlay, false, null, null);
+        } catch (Throwable t) {
+            Log.LOGGER.error("接收聊天的事件回调出错，本条已忽略: {}", t.toString(), t);
+        }
     }
 
     // ------------------------------------------------------------------

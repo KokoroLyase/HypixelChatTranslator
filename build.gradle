@@ -27,6 +27,16 @@ processResources {
 	def version = project.version
 	inputs.property "version", version
 
+	// 资源里的中文同样显式钉住 UTF-8（v3.0.6）。
+	//
+	// fabric.mod.json 的 description 是中文，而它要过一遍 expand 替换 ${version}；
+	// expand 用的是过滤字符集。Forge 线（Gradle 2.14）不写这一行会按运行环境默认字符集来，
+	// 在中文 Windows 上把中文写成 U+FFFD（v3.0.5 修的就是那边）。
+	// 这条线目前实测两种默认字符集下产物都正常 —— Gradle 9 的资源过滤不随平台默认走 ——
+	// 所以**这一行不是修 bug，是把「不依赖 JDK/Gradle 的默认值」这个前提写进构建文件**，
+	// 与 Forge 线保持同一个形状。加上后产物逐字节不变（Fabric 线的 jar 是可复现的）。
+	filteringCharset = 'UTF-8'
+
 	filesMatching("fabric.mod.json") {
 		expand "version": version
 	}

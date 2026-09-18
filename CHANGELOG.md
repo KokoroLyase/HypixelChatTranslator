@@ -1,5 +1,110 @@
 # 更新日志
 
+## v3.0.6 — 2026-09-18（跨平台审计：事件回调兜底、核心插件加固、区域与编码卫生）
+
+按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.6**。
+配置结构未变（`configVersion` 仍是 9），**换 jar 即可**。
+
+这一轮是针对「**Windows 与 Linux 都能正常开发这个项目**」做的跨平台审计：拆成三块分头查
+（构建与仓库元数据、源码里的平台依赖、以及**离线自检够不到的装配层**），再把收益大于风险的改掉。
+
+**先说结论：没有 P0。** 元数据层面实测是干净的 —— `gradlew`（两份）在 git 索引里都是
+`100755`、索引内 CRLF 计数为 0、`.gitattributes` 把 `gradlew` 钉成 `text eol=lf`、
+两份 wrapper 的 `distributionSha256Sum` 与官方包实测 sha256 逐字一致。已经修掉的两处
+（v3.0.5 的 Forge 字符集、v3.0.6 补齐 Fabric 侧）现在都是显式的。下面是审计出的其余问题。
+
+### 这一版改了什么
+
+**1. 收发两个方向的事件回调都会把异常穿进事件链（最严重的一条）**
+
+Fabric 的 `ClientSendMessageEvents.ALLOW_CHAT` / `ALLOW_COMMAND` 与两条接收事件、以及 Forge 的
+`ClientChatReceivedEvent` 都是**同步回调**：从 `ChatTranslator` 里逃出来的任何异常会沿事件链
+穿进 `ChatScreen` / `ClientPacketListener` / `GuiIngame`，**最坏的结果是崩游戏**。
+
+而且两条线**不对称**：发送方向本来就有两道兜底（`ForgeClient.interceptSend` 与
+`HxHooks.onSendChatMessage` 都 catch 了 `Throwable`），**接收方向是裸的**，Fabric 线的发送方向也是裸的。
+也就是说同一个 bug 在 Forge 线上只表现为「不翻译」，在 Fabric 线上却可能把游戏带走。
+
+现在四个入口全部包上兜底：**发送方向失败时放行原消息**（宁可不翻译，也不能把玩家亲手打出去的
+消息吞掉 —— 那会表现成「按了回车什么都没发生」），接收方向失败时忽略这一条，两者都往日志记一行 error。
+
+> 自检为什么没抓到：917 项离线自检**只编译 `src/shared/java`**，类路径刻意剔除了 Minecraft 与两个
+> 加载器，装配层根本没进编译；对装配层只有「读源码文本」的门禁（查日志前缀、查有没有误用某个 API），
+> 跑不起真实的异常路径。
+
+**2. 核心插件的「绝不静默」还有两处缺口**
+
+- `HxTransformer.transform` 开头 `if (!isTargetClass(name) && !isTargetClass(transformedName)) return basicClass;`
+  —— 类名一层都没命中时**一个字都不打**。将来 FML 若换了调用方式，玩家只会看到「打中文不翻译」，
+  按 README 去日志里搜 `[server_chat_translator]` 也搜不到，等于把文档给出的排查路径堵死了。
+- 失败去重原本是**一个全局 boolean**：先到的那一层报了失败，后面**真正不同**的那条失败
+  （例如另一层是抛异常、而不是「找不到方法」）就再也不会打出来。
+
+现在改成**按内容去重**（用 `Set.add` 的返回值，原子且不需要额外加锁），不同原因的失败一定会出现在日志里。
+
+> 自检为什么没抓到：`verifyCoremod` 验的是「给了目标类就一定注得进去」，
+> 从不构造「该注入却没能注入」的场景。
+
+**3. ASM 注入没有排除 static / bridge 方法**
+
+注入的代码是 `ALOAD 1`（取第一个参数）并把 `this` 写进栈帧，两件事都预设「第 0 个局部变量是 this」。
+若目标类里存在**同名同描述的 static 方法**，注入后 `ALOAD 1` 越界、帧也不成立 —— 那是 `VerifyError`，
+发生在**游戏启动期**，直接崩。
+
+真实类里目前没有这种方法（所以 `verifyCoremod` 一直是绿的），属潜伏问题。现在加了 access 过滤，成本为零。
+
+**4. 三处格式化依赖系统区域设置**
+
+`String.format` 与 `DateTimeFormatter.ofPattern` 不带 `Locale` 时走 `Locale.getDefault()`，
+而默认区域在 **Windows 来自「区域设置」、Linux 来自 `LANG`** —— 两台机器可能不同。在阿拉伯语等区域下：
+
+- `/translator debug` 的「正在翻译」与接收侧的「已经是中文（汉字占比 …）」提示里，数字会变成非 ASCII 数字；
+- **配置文件备份名**会变成 `server_chat_translator.json.broken-٢٠٢٦٠٩١٨-…` ——
+  而这个文件名是要玩家照着去找的（README §8 明确让玩家去找它）。
+
+三处全部改成 `Locale.ROOT`。
+
+**5. 构建脚本：Fabric 线的资源过滤补齐显式编码（加固，不是修 bug）**
+
+Forge 线在 v3.0.5 钉了 `options.encoding` + `processResources.filteringCharset`；
+Fabric 线的 `processResources` **没写** `filteringCharset`，等于把「资源里的中文不会坏」这个结论
+押在「JDK 25 默认 UTF-8」这个**前提**上，而不是写在构建文件里。
+
+实测证明这一条**不是修 bug**（见下方「验证」里的 A/B 实验）：同源码在默认字符集与**强制 GBK**
+两种环境下，Fabric 产物**整包 sha256 完全相同** —— 这条线本来就不受平台默认字符集影响。
+所以这一行只是把不变量写明，与 Forge 线保持同一个形状，**不改变任何产物**。
+
+**6. 文档补上 Windows 的构建写法**
+
+README §10 与 CONTRIBUTING 的构建命令是 POSIX shell 写法（`export JAVA_HOME=…` + `./gradlew`）。
+cmd.exe 没有 `export` 且必须用 `gradlew.bat`，PowerShell 里 `./gradlew` 也跑不起来 ——
+在 Windows 上贡献的人照着文档做会**直接失败**。现在补了 cmd / PowerShell 的等价写法，
+并写明两条线在两个平台上的构建结果一致。
+
+### 为什么自检没抓到
+
+前 4 条都落在**自检够不到的层**：1 和 3 在装配层与核心插件（自检类路径刻意剔除游戏与加载器），
+2 需要构造「该注入却没注入」的场景，4 需要非默认区域。第 5 条是加固不是缺陷，第 6 条是文档。
+所以本次**没有新增断言** —— 加了也测不到这些路径。
+
+真正的补充门禁只能靠「换一台默认字符集 / 区域不同的机器构建一次，并解开产物核对内容」，
+这一版就是这么验的。
+
+### 验证
+
+- 两条线在**中文 Windows**、且**不依赖任何外部环境变量**下 `clean build` 全绿：
+  - Fabric（JDK 25）：917 项自检全过；产物 `Server-Chat-Translator_3.0.6_mc26.3-fabric.jar`；
+  - Forge（JDK 8）：共享自检 917 项 + 核心插件验证 11 项，0 失败。
+- **A/B 实验（证明第 5 条是纯空操作）**：同一份源码分别用「默认字符集」与
+  `-Dfile.encoding=GBK` 构建 Fabric 线，两次产物都是 112221 字节、整包 sha256 均为
+  `197D4D18AB78AAA0D1214EDB1DD92EA7F5FAF8760ACA37F5382EE28592E8BE6D` —— **完全相同**。
+- 与 GitHub 上 v3.0.5 的 ubuntu 产物逐条比对内容（照 RELEASING §10.3 的规矩）：
+  除版本号外条目内容一致。
+- 自检项数与 v3.0.5 持平（未增未减）。
+- **没有自动化覆盖的部分**：`GameClient` / `ForgeClient` 的事件兜底路径（要真触发异常才会走到）、
+  ASM 注入的 static/bridge 分支、`Locale.ROOT` 在非默认区域下的输出 —— 这三处只能靠代码审查，
+  已在上面逐条写明改法与理由。
+
 ## v3.0.5 — 2026-09-18（构建修复：Forge 线在默认字符集非 UTF-8 的机器上编译不过、且产物里的 mcmod.info 会变乱码）
 
 按 [RELEASING.md](RELEASING.md) §1「修 bug → 末位 +1」，两条线同号 **3.0.5**。

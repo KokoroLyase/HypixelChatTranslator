@@ -64,6 +64,11 @@ cd forge-1.8.9
 JAVA_HOME=/path/to/jdk-8 ./gradlew clean build    # 构建 + 自检 + 核心插件验证
 ```
 
+> **Windows**：上面是 POSIX shell 写法。cmd / PowerShell 里换成
+> `set "JAVA_HOME=C:\path\to\jdk-25"` / `$env:JAVA_HOME = 'C:\path\to\jdk-25'`，
+> 构建命令用 `gradlew.bat clean build`。两条线的产物与 Linux **一致** ——
+> 源码编码与资源过滤编码都由构建脚本显式钉死，不靠平台默认值（v3.0.5 / v3.0.6）。
+
 产物分别在 `build/libs/Server-Chat-Translator_<版本>_mc26.3-fabric.jar`
 与 `forge-1.8.9/build/libs/Server-Chat-Translator_<版本>_mc1.8.9-forge.jar`。
 

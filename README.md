@@ -535,6 +535,30 @@ export JAVA_HOME=/path/to/jdk-8
 Java 9+，ForgeGradle 2.1 跑不了 Gradle 3+），所以它有独立的 wrapper 与 `gradle.properties`；
 **但模组版本号仍然只有根目录 `gradle.properties` 一个来源**，两条线永远同号。
 
+### 在 Windows 上构建
+
+上面那两段是 POSIX shell 的写法（`export` + `./gradlew`）。Windows 上等价的是：
+
+```bat
+:: cmd.exe —— 注意是 gradlew.bat，且 JAVA_HOME 用 set 而不是 export
+set "JAVA_HOME=C:\path\to\jdk-25"
+gradlew.bat build
+```
+
+```powershell
+# PowerShell
+$env:JAVA_HOME = 'C:\path\to\jdk-25'
+.\gradlew.bat build
+```
+
+Forge 线同理：进 `forge-1.8.9` 目录，把 `JAVA_HOME` 指向 JDK 8，再跑 `gradlew.bat build`。
+
+> **Windows 与 Linux 的构建结果是一致的**，这不是"应该没问题"而是实测结论：
+> 源码是 UTF-8、行尾由 `.gitattributes` 统一成 LF，构建脚本也显式钉住了编译与资源过滤的编码
+> （v3.0.5 修 Forge 线、v3.0.6 补齐 Fabric 线）。所以中文 Windows 默认的 GBK
+> 既不会让 javac 读错源码，也不会把 `mcmod.info` / `fabric.mod.json` 里的中文写成乱码。
+> 实测方式见 [RELEASING.md](RELEASING.md) §10.3。
+
 ### 共享层锁定 Java 8
 
 `src/shared/java` 由两个构建**编译同一份文件**，因此只能用 Java 8 的语法与 API：

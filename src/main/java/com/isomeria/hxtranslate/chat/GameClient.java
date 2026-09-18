@@ -78,26 +78,55 @@ public final class GameClient implements ChatClientPort {
         ClientReceiveMessageEvents.CHAT.register(this::onChatMessage);
     }
 
+    /**
+     * 事件回调的统一兜底（v3.0.6）。
+     *
+     * <p>Fabric 的这几个事件都是**同步回调**：从 {@link ChatTranslator} 里逃出来的任何异常都会
+     * 沿事件链穿到 {@code ChatScreen} / {@code ClientPacketListener}，最坏的结果是**崩游戏**。
+     * 翻译出问题最多只是「这条不翻了」，绝不该把游戏一起带走。
+     *
+     * <p>发送方向失败时返回 {@code true}（放行原消息），与
+     * {@code HxHooks.onSendChatMessage} 和 {@code ForgeClient.interceptSend} 的策略一致 ——
+     * 宁可不翻译，也不能把玩家亲手打出去的消息吞掉（那会表现成「按了回车什么都没发生」）。
+     *
+     * <p>刻意 catch {@code Throwable} 而不是 {@code RuntimeException}：这条线真出过事 ——
+     * 静态初始化失败抛的是 {@link Error}，{@code catch (RuntimeException)} 一个都接不住
+     * （v2.1.0 的静默丢消息就是这么来的，详见 {@link Log} 的说明）。
+     */
     private boolean allowSendChat(String message) {
         if (programmaticSend.get() || translator() == null) {
             return true;
         }
-        return translator().onSendChat(message);
+        try {
+            return translator().onSendChat(message);
+        } catch (Throwable t) {
+            Log.LOGGER.error("发送聊天的事件回调出错，本条原样放行: {}", t.toString(), t);
+            return true;
+        }
     }
 
     private boolean allowSendCommand(String command) {
         if (programmaticSend.get() || translator() == null) {
             return true;
         }
-        return translator().onSendCommand(command);
+        try {
+            return translator().onSendCommand(command);
+        } catch (Throwable t) {
+            Log.LOGGER.error("发送命令的事件回调出错，本条原样放行: {}", t.toString(), t);
+            return true;
+        }
     }
 
     private void onGameMessage(Component message, boolean overlay) {
         if (translator() == null) {
             return;
         }
-        // 代理服（Hypixel）的玩家聊天是系统消息：没有发送者信息，传 null 让内容比对兜底
-        translator().onIncoming(message.getString(), overlay, false, null, null);
+        try {
+            // 代理服（Hypixel）的玩家聊天是系统消息：没有发送者信息，传 null 让内容比对兜底
+            translator().onIncoming(message.getString(), overlay, false, null, null);
+        } catch (Throwable t) {
+            Log.LOGGER.error("接收系统消息的事件回调出错，本条已忽略: {}", t.toString(), t);
+        }
     }
 
     private void onChatMessage(Component message, PlayerChatMessage signedMessage,
@@ -105,9 +134,13 @@ public final class GameClient implements ChatClientPort {
         if (translator() == null) {
             return;
         }
-        UUID senderId = sender == null ? null : sender.id();
-        String senderName = sender == null ? null : sender.name();
-        translator().onIncoming(message.getString(), false, true, senderId, senderName);
+        try {
+            UUID senderId = sender == null ? null : sender.id();
+            String senderName = sender == null ? null : sender.name();
+            translator().onIncoming(message.getString(), false, true, senderId, senderName);
+        } catch (Throwable t) {
+            Log.LOGGER.error("接收签名聊天的事件回调出错，本条已忽略: {}", t.toString(), t);
+        }
     }
 
     // ------------------------------------------------------------------

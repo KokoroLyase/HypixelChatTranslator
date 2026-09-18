@@ -14,6 +14,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
@@ -234,7 +235,10 @@ public final class ChatTranslator {
         // Java 8 没有 switch 的箭头形式（1.8.9 那条线要用），改成经典 switch
         switch (submitted) {
             case ACCEPTED:
-                debug(String.format("正在翻译（正文汉字占比 %.0f%%）: %s",
+                // Locale.ROOT：不带 Locale 的 String.format 走 Locale.getDefault()，
+                // 而默认区域在 Windows 与 Linux 上来源不同（区域设置 vs LANG），
+                // 阿拉伯语等区域还会把数字换成非 ASCII 数字。调试输出的样子不该随机器变。
+                debug(String.format(Locale.ROOT, "正在翻译（正文汉字占比 %.0f%%）: %s",
                         decision.hanRatio() * 100, shorten(text)));
                 break;
             case NOT_READY:

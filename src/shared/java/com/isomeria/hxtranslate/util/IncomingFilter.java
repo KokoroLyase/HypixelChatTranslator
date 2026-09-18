@@ -2,6 +2,8 @@ package com.isomeria.hxtranslate.util;
 
 import com.isomeria.hxtranslate.config.TranslatorConfig;
 
+import java.util.Locale;
+
 /**
  * 判断一条收到的消息要不要翻译。
  *
@@ -86,7 +88,11 @@ public final class IncomingFilter {
         }
         // 1) 正文汉字占比够高 → 本来就是中文消息
         if (ratio >= config.chineseRatioThreshold) {
-            return new Decision(false, String.format("已经是中文（汉字占比 %.0f%%）", ratio * 100), ratio);
+            // 显式用 Locale.ROOT（v3.0.6）：不带 Locale 的 String.format 走 Locale.getDefault()，
+            // 而默认区域来自「Windows 的区域设置 / Linux 的 LANG」，两台机器可能不同；
+            // 在阿拉伯语等区域下百分号里的数字会变成非 ASCII 数字，玩家看到的提示就不是同一个样子了。
+            // 这条只是提示文本，用 Locale.ROOT 保证任何区域下都输出同一串。
+            return new Decision(false, String.format(Locale.ROOT, "已经是中文（汉字占比 %.0f%%）", ratio * 100), ratio);
         }
         // 2) 正文里有成句的英文（≥2 个英文信号词）→ 哪怕带中文后缀也照样翻译。
         //    例：3_0HY was thrown into a black hole by G19sy. 最终击杀！
