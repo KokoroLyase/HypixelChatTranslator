@@ -35,7 +35,7 @@ import java.util.Map;
 public final class TranslatorConfig {
 
     /** 配置结构版本，用来把老版本的配置自动升级到新默认值。 */
-    public static final int CURRENT_CONFIG_VERSION = 9;
+    public static final int CURRENT_CONFIG_VERSION = 10;
 
     /**
      * 配置文件名（位于游戏目录的 {@code config/} 下）。
@@ -247,6 +247,57 @@ public final class TranslatorConfig {
 
     /** 请求失败（429/5xx/网络错误）时是否自动重试一次。 */
     public boolean retryOnFailure = true;
+
+    /**
+     * 单条翻译的时间预算（秒，v3.1.0）。
+     *
+     * <p>v3.0.8 及更早的最坏路径是「读超时 30 秒 × 重试 2 次 + 退避」≈ 61 秒 ——
+     * 实测（2026-09-19）网络抖动时一条消息要等整整一分钟，期间 2 个入站线程全被占住，
+     * 队列几秒内击穿。有了这个预算，最坏耗时从「乘法叠加」变成「加法封顶」：
+     * 每次尝试的读超时取 {@code min(httpTimeoutSeconds, 剩余预算)}，
+     * 重试前再检查剩余预算，不够一轮有效尝试就不再重试。
+     *
+     * <p>预算到点的请求与普通失败走同一条提示路径，绝不静默。
+     */
+    public int requestBudgetSeconds = 20;
+
+    /**
+     * 排队中的翻译请求最多等多久（秒，v3.1.0）。
+     *
+     * <p>这是对 {@link #maxPendingTranslations}（按**深度**背压）的补充：深度不管消息
+     * 已等多久，而 20 条 × 每条 30 秒可以积压 5 分钟 —— 排了那么久的译文出来时
+     * 聊天记录早就滚过去了，翻出来没有意义，还占着线程与限流配额。
+     * 超龄任务会被跳过（计进「跳过」，不占限流配额；发送方向按 {@link #failureFallback} 处理）。
+     */
+    public int maxQueueAgeSeconds = 45;
+
+    /**
+     * 「收到消息翻译」的工作线程数（v3.1.0 起默认 3）。
+     *
+     * <p>以前固定 2 个：网络变慢时 2 个慢请求就把容量打到 0，队列立刻击穿（实测
+     * 8 次 {@code [queue-full] 丢弃}）。3 是保守值——每条请求平均 <1 秒，正常游玩
+     * 根本用不满；改完这项需要重启游戏才生效（线程池在启动时建立）。
+     */
+    public int incomingThreads = 3;
+
+    /**
+     * 收到消息的译文怎么显示（v3.1.0 起）：
+     * {@code MERGE} = 合并进原文那一行（{@code 原文 §8▏ [译] 译文}），默认；
+     * {@code APPEND} = 旧行为，译文另起一行。
+     *
+     * <p>MERGE 模式下原文会等译文回来一起显示（配 {@link #mergeDeadlineSeconds} 的
+     * 超时降级：译文超时先放行原文，译文后到再补一行缩进的从属行）。
+     * 与 {@link #includeOriginalInIncoming}（APPEND 模式的「译文里再带一次原文」）互不影响。
+     */
+    public String incomingDisplay = "MERGE";
+
+    /**
+     * MERGE 模式下译文等待原文的超时（秒，v3.1.0）。
+     *
+     * <p>译文在这个时间内回来 → 原文与译文合并成一行；超时 → 原文先照常显示
+     * （网络慢时绝不能把原文也扣住），译文后到再补一行 {@code └} 从属行。
+     */
+    public int mergeDeadlineSeconds = 3;
 
     // ------------------------------------------------------------------
     // 开关
@@ -1136,6 +1187,17 @@ public final class TranslatorConfig {
             // 无需改动任何用户数据，见上面的说明。
         }
 
+        // ---- v9 -> v10（v3.1.0）：新增 requestBudgetSeconds / maxQueueAgeSeconds /
+        //      incomingThreads / incomingDisplay / mergeDeadlineSeconds ----
+        //
+        // 与 v8 -> v9 同一套逻辑：这五个字段全是**新增**，不存在「旧值需要被改写」这回事。
+        // gson 反序列化时文件里没有的字段保留 Java 初始值（就是新默认值），
+        // fillMissingFields 会把它们补写进 json 让玩家看得到、改得动 —— 补缺不是覆盖。
+        // configVersion 照常 +1：版本号是给未来迁移用的判据，必须能分辨 v9 的老文件与 v10 的文件。
+        if (from < 10) {
+            // 无需改动任何用户数据。
+        }
+
         configVersion = CURRENT_CONFIG_VERSION;
         return changed;
     }
@@ -1322,6 +1384,20 @@ public final class TranslatorConfig {
         cacheSize = Math.min(MAX_CACHE_SIZE_LIMIT, Math.max(MIN_CACHE_SIZE, cacheSize));
         connectTimeoutSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(1, connectTimeoutSeconds));
         httpTimeoutSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(3, httpTimeoutSeconds));
+        // v3.1.0 的三个调度参数同样要夹紧：预算/队列年龄写 0 会让「重试前查剩余预算」
+        // 永远判负（等于禁用重试）、超龄判定永远成立（每条都跳过），线程数写 0 直接不干活。
+        requestBudgetSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(5, requestBudgetSeconds));
+        maxQueueAgeSeconds = Math.min(MAX_TIMEOUT_SECONDS, Math.max(1, maxQueueAgeSeconds));
+        incomingThreads = Math.min(8, Math.max(1, incomingThreads));
+        mergeDeadlineSeconds = Math.min(120, Math.max(1, mergeDeadlineSeconds));
+        if (incomingDisplay == null || LangUtils.isBlank(incomingDisplay)) {
+            incomingDisplay = "MERGE";
+        }
+        // 与 failureFallback 同一套容错：认大写 + 连字符，认不出来的一律按新默认值 MERGE。
+        incomingDisplay = incomingDisplay.trim().toUpperCase(Locale.ROOT).replace('-', '_');
+        if (!incomingDisplay.equals("APPEND")) {
+            incomingDisplay = "MERGE";
+        }
         maxTokens = Math.min(MAX_TOKENS_LIMIT, Math.max(32, maxTokens));
         temperature = Math.min(2.0, Math.max(0.0, temperature));
         if (failureFallback == null || LangUtils.isBlank(failureFallback)) {
@@ -1375,6 +1451,11 @@ public final class TranslatorConfig {
         this.connectTimeoutSeconds = o.connectTimeoutSeconds;
         this.httpTimeoutSeconds = o.httpTimeoutSeconds;
         this.retryOnFailure = o.retryOnFailure;
+        this.requestBudgetSeconds = o.requestBudgetSeconds;
+        this.maxQueueAgeSeconds = o.maxQueueAgeSeconds;
+        this.incomingThreads = o.incomingThreads;
+        this.incomingDisplay = o.incomingDisplay;
+        this.mergeDeadlineSeconds = o.mergeDeadlineSeconds;
         this.enabled = o.enabled;
         this.translateIncoming = o.translateIncoming;
         this.translateOutgoing = o.translateOutgoing;

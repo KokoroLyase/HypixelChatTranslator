@@ -33,8 +33,20 @@ public final class DeepSeekClient {
     private static final int BREAKER_THRESHOLD = 5;
     /** 熔断持续多久。 */
     private static final long BREAKER_OPEN_MS = 60_000L;
+    /**
+     * 熔断时长的下限与上限（v3.1.0）：首次熔断 15 秒，连续触发逐次加倍，封顶 60 秒。
+     * 以前固定 60 秒太钝——瞬时抖动也被罚整整一分钟。
+     */
+    private static final long BREAKER_BASE_MS = 15_000L;
     /** 重试前的退避时间。 */
     private static final long RETRY_BACKOFF_MS = 800L;
+    /**
+     * 「剩余预算至少还有这么多」才会发起重试（毫秒，v3.1.0）。
+     *
+     * <p>预算只剩一点点时再重试，等于刚发出去就会撞上预算到点，白花一次请求 ——
+     * 留这个下限保证每次重试至少有可能完整跑完。
+     */
+    private static final long MIN_RETRY_BUDGET_MS = 2_000L;
     /** 对话补全的路径；配置里可能只写了域名，也可能把完整地址写进来。 */
     private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
     /** 成功响应体的读取上限（正常译文最多几百字符，1 MiB 已经非常宽松）。 */
@@ -73,18 +85,40 @@ public final class DeepSeekClient {
          * 所以单列一个状态。语义与用法见 {@link #nothingToTranslate()}。
          */
         private final boolean nothingToTranslate;
+        /**
+         * 可重试失败里「不值得自动重试」的标记（v3.1.0）。
+         *
+         * <p>两类失败属于这一档：**读超时**（最坏 30 秒已经花掉了，再重试一轮就是
+         * 实测 61 秒的来源，而且同一时刻往往整条链路都堵着，重试大概率还是超时）
+         * 与 **429**（服务端在限流，立刻重试只会加剧）。
+         *
+         * <p>注意 {@code retryable} 仍然为 true：这类失败**照常计入熔断**——
+         * 连续读超时正是「网络黑洞」最典型的形态，必须能触发熔断；
+         * 这个标记只表达「不要立刻自动再发一次」。
+         */
+        private final boolean noAutoRetry;
+        /**
+         * 「排队超龄被丢弃」（v3.1.0）：请求还没发出去，在队列里等太久被跳过了。
+         *
+         * <p>它不是接口的结果（请求根本没发），也不是失败（接口没做错任何事）；
+         * 单列是为了守住 {@code submit} 的契约「回调必被调用」——发送方向靠它走
+         * {@code failureFallback}（绝不出现「⏳ 翻译中…」之后无下文），接收方向静默计「跳过」。
+         */
+        private final boolean staleDropped;
 
         public Result(boolean ok, String text, String error, boolean retryable) {
-            this(ok, text, error, retryable, false);
+            this(ok, text, error, retryable, false, false, false);
         }
 
         private Result(boolean ok, String text, String error, boolean retryable,
-                       boolean nothingToTranslate) {
+                       boolean nothingToTranslate, boolean noAutoRetry, boolean staleDropped) {
             this.ok = ok;
             this.text = text;
             this.error = error;
             this.retryable = retryable;
             this.nothingToTranslate = nothingToTranslate;
+            this.noAutoRetry = noAutoRetry;
+            this.staleDropped = staleDropped;
         }
 
         public static Result success(String text) {
@@ -98,6 +132,19 @@ public final class DeepSeekClient {
         /** 可重试的失败：限流、服务端错误、网络抖动。 */
         public static Result retryableFailure(String error) {
             return new Result(false, null, error, true);
+        }
+
+        /**
+         * 可重试（计入熔断）但**不要自动重试**的失败（v3.1.0）：读超时、429。
+         * 理由见 {@code noAutoRetry} 字段的说明。
+         */
+        public static Result retryableFailure(String error, boolean noAutoRetry) {
+            return new Result(false, null, error, true, false, noAutoRetry, false);
+        }
+
+        /** 「排队超龄被丢弃」（v3.1.0）：见 {@code staleDropped} 字段的说明。 */
+        public static Result staleDropped() {
+            return new Result(false, null, null, false, false, false, true);
         }
 
         /**
@@ -119,7 +166,7 @@ public final class DeepSeekClient {
          * {@code text()} / {@code error()} 都是 null，直接按失败处理会得到「翻译失败: null」。
          */
         public static Result nothingToTranslate() {
-            return new Result(false, null, null, false, true);
+            return new Result(false, null, null, false, true, false, false);
         }
 
         public boolean ok() {
@@ -150,6 +197,16 @@ public final class DeepSeekClient {
             return nothingToTranslate;
         }
 
+        /** 可重试但不要自动重试（读超时 / 429）；见 {@code noAutoRetry} 字段的说明。 */
+        public boolean noAutoRetry() {
+            return noAutoRetry;
+        }
+
+        /** 本条因排队超龄被丢弃（请求没有发出去）；见 {@code staleDropped} 字段的说明。 */
+        public boolean isStaleDropped() {
+            return staleDropped;
+        }
+
         // record 会自动生成 equals/hashCode/toString，这里保持同样的语义
         @Override
         public boolean equals(Object other) {
@@ -162,15 +219,18 @@ public final class DeepSeekClient {
             Result that = (Result) other;
             return ok == that.ok && retryable == that.retryable
                     && nothingToTranslate == that.nothingToTranslate
+                    && noAutoRetry == that.noAutoRetry && staleDropped == that.staleDropped
                     && (text == null ? that.text == null : text.equals(that.text))
                     && (error == null ? that.error == null : error.equals(that.error));
-        }
+    }
 
         @Override
         public int hashCode() {
             int hash = ok ? 1 : 0;
             hash = 31 * hash + (retryable ? 1 : 0);
             hash = 31 * hash + (nothingToTranslate ? 1 : 0);
+            hash = 31 * hash + (noAutoRetry ? 1 : 0);
+            hash = 31 * hash + (staleDropped ? 1 : 0);
             hash = 31 * hash + (text == null ? 0 : text.hashCode());
             hash = 31 * hash + (error == null ? 0 : error.hashCode());
             return hash;
@@ -179,13 +239,19 @@ public final class DeepSeekClient {
         @Override
         public String toString() {
             return "Result[ok=" + ok + ", text=" + text + ", error=" + error
-                    + ", retryable=" + retryable + ", nothingToTranslate=" + nothingToTranslate + "]";
+                    + ", retryable=" + retryable + ", nothingToTranslate=" + nothingToTranslate
+                    + ", noAutoRetry=" + noAutoRetry + ", staleDropped=" + staleDropped + "]";
         }
     }
 
     private final TranslatorConfig config;
     private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private volatile long breakerOpenUntil;
+    /**
+     * 熔断连续触发的次数（v3.1.0）：第一次开 15 秒，之后逐次加倍、封顶 60 秒。
+     * 任何一次成功都会归零 —— 网络恢复后不应该继续记住旧的惩罚档位。
+     */
+    private final AtomicInteger breakerTrips = new AtomicInteger();
 
     public DeepSeekClient(TranslatorConfig config) {
         this.config = config;
@@ -209,7 +275,56 @@ public final class DeepSeekClient {
      */
     public void resetCircuit() {
         consecutiveFailures.set(0);
+        breakerTrips.set(0);
         breakerOpenUntil = 0;
+    }
+
+    /**
+     * 把网络异常分类成「读超时」：建立连接之后迟迟拿不到数据（TLS 握手卡住、响应太慢）。
+     *
+     * <p>为什么必须区分（v3.1.0）：实测（2026-09-19 日志取证）同一次网络黑洞在两个 JDK 上
+     * 表现成两个异常 —— JDK 25 是 {@code SocketTimeoutException: Read timed out}，
+     * JDK 8 把 TLS 读卡住包成 {@code SSLException: Read timed out}。它们的共同点是
+     * **30 秒已经花掉了**：再自动重试一轮就是实测 61 秒的来源，而同一时刻链路大概率还是堵的，
+     * 重试只是把延迟翻倍、把队列堵得更死。所以读超时不自动重试（但照常计入熔断）。
+     *
+     * <p>连接超时（{@code connect timed out}）不同：它 5 秒就失败，重试一次代价小、
+     * 收益真实（DNS 刚好换了条路），保持可重试。
+     *
+     * <p>实现按「异常链上任何一个环节的消息」判断，而不是只看最外层异常的类型：
+     * JDK 8 的 SSL 包装、代理层的包装都在外层，超时语义藏在消息或 cause 里。
+     * JDK 的超时消息是稳定的英文常量（{@code connect timed out} / {@code Read timed out}），
+     * 不随区域设置变。
+     *
+     * <p>公开出来是给离线自检用的（判据真身只有一个，自检调的就是它）。
+     */
+    public static boolean isReadTimeout(IOException e) {
+        Throwable t = e;
+        int depth = 0;
+        while (t != null && depth < 8) {
+            if (t instanceof java.net.SocketTimeoutException) {
+                return !messageMentionsConnect(t);
+            }
+            // JDK 8 的 SSLException「Read timed out」本身不是 SocketTimeoutException，
+            // 但消息同样是稳定的英文常量；cause 链里通常也挂着原始的 SocketTimeoutException，
+            // 两条判据都收着，包装方式再变一层也漏不掉。
+            if (t instanceof javax.net.ssl.SSLException && isTimeoutMessage(t)) {
+                return !messageMentionsConnect(t);
+            }
+            t = t.getCause();
+            depth++;
+        }
+        return false;
+    }
+
+    private static boolean messageMentionsConnect(Throwable t) {
+        String message = t.getMessage();
+        return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("connect");
+    }
+
+    private static boolean isTimeoutMessage(Throwable t) {
+        String message = t.getMessage();
+        return message != null && message.toLowerCase(java.util.Locale.ROOT).contains("timed out");
     }
 
     public Result translate(String text, Direction direction) {
@@ -220,29 +335,49 @@ public final class DeepSeekClient {
             return Result.failure("翻译服务连续失败，已暂停 " + circuitRemainingSeconds() + " 秒后再试");
         }
 
-        Result result = attempt(text, direction);
-        // 只对「限流 / 服务端错误 / 网络抖动」重试一次；401、402 这类重试没有意义
-        if (!result.ok() && result.retryable() && config.retryOnFailure) {
-            try {
-                Thread.sleep(RETRY_BACKOFF_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return result;
+        // 单条时间预算（v3.1.0）：把「读超时 × 重试」的乘法叠加封顶成预算本身。
+        // 每次尝试的读超时取 min(配置值, 剩余预算)，重试前再查一次剩余量 ——
+        // 于是最坏耗时 = 预算（默认 20 秒），而不是 30 + 0.8 + 30 ≈ 61 秒。
+        final long budgetMs = config.requestBudgetSeconds * 1000L;
+        final long deadline = System.currentTimeMillis() + budgetMs;
+
+        Result result = attempt(text, direction, budgetMs);
+        // 只对「限流 / 服务端错误 / 网络抖动」重试一次；401、402 这类重试没有意义。
+        // v3.1.0 的两个收紧：读超时与 429 标了 noAutoRetry（前者 30 秒已经花掉了，
+        // 后者重试只会加剧限流）；剩余预算不够一轮有效尝试时也不再重试。
+        if (!result.ok() && result.retryable() && config.retryOnFailure && !result.noAutoRetry()) {
+            long remaining = deadline - System.currentTimeMillis();
+            if (remaining >= MIN_RETRY_BUDGET_MS) {
+                try {
+                    Thread.sleep(Math.min(RETRY_BACKOFF_MS, remaining));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return result;
+                }
+                remaining = deadline - System.currentTimeMillis();
+                if (remaining >= MIN_RETRY_BUDGET_MS) {
+                    result = attempt(text, direction, remaining);
+                }
             }
-            result = attempt(text, direction);
         }
 
-        // 「无可译内容」（nothingToTranslate）刻意两边都不沾：它不算成功（没有译文），
-        // 也不算失败（请求与模型都没问题）。retryable 是 false，所以上面也不会重试一次。
+        // 「无可译内容」（nothingToTranslate）与「排队超龄」（staleDropped）刻意两边都不沾：
+        // 前者不算成功（没有译文）、也不算失败（请求与模型都没问题）；
+        // 后者请求根本没发出去，与接口无关。retryable 都是 false，都不会重试或计入熔断。
         if (result.ok()) {
             consecutiveFailures.set(0);
+            breakerTrips.set(0);
             breakerOpenUntil = 0;
         } else if (result.retryable()) {
             if (consecutiveFailures.incrementAndGet() >= BREAKER_THRESHOLD) {
-                breakerOpenUntil = System.currentTimeMillis() + BREAKER_OPEN_MS;
+                // 渐进退避（v3.1.0）：首次 15 秒，连续触发逐次加倍、封顶 60 秒。
+                // 以前固定 60 秒：一次瞬时抖动也罚整整一分钟，期间每条消息都白白跳过。
+                int trips = breakerTrips.incrementAndGet();
+                long penalty = Math.min(BREAKER_BASE_MS << Math.min(trips - 1, 4), BREAKER_OPEN_MS);
+                breakerOpenUntil = System.currentTimeMillis() + penalty;
                 consecutiveFailures.set(0);
                 Log.LOGGER.warn("DeepSeek 连续失败 {} 次，熔断 {} 秒",
-                        BREAKER_THRESHOLD, BREAKER_OPEN_MS / 1000);
+                        BREAKER_THRESHOLD, penalty / 1000);
             }
         }
         return result;
@@ -261,6 +396,7 @@ public final class DeepSeekClient {
         String base = normalizeBaseUrl();
 
         HttpURLConnection connection = null;
+        Result result = null;
         try {
             connection = (HttpURLConnection) URI.create(base + "/models").toURL().openConnection();
             connection.setRequestMethod("GET");
@@ -273,66 +409,77 @@ public final class DeepSeekClient {
             Result read = readBody(connection, status);
             if (!read.ok()) {
                 // 连正文都读不出来（太大或读失败）：错误响应就退化成只看状态码
-                return status < 200 || status >= 300 ? httpError(status, "") : read;
+                result = status < 200 || status >= 300 ? httpError(status, "") : read;
+            } else {
+                String response = read.text();
+                result = status < 200 || status >= 300
+                        ? httpError(status, response)
+                        : parseModels(response);
             }
-            String response = read.text();
-            if (status < 200 || status >= 300) {
-                return httpError(status, response);
-            }
-            JsonElement parsed = new JsonParser().parse(response);
-            JsonArray data = parsed.getAsJsonObject().getAsJsonArray("data");
-            if (data == null || data.size() == 0) {   // gson 2.2.4（1.8.9）没有 JsonArray.isEmpty()
-                return Result.failure("返回内容里没有模型列表");
-            }
-            StringBuilder names = new StringBuilder();
-            int listed = 0;
-            boolean more = false;
-            for (JsonElement element : data) {
-                // 限量（v2.2.2）：模型名由**接口**给出，而 apiBaseUrl 可以指向任意第三方中转站，
-                // 响应体还允许到 1 MiB。以前这里把全部 id 拼起来直接进聊天栏 ——
-                // 异常或恶意（甚至只是配置错的）中转站返回成千上万条就能把聊天记录整屏顶掉。
-                // 正常 DeepSeek 只有个位数模型，12 条 / 400 字符对正常使用毫无影响。
-                if (listed >= MAX_LISTED_MODELS || names.length() >= MAX_MODELS_TEXT_CHARS) {
-                    more = true;
-                    break;
-                }
-                JsonObject model = element.getAsJsonObject();
-                if (!model.has("id")) {
-                    continue;
-                }
-                // 模型名是不可信文本：先清洗再拼。这里刻意不加任何 § 高亮 ——
-                // 显示的出口（GameFeedback）会把 § 一律剥掉（它按不可信文本处理），
-                // 在这里加色只会让人误以为颜色生效了。
-                String id = cleanApiText(model.get("id").getAsString());
-                if (id.isEmpty()) {
-                    continue;
-                }
-                if (names.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
-                    names.append(", ");
-                }
-                names.append(id);
-                listed++;
-            }
-            if (listed == 0) {
-                return Result.failure("返回内容里没有可用的模型名");
-            }
-            if (more) {
-                names.append(" …");
-            }
-            return Result.success(names.toString());
+            return result;
         } catch (IOException e) {
-            return Result.failure(describeNetworkError(e));
+            result = Result.failure(describeNetworkError(e));
+            return result;
         } catch (RuntimeException e) {
             // 异常消息里可能**带着接口返回的原始正文**：gson 的 IllegalStateException 就是
             // 「Not a JSON Object: <整个 JSON>」这种形态，而 /translator models 这条文案
             // 会直接进聊天栏 —— 所以必须按不可信文本清洗（v3.0.8），
             // 否则中转站能借它把 § 颜色代码写进我们自己的提示行里。
-            return Result.failure("解析失败: " + describeExceptionText(e));
+            result = Result.failure("解析失败: " + describeExceptionText(e));
+            return result;
         } finally {
-            if (connection != null) {
+            if (connection != null && (result == null || !result.ok())) {
+                // 与 attempt() 同一条连接复用规则（v3.1.0）：失败/异常才断开
                 connection.disconnect();
             }
         }
+    }
+
+    /**
+     * 解析 {@code GET /models} 的响应体（从 {@code listModels} 拆出来，那边只管 HTTP）。
+     */
+    private Result parseModels(String response) {
+        JsonElement parsed = new JsonParser().parse(response);
+        JsonArray data = parsed.getAsJsonObject().getAsJsonArray("data");
+        if (data == null || data.size() == 0) {   // gson 2.2.4（1.8.9）没有 JsonArray.isEmpty()
+            return Result.failure("返回内容里没有模型列表");
+        }
+        StringBuilder names = new StringBuilder();
+        int listed = 0;
+        boolean more = false;
+        for (JsonElement element : data) {
+            // 限量（v2.2.2）：模型名由**接口**给出，而 apiBaseUrl 可以指向任意第三方中转站，
+            // 响应体还允许到 1 MiB。以前这里把全部 id 拼起来直接进聊天栏 ——
+            // 异常或恶意（甚至只是配置错的）中转站返回成千上万条就能把聊天记录整屏顶掉。
+            // 正常 DeepSeek 只有个位数模型，12 条 / 400 字符对正常使用毫无影响。
+            if (listed >= MAX_LISTED_MODELS || names.length() >= MAX_MODELS_TEXT_CHARS) {
+                more = true;
+                break;
+            }
+            JsonObject model = element.getAsJsonObject();
+            if (!model.has("id")) {
+                continue;
+            }
+            // 模型名是不可信文本：先清洗再拼。这里刻意不加任何 § 高亮 ——
+            // 显示的出口（GameFeedback）会把 § 一律剥掉（它按不可信文本处理），
+            // 在这里加色只会让人误以为颜色生效了。
+            String id = cleanApiText(model.get("id").getAsString());
+            if (id.isEmpty()) {
+                continue;
+            }
+            if (names.length() > 0) {   // StringBuilder.isEmpty() 是 Java 15 的
+                names.append(", ");
+            }
+            names.append(id);
+            listed++;
+        }
+        if (listed == 0) {
+            return Result.failure("返回内容里没有可用的模型名");
+        }
+        if (more) {
+            names.append(" …");
+        }
+        return Result.success(names.toString());
     }
 
     /**
@@ -364,16 +511,23 @@ public final class DeepSeekClient {
         return "网络错误（连接接口失败，检查网络后 /translator reload 重试）";
     }
 
-    private Result attempt(String text, Direction direction) {
+    private Result attempt(String text, Direction direction, long remainingMs) {
         String endpoint = buildEndpoint();
         String body = buildRequestBody(text, direction);
 
+        // 读超时取 min(配置值, 剩余预算)（v3.1.0）：预算到点就放弃，不再无限吊着线程。
+        long readTimeoutMs = config.httpTimeoutSeconds * 1000L;
+        if (remainingMs > 0 && remainingMs < readTimeoutMs) {
+            readTimeoutMs = remainingMs;
+        }
+
         HttpURLConnection connection = null;
+        Result result = null;
         try {
             connection = (HttpURLConnection) URI.create(endpoint).toURL().openConnection();
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(config.connectTimeoutSeconds * 1000);
-            connection.setReadTimeout(config.httpTimeoutSeconds * 1000);
+            connection.setReadTimeout((int) Math.min(readTimeoutMs, Integer.MAX_VALUE));
             connection.setDoOutput(true);
             connection.setUseCaches(false);
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
@@ -390,24 +544,36 @@ public final class DeepSeekClient {
             Result read = readBody(connection, status);
             if (!read.ok()) {
                 // 连正文都读不出来（太大或读失败）：错误响应就退化成只看状态码
-                return status < 200 || status >= 300 ? httpError(status, "") : read;
+                result = status < 200 || status >= 300 ? httpError(status, "") : read;
+            } else {
+                String response = read.text();
+                result = status < 200 || status >= 300
+                        ? httpError(status, response)
+                        : parseResponse(response, text, direction);
             }
-            String response = read.text();
-
-            if (status < 200 || status >= 300) {
-                return httpError(status, response);
-            }
-            return parseResponse(response, text, direction);
+            return result;
         } catch (IOException e) {
             Log.LOGGER.warn("翻译请求失败: {}", e.toString());
-            return Result.retryableFailure(describeNetworkError(e));
+            result = isReadTimeout(e)
+                    // 读超时不自动重试（30 秒已经花掉了），但照常计入熔断 ——
+                    // 连续读超时正是网络黑洞最典型的形态（v3.1.0）
+                    ? Result.retryableFailure(describeNetworkError(e), true)
+                    : Result.retryableFailure(describeNetworkError(e));
+            return result;
         } catch (RuntimeException e) {
             Log.LOGGER.warn("翻译请求异常: {}", e.toString());
             // 同 listModels：这条也会进聊天栏，异常文本同样是不可信输入
-            return Result.failure("请求异常: " + describeExceptionText(e));
+            result = Result.failure("请求异常: " + describeExceptionText(e));
+            return result;
         } finally {
             if (connection != null) {
-                connection.disconnect();
+                // 连接复用（v3.1.0）：成功路径不再 disconnect() —— 响应体已读完、流已关闭，
+                // JDK 会把这条连接放回 keep-alive 池，下一次请求省掉一整个 TCP+TLS 握手
+                // （实测每次 27–90ms，是正常请求耗时的主要成分）。失败路径仍然断开：
+                // 半读的连接留在池里会污染下一次请求。
+                if (result == null || !result.ok()) {
+                    connection.disconnect();
+                }
             }
         }
     }
@@ -509,7 +675,10 @@ public final class DeepSeekClient {
             // 读超时恰恰最容易在这里抛出（服务端接了连接但响应慢），
             // 而这条文案会经 warnThrottled 直接进聊天栏 —— 不能再把 Java 类名甩给玩家。
             Log.LOGGER.warn("读取接口响应失败: {}", e.toString());
-            return Result.retryableFailure(describeNetworkError(e));
+            // 读超时同样不自动重试（v3.1.0，与 attempt 的分级一致），但计入熔断
+            return isReadTimeout(e)
+                    ? Result.retryableFailure(describeNetworkError(e), true)
+                    : Result.retryableFailure(describeNetworkError(e));
         }
     }
 
@@ -652,7 +821,10 @@ public final class DeepSeekClient {
             case 402:
                 return Result.failure("DeepSeek 账户余额不足 (402)，需要去 platform.deepseek.com 充值。" + detail);
             case 429:
-                return Result.retryableFailure("请求过于频繁被限流 (429)，可调大配置里的 §frequestsPerMinute§c。" + detail);
+                // 429 不自动重试（v3.1.0）：服务端在限流，立刻再发一次只会加剧。
+                // 仍计入熔断（retryable=true）：持续被限流同样说明该停一停。
+                return Result.retryableFailure(
+                        "请求过于频繁被限流 (429)，可调大配置里的 §frequestsPerMinute§c。" + detail, true);
             case 500:
             case 502:
             case 503:

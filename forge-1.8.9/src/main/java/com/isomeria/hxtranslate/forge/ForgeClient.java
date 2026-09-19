@@ -110,8 +110,13 @@ public final class ForgeClient implements ChatClientPort {
             // 为了两条线的判定完全一致，这里统一剥掉格式代码。
             String text = LangUtils.stripFormattingCodes(component.getUnformattedText());
             boolean overlay = event.type == 2;
-            // senderId / senderName 一律为 null：1.8.9 拿不到发送者（见类注释）
-            current.onIncoming(text, overlay, false, null, null);
+            // senderId / senderName 一律为 null：1.8.9 拿不到发送者（见类注释）。
+            // 返回 true = MERGE 模式接下了这条翻译（等译文合并后重新显示），
+            // 此时必须取消事件，否则原文会先显示一遍 —— 合并就变成了两行。
+            boolean suppress = current.onIncoming(text, component, overlay, false, null, null);
+            if (suppress) {
+                event.setCanceled(true);
+            }
         } catch (Throwable t) {
             Log.LOGGER.error("接收聊天的事件回调出错，本条已忽略: {}", t.toString(), t);
         }

@@ -78,6 +78,31 @@ public final class ChatTranslator {
     public static final String CHAT_PREFIX = "§8[§bsct§8]";
 
     /**
+     * MERGE 模式（v3.1.0）里原文与译文之间的分隔符。
+     *
+     * <p>沿用 {@code includeOriginalInIncoming} 时代就有的 {@code ▏}：玩家已经认识它，
+     * 语义也一样——「右边是同一条消息的译文」。译文自身仍带 {@code incomingPrefix}（[译]），
+     * 双重锚点保证折行之后从属关系仍然看得出来。
+     */
+    public static final String MERGE_SEPARATOR = " §8▏ ";
+
+    /**
+     * MERGE 模式超时降级时，后到的译文行的行首（v3.1.0）。
+     *
+     * <p>译文超过 {@code mergeDeadlineSeconds} 才回来时，原文已经先放行了，
+     * 这时译文用 {@code └} 缩进成「上一行的从属行」—— 视觉上仍然挂在原文下面，
+     * 不再是「不知道谁说的」的独立一行。
+     */
+    public static final String MERGE_LATE_PREFIX = "§8└ ";
+
+    /** MERGE 模式的等待状态（原文被扣住，等译文）。 */
+    private static final int MERGE_PENDING = 0;
+    /** 译文在期限内到达：原文 + 译文合并成一行。 */
+    private static final int MERGE_MERGED = 1;
+    /** 期限先到（或失败）：原文已先放行，后到的译文走 └ 从属行。 */
+    private static final int MERGE_ORIGINAL_SHOWN = 2;
+
+    /**
      * 「没配 Key」的统一提示。
      *
      * <p><b>不能在这里拼 {@link #CHAT_PREFIX}</b>（v3.0.8 修）：这两条文案只经由
@@ -114,6 +139,35 @@ public final class ChatTranslator {
     private final Deque<EchoMatcher.Sent> recentlySent = new ArrayDeque<>();
     private final List<Pattern> compiledPatterns = new ArrayList<>();
     private List<String> compiledFrom;
+
+    // ------------------------------------------------------------------
+    // MERGE 模式的在途合并（v3.1.0）
+    // ------------------------------------------------------------------
+
+    /** 一条正在等译文的原文：原文显示已被取消，等译文回来合并或超时放行。 */
+    private static final class PendingMerge {
+        final long id;
+        final Object originalComponent;
+        /** 超时时刻（毫秒，来自 clock）；到点原文先放行。 */
+        final long deadline;
+        int state;
+
+        PendingMerge(long id, Object originalComponent, long deadline) {
+            this.id = id;
+            this.originalComponent = originalComponent;
+            this.deadline = deadline;
+        }
+    }
+
+    /** 全部在途合并。操作都在 {@code synchronized(this)} 里做（回调线程 / 调度线程 / 主线程三方交汇）。 */
+    private final Map<Long, PendingMerge> pendingMerges = new LinkedHashMap<>();
+    private long mergeSeq;
+    /**
+     * 超时清扫线程：懒创建、单条守护线程，每 200ms 扫一次在途合并。
+     * 离线自检不依赖它（用例直接调 {@link #expireMergeDeadlines(long)}），
+     * 所以创建失败也不影响主流程。
+     */
+    private volatile java.util.concurrent.ScheduledExecutorService mergeSweeper;
 
     // 统计分「收到」「发出」两组，各自独立。
     // 以前只有一组：translatedCount 仅收到方向自增，而 failedCount 两个方向都自增，
@@ -172,7 +226,23 @@ public final class ChatTranslator {
     // ------------------------------------------------------------------
 
     /**
-     * 收到服务器下发的消息。
+     * 收到服务器下发的消息（老签名，不带原消息组件 —— 离线自检与旧调用方在用）。
+     *
+     * @return true 表示装配层应该**取消原文的显示**（MERGE 模式接下了这条翻译，等译文一起合并）；
+     *         false 表示照常显示原文
+     */
+    public boolean onIncoming(String rawText, boolean overlay, boolean hasSignedSender,
+                              java.util.UUID senderId, String senderName) {
+        return onIncoming(rawText, null, overlay, hasSignedSender, senderId, senderName);
+    }
+
+    /**
+     * 收到服务器下发的消息（带原消息组件，v3.1.0 的 MERGE 模式入口）。
+     *
+     * <p>{@code originalComponent} 是装配层手里的原消息组件（Fabric 的 {@code Component} /
+     * 1.8.9 的 {@code IChatComponent}，按 {@code Object} 传递）：MERGE 模式接下翻译时，
+     * 原文显示被取消，等译文回来后经 {@code FeedbackPort.showMergedIncoming} 把它
+     * 原样带着样式/悬停/点击事件重新显示成「原文 ▏ 译文」一行。
      *
      * <p>{@code senderId} 是签名聊天的发送者 UUID，代理服（Hypixel）的系统聊天给不出，
      * 传 {@code null}；{@code senderName} 是文本里能认出的说话人名字，用于黑名单与会话判断。
@@ -180,27 +250,34 @@ public final class ChatTranslator {
      * <p>为什么要同时接「签名聊天」和「系统消息」两条链路：正常服务器的玩家聊天走签名聊天
      * （能拿到发送者，判断「是不是自己」最可靠）；而 Hypixel 是代理服，玩家聊天是以**系统消息**
      * 下发的，那条链路拿不到发送者，只能靠内容与回显比对来过滤。少接一条就会有一半场景失效。
+     *
+     * @return true 表示装配层应该**取消原文的显示**；false 表示照常显示原文
      */
-    public void onIncoming(String rawText, boolean overlay, boolean hasSignedSender,
-                           java.util.UUID senderId, String senderName) {
+    public boolean onIncoming(String rawText, Object originalComponent, boolean overlay,
+                              boolean hasSignedSender, java.util.UUID senderId, String senderName) {
         if (overlay) {
-            return;
+            return false;
         }
         // 签名玩家聊天这条链路能拿到发送者，是本人就直接跳过（比字符串匹配更可靠）。
         if (hasSignedSender && senderId != null && client.isLocalPlayer(senderId)) {
-            return;
+            return false;
         }
         // 黑名单玩家：签名链路直接按 UUID 对应的名字判断最可靠；
         // 拿不到发送者时（系统聊天）退回到「文本里认说话人」，见 PlayerBlacklist。
         if (senderName != null && isBlacklisted(senderName)) {
-            return;
+            return false;
         }
-        handleIncoming(rawText);
+        return handleIncoming(rawText, originalComponent);
     }
 
-    public void handleIncoming(String plain) {
+    /** 老签名（离线自检在用）：MERGE 逻辑需要组件，这里没有组件就按 APPEND 处理。 */
+    public boolean handleIncoming(String plain) {
+        return handleIncoming(plain, null);
+    }
+
+    private boolean handleIncoming(String plain, Object originalComponent) {
         if (!config.enabled || !config.translateIncoming) {
-            return;
+            return false;
         }
         // 闸门放在最前面（越早越好）：单人世界里默认整条链路都不走。
         //
@@ -210,15 +287,15 @@ public final class ChatTranslator {
         if (singleplayerBlocked()) {
             skippedCount.incrementAndGet();
             debug("跳过（" + SINGLEPLAYER_SKIP_REASON + "）");
-            return;
+            return false;
         }
         if (plain == null) {
-            return;
+            return false;
         }
         // 先剔除 §a、§r 这类原版格式代码：它们对翻译没有意义，还可能被模型当成正文
         String text = LangUtils.strip(LangUtils.stripFormattingCodes(plain));
         if (text.isEmpty()) {
-            return;
+            return false;
         }
 
         receivedCount.incrementAndGet();
@@ -226,7 +303,7 @@ public final class ChatTranslator {
         // 黑名单玩家（系统聊天拿不到发送者，只能按「名字:」模式识别）
         if (isBlacklistedSpeaker(text)) {
             skipIncoming("黑名单玩家", text);
-            return;
+            return false;
         }
 
         // 关键：不能「含汉字就跳过」。Hypixel 按客户端语言把队伍名本地化成 [红队]，
@@ -236,24 +313,53 @@ public final class ChatTranslator {
         IncomingFilter.Decision decision = IncomingFilter.decide(text, config, isIgnored(text), ownEcho != null);
         if (!decision.translate()) {
             skipIncoming(ownEcho == null ? decision.reason() : decision.reason() + "（" + ownEcho + "）", text);
-            return;
+            return false;
         }
 
+        // MERGE 模式（v3.1.0）：原文与译文合并成一行。
+        // 前提是装配层把原组件递进来了 —— 没有组件就退回 APPEND（译文另起一行），
+        // 绝不为了合并去取消原文再拿纯文本重拼（那会把悬停/点击事件全丢掉）。
+        final boolean mergeMode = "MERGE".equals(config.incomingDisplay) && originalComponent != null;
+        //
+        // 在途合并必须在 submit **之前**登记：缓存命中时回调立刻就在工作线程上跑，
+        // 后登记的话回调拿到的还是 null，会错进 APPEND 路径显示两遍。
+        // 提交被拒（限流/积压）就把它撤掉 —— 原文走正常显示，没有人扣着它。
+        final PendingMerge pending = mergeMode
+                ? registerPendingMerge(originalComponent, clock.getAsLong() + config.mergeDeadlineSeconds * 1000L)
+                : null;
+
         TranslationService.SubmitResult submitted = service.submit(text, Direction.INCOMING, result -> {
-            // 必须**先**判「无可译内容」（v3.0.7）：它既不是成功（没有译文）也不是失败
+            // 计数、告警与 debug 与 APPEND 模式**完全共享**（MERGE 只改「怎么显示」，
+            // 不改「算不算翻过 / 要不要警告」—— 否则统计口径会出现两条线）。
+            // 必须先判「无可译内容」（v3.0.7）：它既不是成功（没有译文）也不是失败
             // （模型没做错事），直接按失败处理会打出「翻译失败: null」。
             //
             // 典型输入就是整条消息只有一个玩家名（`hansert`、`kubo`、一串名字）：
-            // 提示词本来就允许这类词原样保留，于是模型什么都翻不出来。以前它被判成
-            // 「注入得逞」，在聊天栏刷一条红字；现在静默跳过 —— 原文那一行玩家已经看到了，
-            // 再贴一遍译文没有任何意义。开 debug 时留一行「跳过（…）」便于排查。
+            // 提示词本来就允许这类词原样保留，于是模型什么都翻不出来。静默跳过 ——
+            // 原文那一行玩家已经看到了，再贴一遍译文没有任何意义。
             if (result.isNothingToTranslate()) {
                 skippedCount.incrementAndGet();
+                if (pending != null) {
+                    showOriginalFor(pending);
+                }
                 debug("跳过（模型判定没有可译内容，原样返回）: " + shorten(text));
+                return;
+            }
+            if (result.isStaleDropped()) {
+                // 「排队超龄」（v3.1.0）：在队列里等太久，译文已经没有显示的意义。
+                // 原文不受影响（APPEND 模式本来就在屏幕上；MERGE 模式此时也已按期限放行）。
+                skippedCount.incrementAndGet();
+                if (pending != null) {
+                    showOriginalFor(pending);
+                }
+                debug("跳过（排队超时，接口响应太慢）: " + shorten(text));
                 return;
             }
             if (!result.ok()) {
                 failedCount.incrementAndGet();
+                if (pending != null) {
+                    showOriginalFor(pending);
+                }
                 if (config.debugLog) {
                     debug("翻译失败: " + result.error() + " §8| " + shorten(text));
                 }
@@ -264,20 +370,42 @@ public final class ChatTranslator {
                 return;
             }
             if (!config.enabled) {
+                // 玩家中途关了总闸：MERGE 模式下原文还被扣着，必须放行（绝不能凭空消失）
+                if (pending != null) {
+                    showOriginalFor(pending);
+                }
                 return;
             }
             translatedCount.incrementAndGet();
+            String suffix = config.incomingPrefix + result.text();
+            if (pending != null) {
+                // MERGE 显示：期限内到达 → 原文 ▏ 译文 合并成一行；
+                // 原文已因超时先放行 → 后到的译文补一行 └ 从属行
+                PendingMerge claimed = claimForMerge(pending);
+                if (claimed != null) {
+                    feedback.showMergedIncoming(claimed.originalComponent, MERGE_SEPARATOR + suffix);
+                } else {
+                    feedback.info(MERGE_LATE_PREFIX + suffix);
+                }
+                return;
+            }
             // 拼进聊天栏的原文同样只能是一行：服务器可以下发多行消息，
             // 换行会被原版拆成多条聊天行，把「[译] …」那行挤掉前缀、看起来像服务器说的话。
             String line = config.includeOriginalInIncoming
-                    ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + config.incomingPrefix + result.text()
-                    : config.incomingPrefix + result.text();
+                    ? "§7" + LangUtils.sanitizeOneLine(text) + " §8▏ " + suffix
+                    : suffix;
             feedback.info(line);
         });
 
         // Java 8 没有 switch 的箭头形式（1.8.9 那条线要用），改成经典 switch
         switch (submitted) {
             case ACCEPTED:
+                if (pending != null) {
+                    ensureMergeSweeper();
+                    debug(String.format(Locale.ROOT, "正在翻译（合并显示，等译文 %.0f 秒）: %s",
+                            (double) config.mergeDeadlineSeconds, shorten(text)));
+                    return true;
+                }
                 // Locale.ROOT：不带 Locale 的 String.format 走 Locale.getDefault()，
                 // 而默认区域在 Windows 与 Linux 上来源不同（区域设置 vs LANG），
                 // 阿拉伯语等区域还会把数字换成非 ASCII 数字。调试输出的样子不该随机器变。
@@ -285,23 +413,158 @@ public final class ChatTranslator {
                         decision.hanRatio() * 100, shorten(text)));
                 break;
             case NOT_READY:
-                skipIncoming("未配置 API Key", text);
-                warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/translator key <你的Key> §c配置。");
-                break;
             case RATE_LIMITED:
-                skipIncoming("超出每分钟限流", text);
-                warnThrottled("翻译请求达到每分钟上限（" + config.requestsPerMinute
-                        + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
-                break;
             case QUEUE_FULL:
-                skipIncoming("翻译队列积压", text);
-                warnThrottled("接口变慢，排队中的翻译超过 " + config.maxPendingTranslations
-                        + " 条，部分消息被先跳过（会自动恢复；持续出现可调大 §fmaxPendingTranslations§c）。");
-                break;
             case EMPTY:
+                if (pending != null) {
+                    // 提交被拒：原文没有被扣住（装配层会照常显示），撤掉登记，别让清扫线程再放行一次
+                    discardPendingMerge(pending.id);
+                }
+                // 以下与 APPEND 模式完全相同：提示原因、计「跳过」
+                if (submitted == TranslationService.SubmitResult.NOT_READY) {
+                    skipIncoming("未配置 API Key", text);
+                    warnThrottled("未配置 DeepSeek API Key，收到的消息无法翻译。用 §f/translator key <你的Key> §c配置。");
+                } else if (submitted == TranslationService.SubmitResult.RATE_LIMITED) {
+                    skipIncoming("超出每分钟限流", text);
+                    warnThrottled("翻译请求达到每分钟上限（" + config.requestsPerMinute
+                            + " 次），部分消息没有翻译。可调大配置里的 §frequestsPerMinute§c。");
+                } else if (submitted == TranslationService.SubmitResult.QUEUE_FULL) {
+                    skipIncoming("翻译队列积压", text);
+                    warnThrottled("接口变慢，排队中的翻译超过 " + config.maxPendingTranslations
+                            + " 条，部分消息被先跳过（会自动恢复；持续出现可调大 §fmaxPendingTranslations§c）。");
+                } else {
+                    skipIncoming("空消息", text);
+                }
+                break;
             default:
                 skipIncoming("空消息", text);
                 break;
+        }
+        return false;
+    }
+
+    // ------------------------------------------------------------------
+    // MERGE 状态机（v3.1.0）
+    //
+    // 每条被扣住的原文有三个去向，谁先到谁生效，其余的不再操作显示：
+    //   ① 译文期限内到达 → 原文 ▏ 译文 合并成一行（MERGED）；
+    //   ② 超时先到（或翻译失败 / 无可译内容 / 排队超龄 / 玩家中途关总闸）
+    //      → 原文原样先放行（ORIGINAL_SHOWN），后到的译文补一行 └ 从属行；
+    //   ③ 提交被拒（限流 / 积压）→ 登记直接撤销，原文走正常显示路径。
+    // ------------------------------------------------------------------
+
+    /** 登记一条在途合并（调用方保证只在 MERGE 且 submit 之前调用）。 */
+    private synchronized PendingMerge registerPendingMerge(Object component, long deadline) {
+        mergeSeq++;
+        PendingMerge entry = new PendingMerge(mergeSeq, component, deadline);
+        pendingMerges.put(entry.id, entry);
+        return entry;
+    }
+
+    /** 撤销一条在途登记（提交被拒时）：只移除，不做任何显示。 */
+    private synchronized void discardPendingMerge(long id) {
+        pendingMerges.remove(id);
+    }
+
+    /**
+     * 放行原文（翻译失败 / 无可译内容 / 排队超龄 / 玩家关总闸时调用）。
+     *
+     * <p>认领 ORIGINAL_SHOWN 后把原组件原样交还聊天栏 —— 原文是玩家的原始聊天，
+     * 任何情况下都不能因为 MERGE 扣住它而消失。
+     */
+    private void showOriginalFor(PendingMerge entry) {
+        PendingMerge claimed = claimForOriginalShow(entry);
+        if (claimed != null) {
+            feedback.showOriginalIncoming(claimed.originalComponent);
+        }
+    }
+
+    /** 认领并标记「原文已放行」；返回 null 表示这条登记已经不在 PENDING。 */
+    private synchronized PendingMerge claimForOriginalShow(PendingMerge entry) {
+        if (entry == null || entry.state != MERGE_PENDING) {
+            return null;
+        }
+        entry.state = MERGE_ORIGINAL_SHOWN;
+        pendingMerges.remove(entry.id);
+        return entry;
+    }
+
+    /** 认领并标记「已合并显示」；返回 null 表示原文已经先放行（后到的译文走 └ 行）。 */
+    private synchronized PendingMerge claimForMerge(PendingMerge entry) {
+        if (entry == null || entry.state != MERGE_PENDING) {
+            return null;
+        }
+        entry.state = MERGE_MERGED;
+        pendingMerges.remove(entry.id);
+        return entry;
+    }
+
+    /**
+     * 超时清扫：把到点还没等到译文的原文放行（生产环境由 mergeSweeper 每 200ms 调一次；
+     * 离线自检直接调它，用测试时钟获得确定性行为）。
+     *
+     * <p>公开放行的意义：MERGE 扣住原文的前提是「译文马上就到」。译文等不到时，
+     * 原文是玩家自己的原始聊天，**任何情况下都不能让它消失** —— 那比译文慢更糟。
+     *
+     * @param nowMs 当前时刻（毫秒）
+     * @return 本次放行了多少条
+     */
+    public int expireMergeDeadlines(long nowMs) {
+        List<PendingMerge> expired = new ArrayList<>();
+        synchronized (this) {
+            for (java.util.Iterator<PendingMerge> it = pendingMerges.values().iterator(); it.hasNext(); ) {
+                PendingMerge entry = it.next();
+                if (entry.state == MERGE_PENDING && nowMs >= entry.deadline) {
+                    entry.state = MERGE_ORIGINAL_SHOWN;
+                    expired.add(entry);
+                    it.remove();
+                }
+            }
+        }
+        for (PendingMerge entry : expired) {
+            feedback.showOriginalIncoming(entry.originalComponent);
+        }
+        return expired.size();
+    }
+
+    /** 懒创建超时清扫线程：单条守护线程，每 200ms 扫一次。失败（极端环境拒绝建线程）不影响主流程。 */
+    private void ensureMergeSweeper() {
+        if (mergeSweeper != null) {
+            return;
+        }
+        synchronized (this) {
+            if (mergeSweeper != null) {
+                return;
+            }
+            try {
+                java.util.concurrent.ScheduledExecutorService sweeper =
+                        java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                            Thread thread = new Thread(runnable, "server_chat_translator-merge-sweeper");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+                sweeper.scheduleWithFixedDelay(() -> {
+                    try {
+                        expireMergeDeadlines(clock.getAsLong());
+                    } catch (Throwable ignored) {
+                        // 清扫出错绝不能弄死调度线程（否则后续超时全部失效）
+                    }
+                }, 200, 200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                mergeSweeper = sweeper;
+            } catch (Throwable t) {
+                // 建不出来就退化成「没有清扫」：MERGE 的其他路径（成功合并 / 失败放行）都还在，
+                // 只有「译文永远不回来」的极端情况会扣住原文 —— 与其在装配期崩，不如降级
+                Log.LOGGER.warn("合并显示的超时清扫线程创建失败（译文超时将不自动放行原文）: {}", t.toString());
+            }
+        }
+    }
+
+    /** 停掉超时清扫线程（客户端退出时调用）。 */
+    public void shutdown() {
+        java.util.concurrent.ScheduledExecutorService sweeper = mergeSweeper;
+        mergeSweeper = null;
+        if (sweeper != null) {
+            sweeper.shutdownNow();
         }
     }
 
@@ -627,6 +890,15 @@ public final class ChatTranslator {
                         }
                         return;
                     }
+                    if (result.isStaleDropped()) {
+                        // 「排队超龄」（v3.1.0）：队列里等太久被丢弃。必须在这里收口 ——
+                        // 它的 ok=false、error=null，掉进下面的失败分支会打出「翻译失败: null」。
+                        // 与其它五条降级路径同一个出口：按 failureFallback 决定发不发原文。
+                        if (fallbackToOriginal("翻译等待超时（接口响应太慢）", "本条")) {
+                            sendProgrammatically(message, false);
+                        }
+                        return;
+                    }
                     if (!result.ok()) {
                         // 配置成「失败就发原文」时才降级发送
                         if (fallbackToOriginal("翻译失败: " + result.error(), "本条")) {
@@ -777,6 +1049,13 @@ public final class ChatTranslator {
                         // 同 onSendChat：发送方向理论上不会走到这里，但收口到同一个降级出口，
                         // 免得掉进失败分支打出「翻译失败: null」。
                         if (fallbackToOriginal("模型判定这条命令没有可译内容", "这条命令")) {
+                            sendProgrammatically(head + message, true);
+                        }
+                        return;
+                    }
+                    if (result.isStaleDropped()) {
+                        // 「排队超龄」（v3.1.0）：同 onSendChat，收口到同一个降级出口
+                        if (fallbackToOriginal("翻译等待超时（接口响应太慢）", "这条命令")) {
                             sendProgrammatically(head + message, true);
                         }
                         return;

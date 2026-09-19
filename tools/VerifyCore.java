@@ -81,6 +81,8 @@ public class VerifyCore {
         v304AuditFixes();
         v307UntranslatedEcho();
         v308AuditFixes();
+        v310StabilityLatency();
+        v310MergeDisplay();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -377,6 +379,8 @@ public class VerifyCore {
             burst.apiBaseUrl = "http://127.0.0.1:" + server.port;
             burst.requestsPerMinute = 100;
             burst.maxPendingTranslations = 1;
+            burst.incomingThreads = 2;   // 这组用例的前提是「2 线程都忙、队列剩 1 个名额」；
+                                         // v3.1.0 起默认 3 线程，这里显式钉住，保持用例本意不变
             TranslationService serviceBurst = new TranslationService(burst);
             // 两个工作线程都在忙、队列里还排着 1 条时，下一条应被背压挡下
             serviceBurst.submit("burst one", Direction.INCOMING, r -> { });
@@ -609,6 +613,7 @@ public class VerifyCore {
             burst.apiBaseUrl = "http://127.0.0.1:" + server.port;
             burst.requestsPerMinute = 100;
             burst.maxPendingTranslations = 1;
+            burst.incomingThreads = 2;   // 用例前提「两个线程都忙」：显式钉住线程数（v3.1.0 起默认 3）
             TranslationService serviceBurst = new TranslationService(burst);
             server.delayMs = 1500;
             // 接收方向是 2 个工作线程：先让两个线程都忙起来，队列才是空的
@@ -2717,6 +2722,10 @@ public class VerifyCore {
         final List<String> errors = new ArrayList<>();
         final List<String> successes = new ArrayList<>();
         final List<String> actionBars = new ArrayList<>();
+        // v3.1.0：MERGE 模式的两个新出口（组件用 Object 透传，自检里放的是字符串标记）
+        final List<Object> mergedOriginals = new ArrayList<>();
+        final List<String> mergedSuffixes = new ArrayList<>();
+        final List<Object> originalsShown = new ArrayList<>();
 
         /**
          * 与生产实现（{@code GameFeedback} / {@code ForgeFeedback}）同一套版式处理。
@@ -2756,6 +2765,17 @@ public class VerifyCore {
         @Override
         public void actionBar(String text) {
             actionBars.add(render(text));
+        }
+
+        @Override
+        public void showMergedIncoming(Object originalComponent, String suffix) {
+            mergedOriginals.add(originalComponent);
+            mergedSuffixes.add(render(suffix));
+        }
+
+        @Override
+        public void showOriginalIncoming(Object originalComponent) {
+            originalsShown.add(originalComponent);
         }
 
         boolean hasInfo(String part) {
@@ -4660,6 +4680,340 @@ public class VerifyCore {
                         "fml-client-latest.log"));
     }
 
+    /**
+     * v3.1.0 稳定性与延迟：重试分级、单条时间预算、队列按年龄丢弃、熔断渐进退避。
+     *
+     * <p>针对的实测背景（2026-09-19 日志取证）：读超时 30 秒 × 重试 2 次 ≈ 61 秒/条，
+     * 入站 2 线程被慢请求占满后队列几秒击穿、连续丢弃 8 条。
+     *
+     * <p><b>反向验证</b>：
+     * ① {@code attempt} 里读超时改回 {@code retryableFailure(msg)}（恢复自动重试）→
+     *    「读超时只打一次请求」红；
+     * ② 429 分支去掉 {@code noAutoRetry} → 「429 只打一次请求」红；
+     * ③ 熔断退避改回固定 60 秒 → 「首次熔断 ≤ 15 秒」红；
+     * ④ {@code TimedTask.run} 去掉超龄检查 → 「超龄任务被跳过」红；
+     * ⑤ {@code attempt} 的 finally 恢复无条件 {@code disconnect()} → keep-alive 源码门禁红。
+     */
+    private static void v310StabilityLatency() throws Exception {
+        System.out.println("== v3.1.0 稳定性与延迟：重试分级 / 时间预算 / 队列年龄 / 熔断退避 ==");
+
+        // ---- 1) 读超时分类（纯函数，两条线的真实异常形态都要认） ----
+        check("读超时：SocketTimeoutException(Read timed out)",
+                DeepSeekClient.isReadTimeout(new java.net.SocketTimeoutException("Read timed out")));
+        check("连接超时不算读超时（5 秒就失败，重试代价小）",
+                !DeepSeekClient.isReadTimeout(new java.net.SocketTimeoutException("connect timed out")));
+        check("JDK 8 的 SSLException 包装（实测 Forge 线就是这个形态）也算读超时",
+                DeepSeekClient.isReadTimeout(new javax.net.ssl.SSLException("Read timed out")));
+        check("挂在 cause 链上的读超时也算（代理/包装层之后）",
+                DeepSeekClient.isReadTimeout(new java.io.IOException("wrapped",
+                        new java.net.SocketTimeoutException("Read timed out"))));
+        check("连接被拒不算读超时（可重试）",
+                !DeepSeekClient.isReadTimeout(new java.net.ConnectException("Connection refused")));
+        check("null 安全", !DeepSeekClient.isReadTimeout(null));
+
+        // ---- 2) 端到端：读超时不自动重试（旧实现会发 2 次请求、耗时翻倍） ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.httpTimeoutSeconds = 1;
+            config.requestBudgetSeconds = 60;   // 预算故意放大：这条钉的是「分级」而不是「预算」
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.delayMs = 1500;              // 超过 1 秒读超时
+
+            long start = System.currentTimeMillis();
+            DeepSeekClient.Result r = client.translate("hello", Direction.INCOMING);
+            long elapsed = System.currentTimeMillis() - start;
+            // MockServer 的计数在延迟睡完之后才 +1：客户端 1 秒就超时走了，断言前要等服务器记上账
+            check("读超时的那次请求到达了接口", awaitTrue(5000, () -> server.requests() >= 1));
+            checkEq("读超时只打了一次请求（旧实现会重试成 2 次）", 1, server.requests());
+            check("读超时按失败返回且不静默: " + r.error(), !r.ok() && r.error() != null);
+            check("读超时仍计入熔断（retryable=true）", r.retryable());
+            check("读超时标了不自动重试", r.noAutoRetry());
+            check("只等了一轮超时（耗时 " + elapsed + "ms，重试会 >2.3s）", elapsed < 2300);
+        }
+
+        // ---- 3) 端到端：429 不自动重试（重试只会加剧限流） ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.retryOnFailure = true;
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.status = 429;
+
+            DeepSeekClient.Result r = client.translate("hello", Direction.INCOMING);
+            checkEq("429 只打了一次请求", 1, server.requests());
+            check("429 仍计入熔断但不自动重试", r.retryable() && r.noAutoRetry());
+        }
+
+        // ---- 4) 端到端：单条时间预算封顶读超时（30 秒的配置值被预算压到 2 秒） ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.httpTimeoutSeconds = 30;
+            config.requestBudgetSeconds = 2;
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.delayMs = 8000;              // 远超预算
+
+            DeepSeekClient.Result r = client.translate("hello", Direction.INCOMING);
+            check("预算到点就放弃（没有预算时会等 8 秒）", r != null);
+            // MockServer 的计数在 8 秒延迟睡完才 +1：等它记上账再断言「只有一次」
+            check("预算到点的那次请求到达了接口", awaitTrue(15000, () -> server.requests() >= 1));
+            checkEq("预算内没有重试", 1, server.requests());
+            check("预算到点按失败返回且不静默: " + r.error(), !r.ok() && r.error() != null);
+        }
+
+        // ---- 5) 对照组：5xx / 连接类失败仍然重试一次（分级只收紧读超时与 429） ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.failFirst = 1;
+            server.failStatus = 503;
+            server.response = ok("好");
+
+            DeepSeekClient.Result r = client.translate("hello", Direction.INCOMING);
+            checkEq("5xx 仍然重试一次（第一次 503、第二次成功）", 2, server.requests());
+            check("重试后成功", r.ok());
+        }
+
+        // ---- 6) 熔断渐进退避：首次 15 秒（旧实现固定 60 秒） ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.apiBaseUrl = "http://127.0.0.1:" + server.port;
+            config.retryOnFailure = false;      // 每条只发一次，快速凑满 5 连败
+            DeepSeekClient client = new DeepSeekClient(config);
+            server.status = 500;
+            for (int i = 0; i < 5; i++) {
+                client.translate("hello " + i, Direction.INCOMING);
+            }
+            check("连续 5 次失败后熔断", client.isCircuitOpen());
+            long remaining = client.circuitRemainingSeconds();
+            check("首次熔断 15 秒起（实测剩余 " + remaining + "s，旧实现是 60s）",
+                    remaining > 0 && remaining <= 15);
+            client.resetCircuit();
+            check("手动复位后熔断解除", !client.isCircuitOpen());
+        }
+
+        // ---- 7) 队列按年龄丢弃：超龄任务被跳过、但回调必被调用 ----
+        try (MockServer server = new MockServer()) {
+            TranslatorConfig config = new TranslatorConfig();
+            config.apiKey = "sk-test";
+            config.skipOwnEcho = false;
+            config.httpTimeoutSeconds = 5;
+            config.incomingThreads = 1;         // 单线程：第一条把 worker 占住，第二条才会排队
+            config.maxQueueAgeSeconds = 1;
+            Harness h = new Harness(config, server);
+
+            CountDownLatch arrived = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            server.arrivalLatch = arrived;
+            server.releaseLatch = release;
+            server.response = ok("第一条的译文");
+            h.translator.onIncoming("[MVP+] Steve: message a", false, false, null, null);
+            check("第一条已到达接口（worker 被占住）", arrived.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            server.response = ok("第二条的译文");
+            h.translator.onIncoming("[MVP+] Steve: message b", false, false, null, null);
+            Thread.sleep(1300);                 // 第二条在队列里等超过 maxQueueAgeSeconds=1 秒
+
+            release.countDown();                // 放开第一条
+            check("第一条照常翻译并显示",
+                    h.feedback.awaitInfo(5000, 1) && h.feedback.hasInfo("第一条的译文"));
+            check("第二条超龄被跳过（计进「跳过」而不是永远排队）",
+                    awaitTrue(5000, () -> h.translator.counters().contains("跳过 §f1")));
+            checkEq("第二条没有译文行（它等的太久，翻出来也没意义）", 1, h.feedback.infos.size());
+            server.arrivalLatch = null;
+            server.releaseLatch = null;
+        }
+
+        // ---- 8) keep-alive：成功路径不再断开连接（源码门禁，语义在注释里钉住） ----
+        String attemptBody = methodBodyOf(
+                readRepoFile("src/shared/java/com/isomeria/hxtranslate/core/DeepSeekClient.java"),
+                "private Result attempt(String text, Direction direction, long remainingMs)");
+        check("attempt 的 finally 只在失败时 disconnect（成功路径留给 keep-alive 池）",
+                attemptBody != null && contains(attemptBody, "result == null || !result.ok()"));
+        check("attempt 的读超时按剩余预算封顶",
+                attemptBody != null && contains(attemptBody, "remainingMs < readTimeoutMs"));
+    }
+
+    /**
+     * v3.1.0 合并显示（{@code incomingDisplay=MERGE}）：原文与译文合并成一行，
+     * 译文超时先放行原文、后到的译文补 └ 从属行。
+     *
+     * <p><b>反向验证</b>：
+     * ① {@code handleIncoming} 的 MERGE 分支改成永远 return false → 「扣住原文」红；
+     * ② {@code expireMergeDeadlines} 不再放行原文 → 「超时放行原文」红；
+     * ③ resolveMergeResult 里失败分支删掉 → 「失败放行原文」红。
+     */
+    private static void v310MergeDisplay() throws Exception {
+        System.out.println("== v3.1.0 合并显示：MERGE 模式与超时降级 ==");
+
+        // ---- 1) 配置归一化 ----
+        TranslatorConfig c = new TranslatorConfig();
+        checkEq("默认 MERGE", "MERGE", c.incomingDisplay);
+        c = new TranslatorConfig();
+        c.incomingDisplay = "append";
+        c.normalize();
+        checkEq("append 归一化成 APPEND", "APPEND", c.incomingDisplay);
+        c = new TranslatorConfig();
+        c.incomingDisplay = "merge-me";
+        c.normalize();
+        checkEq("认不出来的值按默认 MERGE 处理（与 failureFallback 同一套容错）", "MERGE", c.incomingDisplay);
+        c = new TranslatorConfig();
+        c.requestBudgetSeconds = 0;
+        c.maxQueueAgeSeconds = 0;
+        c.incomingThreads = 0;
+        c.mergeDeadlineSeconds = 0;
+        c.incomingThreads = 99;
+        c.normalize();
+        checkEq("requestBudgetSeconds 下限 5", 5, c.requestBudgetSeconds);
+        checkEq("maxQueueAgeSeconds 下限 1", 1, c.maxQueueAgeSeconds);
+        checkEq("mergeDeadlineSeconds 下限 1", 1, c.mergeDeadlineSeconds);
+        checkEq("incomingThreads 夹到 [1, 8]", 8, c.incomingThreads);
+
+        // ---- 2) 迁移：v9 的老配置读进来 → v10，新字段补默认值 ----
+        try {
+            java.nio.file.Path dir = java.nio.file.Paths.get(".tmp", "verify-v310");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path path = dir.resolve("config-v9.json");
+            java.nio.file.Files.write(path,
+                    ("{\"configVersion\": 9, \"apiKey\": \"sk-kept\", \"cacheSize\": 77}").getBytes(StandardCharsets.UTF_8));
+            TranslatorConfig migrated = TranslatorConfig.load(path);
+            checkEq("v9 配置迁移后升到当前版本", TranslatorConfig.CURRENT_CONFIG_VERSION, migrated.configVersion);
+            checkEq("用户已有的 apiKey 原样保留", "sk-kept", migrated.apiKey);
+            checkEq("用户已有的 cacheSize 原样保留", 77, migrated.cacheSize);
+            checkEq("新字段 requestBudgetSeconds 补默认值", 20, migrated.requestBudgetSeconds);
+            checkEq("新字段 maxQueueAgeSeconds 补默认值", 45, migrated.maxQueueAgeSeconds);
+            checkEq("新字段 incomingThreads 补默认值", 3, migrated.incomingThreads);
+            checkEq("新字段 incomingDisplay 补默认值", "MERGE", migrated.incomingDisplay);
+            checkEq("新字段 mergeDeadlineSeconds 补默认值", 3, migrated.mergeDeadlineSeconds);
+        } catch (java.io.IOException e) {
+            check("v9 迁移用例执行失败: " + e, false);
+        }
+
+        // ---- 3) 端到端：译文期限内到达 → 合并成一行，原文不再单独显示 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);   // 默认配置已是 MERGE
+            server.response = ok("冲中路");
+            boolean suppress = h.translator.onIncoming("[MVP+] Steve: rush mid", "ORIG-A",
+                    false, false, null, null);
+            check("MERGE 接下翻译：装配层应取消原文显示", suppress);
+            check("原文 + 译文合并显示（后缀带分隔符与译文）",
+                    awaitTrue(5000, () -> !h.feedback.mergedSuffixes.isEmpty())
+                            && h.feedback.mergedSuffixes.get(0).contains("▏")
+                            && h.feedback.mergedSuffixes.get(0).contains("冲中路")
+                            && h.feedback.mergedSuffixes.get(0).contains("译"));
+            check("合并的是登记时的那个原组件", h.feedback.mergedOriginals.get(0) == "ORIG-A");
+            checkEq("原文没有被单独显示过", 0, h.feedback.originalsShown.size());
+            checkEq("译文没有另起一行", 0, h.feedback.infos.size());
+            check("计进「译」", h.translator.counters().contains("译 §f1"));
+        }
+
+        // ---- 4) 端到端：译文超时 → 原文先放行，后到的译文补 └ 从属行 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            CountDownLatch arrived = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            server.arrivalLatch = arrived;
+            server.releaseLatch = release;
+            server.response = ok("我们的床没了");
+            long base = h.clock.getAsLong();
+            boolean suppress = h.translator.onIncoming("[MVP] Kevin: our bed is gone", "ORIG-B",
+                    false, false, null, null);
+            check("MERGE 接下翻译", suppress);
+            check("请求已到达（还在等译文）", arrived.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            // 时钟推过 mergeDeadlineSeconds=3 秒的期限，再跑一次清扫（生产环境由 sweeper 调）
+            check("清扫放行了原文", h.translator.expireMergeDeadlines(base + 3500) == 1);
+            check("原文被原样显示（不是重拼的字符串）", h.feedback.originalsShown.contains("ORIG-B"));
+
+            release.countDown();                    // 译文这时才回来
+            check("迟到的译文走 └ 从属行",
+                    h.feedback.awaitInfo(5000, 1) && h.feedback.infos.get(0).contains("└")
+                            && h.feedback.infos.get(0).contains("我们的床没了"));
+            checkEq("迟到的译文不再合并一次", 0, h.feedback.mergedSuffixes.size());
+            server.arrivalLatch = null;
+            server.releaseLatch = null;
+        }
+
+        // ---- 5) 端到端：翻译失败 → 原文放行（绝不扣住原文不放） ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            server.status = 500;
+            boolean suppress = h.translator.onIncoming("[MVP+] Steve: gg", "ORIG-C",
+                    false, false, null, null);
+            check("失败前 MERGE 同样接下翻译", suppress);
+            check("失败后原文放行",
+                    awaitTrue(5000, () -> !h.feedback.originalsShown.isEmpty())
+                            && h.feedback.originalsShown.contains("ORIG-C"));
+            check("失败提示照常给出", h.feedback.awaitError() && h.feedback.hasError("翻译失败"));
+            checkEq("没有合并行（没有译文可合并）", 0, h.feedback.mergedSuffixes.size());
+        }
+
+        // ---- 6) 端到端：无可译内容（整条是玩家名）→ 原文放行、静默计「跳过」 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            server.response = ok("hansert");
+            boolean suppress = h.translator.onIncoming("hansert", "ORIG-D", false, false, null, null);
+            check("无可译内容同样先接下翻译", suppress);
+            check("原文放行（「原文玩家已经看到了，再贴译文没有意义」这条规则不变）",
+                    awaitTrue(5000, () -> h.feedback.originalsShown.contains("ORIG-D")));
+            checkEq("没有译文行也没有红字", 0, h.feedback.infos.size() + h.feedback.errors.size());
+            check("计进「跳过」", h.translator.counters().contains("跳过 §f1"));
+        }
+
+        // ---- 7) 提交被拒（限流）→ 不扣原文，登记也撤销 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            h.config.requestsPerMinute = 0;         // 直接触发限流
+            boolean suppress = h.translator.onIncoming("[MVP+] Steve: inc", "ORIG-E",
+                    false, false, null, null);
+            check("被限流时不扣原文（装配层照常显示）", !suppress);
+            check("登记已撤销：清扫放行 0 条", h.translator.expireMergeDeadlines(h.clock.getAsLong() + 60_000) == 0);
+            check("限流提示照常给出", h.feedback.awaitError() && h.feedback.hasError("达到每分钟上限"));
+        }
+
+        // ---- 8) 玩家中途关总闸 → 原文放行 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            CountDownLatch arrived = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            server.arrivalLatch = arrived;
+            server.releaseLatch = release;
+            server.response = ok("有人在进攻");
+            boolean suppress = h.translator.onIncoming("[MVP+] Steve: inc mid", "ORIG-F",
+                    false, false, null, null);
+            check("MERGE 接下翻译", suppress && arrived.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            h.config.enabled = false;               // 等译文期间玩家按了 F6
+            release.countDown();
+            check("总闸关掉后原文放行（绝不凭空消失）",
+                    awaitTrue(5000, () -> h.feedback.originalsShown.contains("ORIG-F")));
+            checkEq("没有译文行", 0, h.feedback.infos.size() + h.feedback.mergedSuffixes.size());
+            server.arrivalLatch = null;
+            server.releaseLatch = null;
+        }
+
+        // ---- 9) APPEND 模式：装配层永远照常显示原文（旧行为一字不差） ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            h.config.incomingDisplay = "APPEND";
+            h.config.normalize();
+            server.response = ok("冲左路");
+            boolean suppress = h.translator.onIncoming("[MVP+] Steve: go left", "ORIG-G",
+                    false, false, null, null);
+            check("APPEND 模式不扣原文", !suppress);
+            check("译文照常另起一行",
+                    h.feedback.awaitInfo(5000, 1) && h.feedback.hasInfo("冲左路"));
+            checkEq("没有任何合并/放行动作", 0,
+                    h.feedback.mergedSuffixes.size() + h.feedback.originalsShown.size());
+        }
+    }
+
     /** 子串出现次数（给「前缀只能有一个」这类断言用）。 */
     private static int countOccurrences(String text, String part) {
         if (text == null || part == null || part.isEmpty()) {
@@ -5050,6 +5404,11 @@ public class VerifyCore {
         volatile String lastAuth;
         volatile String lastBody;
         volatile String lastMethod;
+
+        /** 已到达的请求总数（v3.1.0：重试分级用例断言「只发了一次」用）。 */
+        int requests() {
+            return requestCount.get();
+        }
 
         MockServer() throws IOException {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

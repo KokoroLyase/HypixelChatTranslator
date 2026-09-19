@@ -116,7 +116,11 @@ public final class HxTranslateClient implements ClientModInitializer {
         client.register();
         registerToggleTick(toggleKey);
 
-        ClientLifecycleEvents.CLIENT_STOPPING.register(minecraft -> service.shutdown());
+        ClientLifecycleEvents.CLIENT_STOPPING.register(minecraft -> {
+            // v3.1.0：翻译器里的合并显示清扫线程也要一起停
+            translator.shutdown();
+            service.shutdown();
+        });
 
         TranslateCommand.register(config, service, translator, feedback);
 

@@ -57,6 +57,35 @@ public final class GameFeedback implements FeedbackPort {
     }
 
     /**
+     * 合并显示（v3.1.0）：复制原消息组件、把译文后缀追加在后面，作为一个整体显示。
+     *
+     * <p>必须**复制再追加**而不是拍平重拼：原组件带着服务器的样式、悬停提示与点击事件
+     * （Hypixel 的队伍前缀、玩家头衔都在上面）。{@code Component} 是不可变结构，
+     * {@code copy().append(...)} 生成的仍是同一个聊天组件树的原样延伸。
+     */
+    @Override
+    public void showMergedIncoming(Object originalComponent, String suffix) {
+        if (!(originalComponent instanceof Component)) {
+            // 不是本线的组件类型（理论上不会发生）：退回纯后缀，绝不静默吞掉译文
+            info(suffix);
+            return;
+        }
+        Component merged = ((Component) originalComponent).copy()
+                .append(Component.literal(clean(suffix)));
+        send(merged);
+    }
+
+    /** 把被 MERGE 扣住的原消息原样放行（超时 / 失败 / 无可译内容时调用）。 */
+    @Override
+    public void showOriginalIncoming(Object originalComponent) {
+        if (!(originalComponent instanceof Component)) {
+            return;
+        }
+        // 复制一份：共享层还持有这个引用，聊天栏不该共享同一实例
+        send(((Component) originalComponent).copy());
+    }
+
+    /**
      * 兜底版式：把整行压成一行（换行会被原版 {@code StringSplitter.splitLines} 拆成
      * **多条独立聊天行**，译文那行会因此丢掉 {@code [译]} 前缀，看起来就像服务器自己说的话）。
      *

@@ -63,19 +63,24 @@ public final class GameClient implements ChatClientPort {
      * <ul>
      *   <li>{@code ClientSendMessageEvents.ALLOW_CHAT} / {@code ALLOW_COMMAND}：
      *       发送方向的闸门，返回 false 表示「取消原发送，我来翻译后重发」；</li>
-     *   <li>{@code ClientReceiveMessageEvents.GAME}：服务器下发的系统消息
-     *       （Hypixel 的玩家聊天走这条，拿不到发送者）；</li>
-     *   <li>{@code ClientReceiveMessageEvents.CHAT}：签名聊天（能给出发送者 UUID，
+     *   <li>{@code ClientReceiveMessageEvents.ALLOW_GAME}：服务器下发的系统消息
+     *       （Hypixel 的玩家聊天走这条，拿不到发送者）；返回 false = 取消原文显示
+     *       （v3.1.0 起 MERGE 模式用这个能力扣住原文，等译文一起合并）；</li>
+     *   <li>{@code ClientReceiveMessageEvents.ALLOW_CHAT}：签名聊天（能给出发送者 UUID，
      *       判断「是不是自己」最可靠）。两条都接，少一条就有一半场景失效。</li>
      * </ul>
+     *
+     * <p><b>v3.1.0 起接收方向换用 ALLOW_* 变体</b>：它们比 GAME/CHAT 先触发，返回 false
+     * 可以取消原文显示；返回 true 时后续行为与 GAME/CHAT 完全一致。MERGE 关闭（APPEND 模式）
+     * 时永远返回 true，行为与旧版一字不差。
      *
      * <p>开关按键（F6）的装配在 {@code HxTranslateClient}，不在这里。
      */
     public void register() {
         ClientSendMessageEvents.ALLOW_CHAT.register(this::allowSendChat);
         ClientSendMessageEvents.ALLOW_COMMAND.register(this::allowSendCommand);
-        ClientReceiveMessageEvents.GAME.register(this::onGameMessage);
-        ClientReceiveMessageEvents.CHAT.register(this::onChatMessage);
+        ClientReceiveMessageEvents.ALLOW_GAME.register(this::allowGameMessage);
+        ClientReceiveMessageEvents.ALLOW_CHAT.register(this::allowChatMessage);
     }
 
     /**
@@ -117,29 +122,37 @@ public final class GameClient implements ChatClientPort {
         }
     }
 
-    private void onGameMessage(Component message, boolean overlay) {
+    /**
+     * 系统消息入口（ALLOW_GAME 变体）。
+     *
+     * @return false = 取消原文显示（MERGE 模式接下了这条翻译，等译文合并后重新显示）。
+     *         出错时一律返回 true 放行原文 —— 宁可不翻译，不能吞消息。
+     */
+    private boolean allowGameMessage(Component message, boolean overlay) {
         if (translator() == null) {
-            return;
+            return true;
         }
         try {
             // 代理服（Hypixel）的玩家聊天是系统消息：没有发送者信息，传 null 让内容比对兜底
-            translator().onIncoming(message.getString(), overlay, false, null, null);
+            return !translator().onIncoming(message.getString(), message, overlay, false, null, null);
         } catch (Throwable t) {
             Log.LOGGER.error("接收系统消息的事件回调出错，本条已忽略: {}", t.toString(), t);
+            return true;
         }
     }
 
-    private void onChatMessage(Component message, PlayerChatMessage signedMessage,
-                               GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
+    private boolean allowChatMessage(Component message, PlayerChatMessage signedMessage,
+                                     GameProfile sender, ChatType.Bound bound, Instant receivedAt) {
         if (translator() == null) {
-            return;
+            return true;
         }
         try {
             UUID senderId = sender == null ? null : sender.id();
             String senderName = sender == null ? null : sender.name();
-            translator().onIncoming(message.getString(), false, true, senderId, senderName);
+            return !translator().onIncoming(message.getString(), message, false, true, senderId, senderName);
         } catch (Throwable t) {
             Log.LOGGER.error("接收签名聊天的事件回调出错，本条已忽略: {}", t.toString(), t);
+            return true;
         }
     }
 

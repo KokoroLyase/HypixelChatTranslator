@@ -83,8 +83,82 @@ public final class TranslationService {
         this.config = config;
         this.client = new DeepSeekClient(config);
         this.cache = createCache();
-        this.incomingExecutor = newWorkerPool(2);
+        this.incomingExecutor = newWorkerPool(Math.max(1, config.incomingThreads));
         this.outgoingExecutor = newWorkerPool(1);
+    }
+
+    /**
+     * 带入队时刻的任务包装（v3.1.0）。
+     *
+     * <p>队列按**年龄**丢弃的载体：任务在队列里等超过 {@code maxQueueAgeSeconds} 就不再执行，
+     * 以「排队超龄」回调调用方（回调必被调用，契约不变）。为什么不只做提交时的背压：
+     * 深度上限挡住的是「队列有多长」，挡不住「队头那条已经等了多久」——
+     * 20 条 × 每条 30 秒可以积压 5 分钟，那样的译文出来时早就没意义了，
+     * 还一直占着线程与限流配额。
+     */
+    private static final class TimedTask implements Runnable {
+        final long enqueuedAt;
+        final Runnable delegate;
+        /** 取任务时发现已超龄，就执行这个丢弃回调而不是本体。 */
+        final Runnable onStale;
+        /** 超龄判定（读配置的那个值由构造方闭包进来，reload 后立刻生效）。 */
+        final java.util.function.BooleanSupplier staleCheck;
+
+        TimedTask(long enqueuedAt, Runnable delegate, Runnable onStale,
+                  java.util.function.BooleanSupplier staleCheck) {
+            this.enqueuedAt = enqueuedAt;
+            this.delegate = delegate;
+            this.onStale = onStale;
+            this.staleCheck = staleCheck;
+        }
+
+        boolean isStale() {
+            return staleCheck.getAsBoolean();
+        }
+
+        @Override
+        public void run() {
+            // 执行时刻再判一次：队列积压时排在后面的任务，到 pop 出来时可能已经超龄
+            if (isStale()) {
+                onStale.run();
+            } else {
+                delegate.run();
+            }
+        }
+    }
+
+    /** 当前配置下的队列超龄阈值（毫秒）。 */
+    private long maxQueueAgeMs() {
+        return TimeUnit.SECONDS.toMillis(Math.max(1, config.maxQueueAgeSeconds));
+    }
+
+    /**
+     * 把队列里已经超龄的任务请出去（v3.1.0）：在「队列满 → 拒绝新消息」之前做一次，
+     * 免得队列被一堆早就没意义的旧任务占满、新消息反被背压挡掉。
+     * 被请出去的任务照样走「排队超龄」回调（契约：回调必被调用）。
+     *
+     * @return 清掉了多少条
+     */
+    private int purgeStaleTasks(ThreadPoolExecutor pool) {
+        java.util.List<TimedTask> candidates = new java.util.ArrayList<>();
+        for (Runnable queued : pool.getQueue()) {
+            if (queued instanceof TimedTask) {
+                TimedTask task = (TimedTask) queued;
+                if (task.isStale()) {
+                    candidates.add(task);
+                }
+            }
+        }
+        int purged = 0;
+        for (TimedTask task : candidates) {
+            // remove 必须成功才丢弃：失败说明 worker 刚把任务取走，那边会自己判超龄，
+            // 这里再执行一次 onStale 就等于回调了两次
+            if (pool.getQueue().remove(task)) {
+                purged++;
+                task.onStale.run();
+            }
+        }
+        return purged;
     }
 
     private static ThreadPoolExecutor newWorkerPool(int threads) {
@@ -182,14 +256,27 @@ public final class TranslationService {
             // 先发的那条还在等网络，后发的这条已经排队去发了，译文就会乱序。
             // （v1.0.5 为「连打两条中文乱序」改成了单线程池，但漏了这条捷径。）
             String hit = cached;
-            pool.execute(() -> {
-                try {
-                    callback.onResult(DeepSeekClient.Result.success(hit));
-                } catch (Throwable t) {
-                    // 同上：回调必被调用，且它自己抛错也不能弄死工作线程
-                    reportFailure(text, direction, t);
-                }
-            });
+            long enqueuedAt = System.currentTimeMillis();
+            long maxAgeMs = maxQueueAgeMs();
+            // 缓存命中同样包进 TimedTask（v3.1.0）：它也要排队，也受超龄约束 ——
+            // 否则它会绕过「按年龄丢弃」的语义（虽然命中缓存意味着大概率能秒回）。
+            pool.execute(new TimedTask(enqueuedAt,
+                    () -> {
+                        try {
+                            callback.onResult(DeepSeekClient.Result.success(hit));
+                        } catch (Throwable t) {
+                            // 同上：回调必被调用，且它自己抛错也不能弄死工作线程
+                            reportFailure(text, direction, t);
+                        }
+                    },
+                    () -> {
+                        try {
+                            callback.onResult(DeepSeekClient.Result.staleDropped());
+                        } catch (Throwable t) {
+                            reportFailure(text, direction, t);
+                        }
+                    },
+                    () -> System.currentTimeMillis() - enqueuedAt > maxAgeMs));
             return SubmitResult.ACCEPTED;
         }
 
@@ -198,6 +285,10 @@ public final class TranslationService {
         //
         // 这一步必须排在限流之前：被背压挡下的请求根本没有发出去，
         // 却先把每分钟的配额吃掉，等于让后面的消息替它买单。
+        //
+        // v3.1.0：判断「满」之前先把队列里已经超龄的任务清出去 ——
+        // 深度上限管不了「队头等了多久」，不清理的话一串旧任务会把新消息挡在门外。
+        purgeStaleTasks(pool);
         if (pool.getQueue().size() >= Math.max(1, config.maxPendingTranslations)) {
             if (config.debugLog) {
                 Log.LOGGER.info("[queue-full] 丢弃 {}", text);
@@ -212,7 +303,10 @@ public final class TranslationService {
             return SubmitResult.RATE_LIMITED;
         }
 
-        pool.execute(() -> {
+        // 入队时刻（v3.1.0）：队列按年龄丢弃的计时起点
+        final long enqueuedAt = System.currentTimeMillis();
+        final long maxAgeMs = maxQueueAgeMs();
+        Runnable task = () -> {
             try {
                 DeepSeekClient.Result result = client.translate(text, direction);
                 if (result.ok()) {
@@ -248,7 +342,22 @@ public final class TranslationService {
                     reportFailure(text, direction, fromCallback);
                 }
             }
-        });
+        };
+        // 「排队超龄」的丢弃回调：与成功/失败回调走同一个出口（回调必被调用），
+        // 但请求**没有发出去**、不占限流配额，所以不受 tryAcquireRateLimit 的回滚问题困扰。
+        Runnable staleDrop = () -> {
+            if (config.debugLog) {
+                Log.LOGGER.info("[queue-stale] 等待超 {} 秒，丢弃 {}", config.maxQueueAgeSeconds, text);
+            }
+            try {
+                callback.onResult(DeepSeekClient.Result.staleDropped());
+            } catch (Throwable t) {
+                // 丢弃回调同样不能弄死工作线程
+                reportFailure(text, direction, t);
+            }
+        };
+        pool.execute(new TimedTask(enqueuedAt, task, staleDrop,
+                () -> System.currentTimeMillis() - enqueuedAt > maxAgeMs));
         return SubmitResult.ACCEPTED;
     }
 

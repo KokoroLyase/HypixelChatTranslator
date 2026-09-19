@@ -70,6 +70,39 @@ public final class ForgeFeedback implements FeedbackPort {
     }
 
     /**
+     * 合并显示（v3.1.0）：复制原消息组件、把译文后缀追加成 sibling，作为一个整体显示。
+     *
+     * <p>与 Fabric 线的 {@code GameFeedback#showMergedIncoming} 逐条对应：
+     * 必须**复制再追加**而不是拍平重拼 —— 原组件带着服务器的样式（1.8.9 的 § 已由
+     * Forge 渲染进 ChatStyle），重拼会把它们全丢掉。
+     * {@code createCopy()} / {@code appendSibling} 都是 1.8.9 {@code IChatComponent} 的原生 API。
+     */
+    @Override
+    public void showMergedIncoming(Object originalComponent, String suffix) {
+        if (!(originalComponent instanceof IChatComponent)) {
+            // 不是本线的组件类型（理论上不会发生）：退回纯后缀，绝不静默吞掉译文
+            info(suffix);
+            return;
+        }
+        send(merge((IChatComponent) originalComponent, suffix));
+    }
+
+    /** 1.8.9 的合并实现：原组件复制后追加一行译文后缀。 */
+    private static IChatComponent merge(IChatComponent original, String suffix) {
+        return original.createCopy().appendSibling(new ChatComponentText(clean(suffix)));
+    }
+
+    /** 把被 MERGE 扣住的原消息原样放行（超时 / 失败 / 无可译内容时调用）。 */
+    @Override
+    public void showOriginalIncoming(Object originalComponent) {
+        if (!(originalComponent instanceof IChatComponent)) {
+            return;
+        }
+        // 复制一份：共享层还持有这个引用，聊天栏不该共享同一实例
+        send(((IChatComponent) originalComponent).createCopy());
+    }
+
+    /**
      * 兜底版式：压成一行，但**保留** {@code §} 格式代码。
      *
      * <p>与 Fabric 线的 {@code GameFeedback#clean} 逐条对应，理由见那边与
