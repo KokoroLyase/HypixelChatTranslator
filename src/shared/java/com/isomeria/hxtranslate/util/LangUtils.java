@@ -210,6 +210,69 @@ public final class LangUtils {
     }
 
     /**
+     * 剥掉译文中与原文重复的「说话人前缀」（v3.1.1，MERGE 合并显示专用）。
+     *
+     * <p>背景（2026-09-19 实机截图定位）：入站提示词要求模型「原样保留玩家名、等级、前缀」，
+     * 于是译文往往以完整原文前缀开头（{@code [271✫] [MVP++] t_rain: 我是}）。
+     * APPEND 模式下译文独占一行，前缀出现第二遍只是习惯问题；MERGE 模式把它追加到
+     * 原文同一行后，前缀就在一行里出现两次 —— 又长又难读，这正是玩家实测报的问题。
+     *
+     * <p>判据：取原文第一个 {@code ": "} 之前的部分作为前缀（与 {@link #messageBody(String)}
+     * 同一个分割口径）；译文若以这个前缀开头，把前缀剥掉。模型偶尔会增删空格，
+     * 所以匹配时空白可以不对齐；命中不了（大多数短消息译文根本不带前缀，如
+     * {@code rush mid -> 冲中路}）就原样返回，绝不硬剥。
+     *
+     * <p>只在 MERGE 显示路径调用；APPEND 译文行的形态与历史版本保持一致。
+     *
+     * @param source     原文（已剥格式代码的纯文本，与送给模型的输入一致）
+     * @param translated 模型返回的译文（已清洗）
+     * @return 剥掉重复前缀后的译文；没有重复时原样返回
+     */
+    public static String stripRepeatedPrefix(String source, String translated) {
+        if (source == null || translated == null || translated.isEmpty()) {
+            return translated;
+        }
+        String body = messageBody(source);
+        // 没有「前缀: 正文」结构（找不到冒号、或正文为空 / 等于全文）就谈不上重复
+        if (body.isEmpty() || body.length() >= source.length()) {
+            return translated;
+        }
+        String prefix = source.substring(0, source.length() - body.length());
+        if (translated.startsWith(prefix)) {
+            return stripLeadingSpaces(translated.substring(prefix.length()));
+        }
+        // 宽松匹配：逐字符比较并允许两侧空白不对齐；命中则按译文里实际消耗的长度剥掉
+        int ti = 0;
+        int pi = 0;
+        while (pi < prefix.length() && ti < translated.length()) {
+            char pc = prefix.charAt(pi);
+            char tc = translated.charAt(ti);
+            if (pc == ' ') {
+                pi++;
+            } else if (tc == ' ') {
+                ti++;
+            } else if (pc != tc) {
+                return translated;   // 逐字对不上：不是重复前缀，原样返回
+            } else {
+                pi++;
+                ti++;
+            }
+        }
+        if (pi < prefix.length()) {
+            return translated;   // 译文比前缀还短，谈不上「带着前缀」
+        }
+        return stripLeadingSpaces(translated.substring(ti));
+    }
+
+    private static String stripLeadingSpaces(String s) {
+        int i = 0;
+        while (i < s.length() && s.charAt(i) == ' ') {
+            i++;
+        }
+        return s.substring(i);
+    }
+
+    /**
      * 正文里最长的一段连续汉字有多少个字。
      *
      * <p>用来识别「中文播报里夹着英文玩家名」：{@code bedsyuu被Mlable击杀} 的汉字占比只有 0.2，

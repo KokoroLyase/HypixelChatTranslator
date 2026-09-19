@@ -380,12 +380,19 @@ public final class ChatTranslator {
             String suffix = config.incomingPrefix + result.text();
             if (pending != null) {
                 // MERGE 显示：期限内到达 → 原文 ▏ 译文 合并成一行；
-                // 原文已因超时先放行 → 后到的译文补一行 └ 从属行
+                // 原文已因超时先放行 → 后到的译文补一行 └ 从属行。
+                //
+                // 剥掉译文中与原文重复的说话人前缀（v3.1.1）：提示词要求模型原样保留
+                // 「[星级] [头衔] 玩家名: 」，译文会带着它回来 —— APPEND 模式独占一行没问题，
+                // 合并进同一行后前缀就出现两遍（实测截图：一行里两次 [271✫] [MVP++] t_rain:）。
+                // APPEND 路径不剥，保持历史形态。
+                String stripped = LangUtils.stripRepeatedPrefix(text, result.text());
+                String mergeSuffix = config.incomingPrefix + stripped;
                 PendingMerge claimed = claimForMerge(pending);
                 if (claimed != null) {
-                    feedback.showMergedIncoming(claimed.originalComponent, MERGE_SEPARATOR + suffix);
+                    feedback.showMergedIncoming(claimed.originalComponent, MERGE_SEPARATOR + mergeSuffix);
                 } else {
-                    feedback.info(MERGE_LATE_PREFIX + suffix);
+                    feedback.info(MERGE_LATE_PREFIX + mergeSuffix);
                 }
                 return;
             }

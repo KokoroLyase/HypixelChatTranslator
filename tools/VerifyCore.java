@@ -84,6 +84,7 @@ public class VerifyCore {
         v310StabilityLatency();
         v310MergeDisplay();
         v311MergeToggle();
+        v311MergePrefixStrip();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -5103,6 +5104,78 @@ public class VerifyCore {
             server.arrivalLatch = null;
             server.releaseLatch = null;
         }
+    }
+
+    /**
+     * v3.1.1（实机缺陷修复）：合并显示时剥掉译文中与原文重复的说话人前缀。
+     *
+     * <p>实测背景（2026-09-19 13:27 截图）：提示词要求模型原样保留
+     * 「[星级] [头衔] 玩家名: 」，译文带着它回来 —— APPEND 独占一行无妨，
+     * MERGE 合并后同一行前缀出现两遍：
+     * {@code [271✫] [MVP++] t_rain: wa ta shi | 译 [271✫] [MVP++] t_rain: 我是}。
+     *
+     * <p><b>反向验证</b>：把 ChatTranslator 合并路径里的 {@code stripRepeatedPrefix} 调用
+     * 中和成原样透传 → 「合并行里前缀只出现一次」红。
+     */
+    private static void v311MergePrefixStrip() throws Exception {
+        System.out.println("== v3.1.1 修复：合并显示剥掉译文中重复的说话人前缀 ==");
+
+        // ---- 1) 判据本身：两条样本逐字取自实测截图 ----
+        checkEq("截图样本 1：剥掉整段前缀",
+                "我是",
+                LangUtils.stripRepeatedPrefix("[271✫] [MVP++] t_rain: wa ta shi",
+                        "[271✫] [MVP++] t_rain: 我是"));
+        checkEq("截图样本 2：前缀后面的正文有自己的冒号时只剥说话人那段",
+                "e445: 四分之三的幸运方块",
+                LangUtils.stripRepeatedPrefix("[993✫] [MVP++] t_rain: e445: 3/4 lucky block",
+                        "[993✫] [MVP++] t_rain: e445: 四分之三的幸运方块"));
+        checkEq("译文没带前缀（大多数短消息）原样返回",
+                "冲中路",
+                LangUtils.stripRepeatedPrefix("[MVP+] Steve: rush mid", "冲中路"));
+        checkEq("前缀对不上（不是同一条消息的回显）原样返回",
+                "有人进攻中路",
+                LangUtils.stripRepeatedPrefix("[MVP+] Steve: rush mid", "有人进攻中路"));
+        checkEq("只有空白差异的前缀也算重复（模型偶尔增删空格）",
+                "打得好",
+                LangUtils.stripRepeatedPrefix("[MVP+] Steve: gg wp", "[MVP+]  Steve:  打得好"));
+        checkEq("原文没有「前缀: 正文」结构时不剥",
+                ".gl 好的",
+                LangUtils.stripRepeatedPrefix("renegade", ".gl 好的"));
+        check("null 安全",
+                LangUtils.stripRepeatedPrefix(null, "x") == "x"
+                        && LangUtils.stripRepeatedPrefix("a: b", null) == null);
+        checkEq("空译文原样返回", "", LangUtils.stripRepeatedPrefix("[MVP+] Steve: hi", ""));
+
+        // ---- 2) 端到端：合并行里说话人前缀只出现一次 ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);   // 默认 MERGE
+            server.response = ok("[271✫] [MVP++] t_rain: 我是");
+            boolean suppress = h.translator.onIncoming("[271✫] [MVP++] t_rain: wa ta shi", "ORIG-K",
+                    false, false, null, null);
+            check("MERGE 接下翻译", suppress);
+            // 后缀里只装「分隔符 + [译] + 剥好的译文」：说话人前缀（t_rain / 271✫）不应再出现
+            check("合并行后缀不再带说话人前缀、只留译文",
+                    awaitTrue(5000, () -> !h.feedback.mergedSuffixes.isEmpty())
+                            && countOccurrences(h.feedback.mergedSuffixes.get(0), "t_rain") == 0
+                            && countOccurrences(h.feedback.mergedSuffixes.get(0), "271") == 0
+                            && h.feedback.mergedSuffixes.get(0).contains("我是"));
+            checkEq("原文没有被单独显示过", 0, h.feedback.originalsShown.size());
+        }
+
+        // ---- 3) 端到端：译文不带前缀时行为不变（绝不硬剥） ----
+        try (MockServer server = new MockServer()) {
+            Harness h = Harness.incoming(server);
+            server.response = ok("冲中路");
+            h.translator.onIncoming("[MVP+] Steve: rush mid", "ORIG-L", false, false, null, null);
+            check("无前缀译文照常合并显示",
+                    awaitTrue(5000, () -> !h.feedback.mergedSuffixes.isEmpty())
+                            && h.feedback.mergedSuffixes.get(0).contains("冲中路"));
+        }
+
+        // ---- 4) 装配层门禁：APPEND 路径不剥（历史形态不变） ----
+        String ctSource = readRepoFile("src/shared/java/com/isomeria/hxtranslate/chat/ChatTranslator.java");
+        check("stripRepeatedPrefix 只接在 MERGE 分支（APPEND 形态保持历史不变）",
+                countOccurrences(ctSource, "stripRepeatedPrefix") == 1);
     }
 
     /** 子串出现次数（给「前缀只能有一个」这类断言用）。 */
