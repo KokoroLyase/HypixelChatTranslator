@@ -62,7 +62,7 @@ public final class ForgeChatCommand extends CommandBase {
     @Override
     public String getCommandUsage(ICommandSender sender) {
         // 子命令清单必须与 processCommand 里真正注册的一致（2026-09-17 审计发现漏了 singleplayer）
-        return "/translator [status|on|off|incoming|outgoing|singleplayer|key|models|glossary|debug|reload|test]";
+        return "/translator [status|on|off|incoming|outgoing|singleplayer|merge|key|models|glossary|debug|reload|test]";
     }
 
     /** 客户端命令不需要权限等级（也避免被当成 op 命令而拒绝执行）。 */
@@ -87,7 +87,7 @@ public final class ForgeChatCommand extends CommandBase {
             return null;
         }
         return getListOfStringsMatchingLastWord(args,
-                "status", "on", "off", "incoming", "outgoing", "singleplayer", "key",
+                "status", "on", "off", "incoming", "outgoing", "singleplayer", "merge", "key",
                 "models", "glossary", "debug", "reload", "test");
     }
 
@@ -114,6 +114,8 @@ public final class ForgeChatCommand extends CommandBase {
             setToggle(sender, args, false);
         } else if ("singleplayer".equals(sub)) {
             setSingleplayer(sender, args);
+        } else if ("merge".equals(sub)) {
+            setMerge(sender, args);
         } else if ("debug".equals(sub)) {
             setDebug(sender, args);
         } else if ("key".equals(sub)) {
@@ -170,6 +172,26 @@ public final class ForgeChatCommand extends CommandBase {
         reply(sender, on
                 ? "§a已开启：单人世界的消息也会翻译"
                 : "§c已关闭：单人世界不翻译（多人服不受影响）");
+    }
+
+    /**
+     * 合并显示的游戏内开关（v3.1.1，{@code /translator merge on|off}）。
+     *
+     * <p>切换逻辑与反馈文案在共享层（{@code ChatTranslator#setMergeDisplay}），这里只接线与写盘；
+     * 不带参数时显示当前状态与用法。
+     */
+    private void setMerge(ICommandSender sender, String[] args) {
+        if (args.length < 2) {
+            reply(sender, translator.mergeDisplayStatusLine());
+            return;
+        }
+        if (!"on".equalsIgnoreCase(args[1]) && !"off".equalsIgnoreCase(args[1])) {
+            reply(sender, "§c用法: /translator merge on|off");
+            return;
+        }
+        boolean on = "on".equalsIgnoreCase(args[1]);
+        reply(sender, translator.setMergeDisplay(on));
+        config.save();
     }
 
     private void setDebug(ICommandSender sender, String[] args) {
@@ -317,6 +339,8 @@ public final class ForgeChatCommand extends CommandBase {
                 + " §8| §7术语表: §f" + (config.glossary == null ? 0 : config.glossary.size()) + " §7条");
         // 单人闸门的状态（v3.0.0）：文案由共享层生成，两条线的口径不会漂移。
         reply(sender, translator.singleplayerStatusLine());
+        // 合并显示的状态（v3.1.1）：文案同样由共享层生成。
+        reply(sender, translator.mergeDisplayStatusLine());
         if (service.isCircuitOpen()) {
             reply(sender, "§c翻译服务连续失败，熔断中，还需 §f"
                     + service.circuitRemainingSeconds() + " §c秒");

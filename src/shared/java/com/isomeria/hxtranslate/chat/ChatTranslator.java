@@ -568,6 +568,47 @@ public final class ChatTranslator {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 合并显示的游戏内开关（v3.1.1：/translator merge on|off）
+    // ------------------------------------------------------------------
+
+    /** 当前是不是合并显示（与闸门读同一个字段、同一种归一化口径）。 */
+    public boolean isMergeDisplay() {
+        return "MERGE".equals(config.incomingDisplay);
+    }
+
+    /**
+     * 切换合并显示（{@code /translator merge on|off}）。
+     *
+     * <p>决策与反馈文案都在共享层：两条线的命令只负责接线，文案口径不会漂移
+     * （与 {@link #singleplayerStatusLine()} 同一条规矩）。只改内存配置，
+     * **写盘由命令层做** —— 与 on/off、singleplayer 等其它开关的分工一致，
+     * 也让离线自检可以放心调用（不会在自检里写出一个配置文件）。
+     *
+     * <p>切换只影响**之后**收到的消息：切换瞬间还在途的合并（已扣住的原文）
+     * 会按它提交时的模式走完，不会出现「原文被扣住却没有译文来合并」的中间态。
+     *
+     * @return 直接显示给玩家的反馈文案（含切换后的效果说明）
+     */
+    public String setMergeDisplay(boolean merge) {
+        config.incomingDisplay = merge ? "MERGE" : "APPEND";
+        return merge
+                ? "§a已开启合并显示：译文与原文合并成一行（原文 §8▏§a [译] 译文）。"
+                        + "§7译文超时会先显示原文、后补 §f└ §7从属行"
+                : "§c已关闭合并显示：译文另起一行（旧行为）。§7用 §f/translator merge on §7可切回";
+    }
+
+    /**
+     * {@code /translator status} 里合并显示的那一行（v3.1.1）。
+     *
+     * <p>文案由共享层生成：玩家在 status 里看到的开关状态与实际生效的显示行为
+     * 读的是同一个字段，永远不会漂移。
+     */
+    public String mergeDisplayStatusLine() {
+        return "§7合并显示: " + (isMergeDisplay() ? "§a开" : "§c关")
+                + " §8| §7切换: §f/translator merge on|off";
+    }
+
     /**
      * 单人世界里是否应该**拦下**翻译（v3.0.0）。
      *

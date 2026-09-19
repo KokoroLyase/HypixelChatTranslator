@@ -130,6 +130,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 /translator incoming on|off 只控制「收消息翻译」
 /translator outgoing on|off 只控制「发消息翻译」
 /translator singleplayer on|off 单人（单机）世界里是否也翻译（默认关，见 FAQ）
+/translator merge on|off     随时切换译文显示：合并成一行（默认）或另起一行（v3.1.1 新增）
 /translator key <Key>       设置 DeepSeek API Key
 /translator test <文本>      测试翻译一段文本（方向按内容判断：含中文＝中→英，结果打印在聊天栏）
 /translator models          查询 DeepSeek 当前可用的模型名（最多列 12 条；接口改版时自查）
@@ -187,7 +188,7 @@ Fabric 线**不含任何字节码修改** —— 这点差异是平台造成的�
 | `translateUnknownCommands` | `true` | 名单外的命令，正文明显是一句中文时也翻译（应对 Hypixel 新增命令） |
 | `protectedCommands` | 50+ 条 | 兜底翻译时排除的命令（`tp`、`f`、`report`、`visit` 等，参数是玩家名） |
 | `incomingPrefix` | `§8[§b译§8] §f` | 译文前缀（支持 `§` 颜色代码） |
-| `incomingDisplay` | `MERGE` | **v3.1.0 新增**。收到的消息怎么显示：`MERGE` = 译文合并进原文那一行（`原文 §8▏ [译] 译文`，默认）；`APPEND` = 旧行为，译文另起一行。见下面的「显示方式」说明 |
+| `incomingDisplay` | `MERGE` | **v3.1.0 新增**。收到的消息的译文怎么显示：`MERGE` = 译文合并进原文那一行（`原文 §8▏ [译] 译文`，默认）；`APPEND` = 旧行为，译文另起一行。**游戏内随时切换：`/translator merge on|off`（v3.1.1）**，改这里 + `/translator reload` 等价。见下面的「显示方式」说明 |
 | `mergeDeadlineSeconds` | `3` | **v3.1.0 新增**。MERGE 模式下等译文的期限：期限内到达 → 原文与译文合并成一行；超时 → **原文先照常显示**（网络慢时绝不能把原文也扣住），译文后到再补一行 `└` 从属行 |
 | `outgoingPrefix` | `§8[§a→EN§8] §f` | 自己发出去后的英文回显前缀 |
 | `includeOriginalInIncoming` | `false` | 译文里是否再带上原文 |
@@ -352,8 +353,9 @@ v3.0.8 起还补了**最后一个静默缺口**：万一 FML 换了命名方式�
 
 **译文现在显示成「原文 ▏ [译] 译文」了，想要旧的另起一行**
 v3.1.0 起默认合并显示（`incomingDisplay=MERGE`）：译文与原文在同一行，多人同时发言也不会错位。
-译文 3 秒内没回来时原文会先照常显示，后到的译文补一行 `└` 从属行。想改回旧行为，把配置里的
-`incomingDisplay` 改成 `APPEND`，`/translator reload` 即可。
+译文 3 秒内没回来时原文会先照常显示，后到的译文补一行 `└` 从属行。想改回旧行为，
+**游戏里输 `/translator merge off` 即可**（v3.1.1；`/translator merge on` 切回来），
+或把配置里的 `incomingDisplay` 改成 `APPEND` 后 `/translator reload`，两种方式等价。
 
 **翻译失败会怎样？**
 按 `failureFallback` 处理，默认 **`CANCEL`：这条不发送**，聊天栏红字提示失败原因，

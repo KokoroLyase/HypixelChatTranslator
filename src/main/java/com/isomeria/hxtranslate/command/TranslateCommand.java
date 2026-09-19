@@ -140,6 +140,24 @@ public final class TranslateCommand {
                     context.getSource().sendFeedback(Component.literal("§c已关闭：单人世界不翻译（多人服不受影响）"));
                     return 1;
                 })))
+                // 合并显示的游戏内开关（v3.1.1）：切换逻辑与文案在共享层（ChatTranslator#setMergeDisplay），
+                // 这里只负责接线与写盘 —— 与 on/off、singleplayer 等其它开关同一种分工。
+                // 不带参数的 /translator merge 显示当前状态与用法。
+                .then(ClientCommands.literal("merge")
+                        .executes(context -> {
+                            context.getSource().sendFeedback(Component.literal(translator.mergeDisplayStatusLine()));
+                            return 1;
+                        })
+                        .then(ClientCommands.literal("on").executes(context -> {
+                            context.getSource().sendFeedback(Component.literal(translator.setMergeDisplay(true)));
+                            config.save();
+                            return 1;
+                        }))
+                        .then(ClientCommands.literal("off").executes(context -> {
+                            context.getSource().sendFeedback(Component.literal(translator.setMergeDisplay(false)));
+                            config.save();
+                            return 1;
+                        })))
                 .then(ClientCommands.literal("key")
                         .then(ClientCommands.argument("value", StringArgumentType.greedyString())
                                 .executes(context -> {
@@ -247,6 +265,8 @@ public final class TranslateCommand {
         // 单人闸门的状态（v3.0.0）：玩家在单机里发现「怎么不翻译」时，唯一能告诉他原因的地方。
         // 文案由共享层生成，两条线的口径不会漂移（见 ChatTranslator#singleplayerStatusLine）。
         source.sendFeedback(Component.literal(translator.singleplayerStatusLine()));
+        // 合并显示的状态（v3.1.1）：文案同样由共享层生成（见 ChatTranslator#mergeDisplayStatusLine）。
+        source.sendFeedback(Component.literal(translator.mergeDisplayStatusLine()));
         if (service.isCircuitOpen()) {
             source.sendFeedback(Component.literal("§c翻译服务连续失败，熔断中，还需 §f"
                     + service.circuitRemainingSeconds() + " §c秒"));

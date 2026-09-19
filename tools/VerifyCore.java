@@ -83,6 +83,7 @@ public class VerifyCore {
         v308AuditFixes();
         v310StabilityLatency();
         v310MergeDisplay();
+        v311MergeToggle();
         logFacade();
         sharedLayerPurity();
         versionConsistency();
@@ -5011,6 +5012,96 @@ public class VerifyCore {
                     h.feedback.awaitInfo(5000, 1) && h.feedback.hasInfo("冲左路"));
             checkEq("没有任何合并/放行动作", 0,
                     h.feedback.mergedSuffixes.size() + h.feedback.originalsShown.size());
+        }
+    }
+
+    /**
+     * v3.1.1：合并显示的游戏内开关（{@code /translator merge on|off}）。
+     *
+     * <p>决策与文案在共享层（{@code ChatTranslator#setMergeDisplay}），命令层只接线 ——
+     * 所以自检直接驱动共享层就能覆盖两条线共用的全部行为。命令类本身 import Minecraft，
+     * 不在自检类路径里（与 singleplayer 等其它开关同一待遇）。
+     *
+     * <p><b>反向验证</b>：把 {@code setMergeDisplay} 的赋值改回常量 "MERGE" →
+     * 「关闭后按 APPEND 显示」红。
+     */
+    private static void v311MergeToggle() throws Exception {
+        System.out.println("== v3.1.1 合并显示开关：/translator merge on|off ==");
+
+        // ---- 1) 默认状态与 status 行 ----
+        Harness h = Harness.incoming(null);
+        check("默认是合并显示", h.translator.isMergeDisplay());
+        check("status 行显示「开」并给出切换命令",
+                h.translator.mergeDisplayStatusLine().contains("合并显示")
+                        && h.translator.mergeDisplayStatusLine().contains("开")
+                        && h.translator.mergeDisplayStatusLine().contains("/translator merge on|off"));
+
+        // ---- 2) 关闭：后续消息走 APPEND（译文另起一行） ----
+        String offText = h.translator.setMergeDisplay(false);
+        check("关闭后 isMergeDisplay=false", !h.translator.isMergeDisplay());
+        checkEq("配置字段被写成 APPEND", "APPEND", h.config.incomingDisplay);
+        check("反馈文案说清效果并给了切回方法: " + offText,
+                offText.contains("已关闭合并显示") && offText.contains("merge on"));
+        check("status 行翻转为「关」", h.translator.mergeDisplayStatusLine().contains("关"));
+
+        try (MockServer server = new MockServer()) {
+            Harness append = Harness.incoming(server);
+            append.translator.setMergeDisplay(false);
+            server.response = ok("冲左路");
+            boolean suppress = append.translator.onIncoming("[MVP+] Steve: go left", "ORIG-H",
+                    false, false, null, null);
+            check("关闭后不再扣住原文（装配层照常显示）", !suppress);
+            check("译文照常另起一行",
+                    append.feedback.awaitInfo(5000, 1) && append.feedback.hasInfo("冲左路"));
+            checkEq("没有任何合并动作", 0,
+                    append.feedback.mergedSuffixes.size() + append.feedback.originalsShown.size());
+        }
+
+        // ---- 3) 重新开启：后续消息恢复合并 ----
+        String onText = h.translator.setMergeDisplay(true);
+        check("开启后 isMergeDisplay=true", h.translator.isMergeDisplay());
+        checkEq("配置字段被写回 MERGE", "MERGE", h.config.incomingDisplay);
+        check("反馈文案说清效果: " + onText, onText.contains("已开启合并显示"));
+
+        try (MockServer server = new MockServer()) {
+            Harness merge = Harness.incoming(server);
+            merge.translator.setMergeDisplay(false);
+            merge.translator.setMergeDisplay(true);   // 关了再开
+            server.response = ok("冲右路");
+            boolean suppress = merge.translator.onIncoming("[MVP+] Steve: go right", "ORIG-I",
+                    false, false, null, null);
+            check("重新开启后恢复扣住原文", suppress);
+            check("合并显示照常工作",
+                    awaitTrue(5000, () -> !merge.feedback.mergedSuffixes.isEmpty())
+                            && merge.feedback.mergedSuffixes.get(0).contains("冲右路"));
+        }
+
+        // ---- 4) 切换不影响在途：已扣住的原文按它提交时的模式走完 ----
+        //
+        // 玩家在等译文期间切到 APPEND：那条消息已经被扣住（原文显示已取消），
+        // 如果切换会影响它，就会出现「原文消失、译文也不知道挂在哪」的中间态。
+        // 状态机的状态在提交时就定了，切换只影响之后的新消息。
+        try (MockServer server = new MockServer()) {
+            Harness flight = Harness.incoming(server);
+            CountDownLatch arrived = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            server.arrivalLatch = arrived;
+            server.releaseLatch = release;
+            server.response = ok("有人在进攻");
+            long base = flight.clock.getAsLong();
+            boolean suppress = flight.translator.onIncoming("[MVP+] Steve: inc mid", "ORIG-J",
+                    false, false, null, null);
+            check("提交时按 MERGE 扣住原文", suppress && arrived.await(5, java.util.concurrent.TimeUnit.SECONDS));
+
+            flight.translator.setMergeDisplay(false);   // 等译文期间玩家关掉合并显示
+            check("期限到点照常放行原文（不受切换影响）",
+                    flight.translator.expireMergeDeadlines(base + 3500) == 1
+                            && flight.feedback.originalsShown.contains("ORIG-J"));
+            release.countDown();
+            check("迟到的译文照常补 └ 从属行",
+                    flight.feedback.awaitInfo(5000, 1) && flight.feedback.infos.get(0).contains("└"));
+            server.arrivalLatch = null;
+            server.releaseLatch = null;
         }
     }
 
